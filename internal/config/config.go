@@ -10,18 +10,20 @@ const (
 )
 
 type Config struct {
-	HTTPAddr                  string
-	PostgresDSN               string
-	RedisAddr                 string
-	RedisPassword             string
-	RedisDB                   int
-	MerchantSecretPassphrase  string
-	AuthWindowSeconds         int
-	ProcessingKeyTTLSeconds   int
-	WebhookMaxRetries         int
-	WebhookWorkerBatchSize    int
-	WebhookWorkerIntervalMS   int
-	WebhookRetryBackoffMinute []int
+	HTTPAddr                     string
+	PostgresDSN                  string
+	RedisAddr                    string
+	RedisPassword                string
+	RedisDB                      int
+	MerchantSecretPassphrase     string
+	AuthWindowSeconds            int
+	ProcessingKeyTTLSeconds      int
+	WebhookMaxRetries            int
+	WebhookWorkerBatchSize       int
+	WebhookWorkerIntervalMS      int
+	WebhookRetryBackoffMinute    []int
+	TxnCompensationIntervalMS    int
+	NotifyCompensationIntervalMS int
 }
 
 func Load() Config {
@@ -31,19 +33,23 @@ func Load() Config {
 	webhookMaxRetries, _ := strconv.Atoi(getenv("WEBHOOK_MAX_RETRIES", "8"))
 	webhookWorkerBatchSize, _ := strconv.Atoi(getenv("WEBHOOK_WORKER_BATCH_SIZE", "100"))
 	webhookWorkerIntervalMS, _ := strconv.Atoi(getenv("WEBHOOK_WORKER_INTERVAL_MS", "1000"))
+	txnCompensationIntervalMS, _ := strconv.Atoi(getenv("TXN_COMPENSATION_INTERVAL_MS", "1000"))
+	notifyCompensationIntervalMS, _ := strconv.Atoi(getenv("NOTIFY_COMPENSATION_INTERVAL_MS", "1000"))
 	return Config{
-		HTTPAddr:                  getenv("HTTP_ADDR", ":8080"),
-		PostgresDSN:               getenv("POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"),
-		RedisAddr:                 getenv("REDIS_ADDR", "localhost:6379"),
-		RedisPassword:             getenv("REDIS_PASSWORD", ""),
-		RedisDB:                   redisDB,
-		MerchantSecretPassphrase:  resolveMerchantSecretPassphrase(),
-		AuthWindowSeconds:         authWindowSeconds,
-		ProcessingKeyTTLSeconds:   processingKeyTTLSeconds,
-		WebhookMaxRetries:         webhookMaxRetries,
-		WebhookWorkerBatchSize:    webhookWorkerBatchSize,
-		WebhookWorkerIntervalMS:   webhookWorkerIntervalMS,
-		WebhookRetryBackoffMinute: []int{1, 5, 15, 60, 360},
+		HTTPAddr:                     getenv("HTTP_ADDR", ":8080"),
+		PostgresDSN:                  getenv("POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"),
+		RedisAddr:                    getenv("REDIS_ADDR", "localhost:6379"),
+		RedisPassword:                getenv("REDIS_PASSWORD", ""),
+		RedisDB:                      redisDB,
+		MerchantSecretPassphrase:     resolveMerchantSecretPassphrase(),
+		AuthWindowSeconds:            authWindowSeconds,
+		ProcessingKeyTTLSeconds:      processingKeyTTLSeconds,
+		WebhookMaxRetries:            webhookMaxRetries,
+		WebhookWorkerBatchSize:       webhookWorkerBatchSize,
+		WebhookWorkerIntervalMS:      webhookWorkerIntervalMS,
+		WebhookRetryBackoffMinute:    []int{1, 5, 15, 60, 360},
+		TxnCompensationIntervalMS:    txnCompensationIntervalMS,
+		NotifyCompensationIntervalMS: notifyCompensationIntervalMS,
 	}
 }
 

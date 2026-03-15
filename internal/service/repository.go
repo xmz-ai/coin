@@ -61,4 +61,6 @@ type Repository interface {
 
 	IncAppliedChange()
 	AppliedChangeCount() int
+	IncTxnCompensationRun()
+	IncNotifyCompensationRun()
 }

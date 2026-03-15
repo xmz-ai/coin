@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -64,6 +65,51 @@ func (w *WebhookWorker) Start(ctx context.Context, interval time.Duration) {
 			w.RunOnce(ctx)
 		}
 	}
+}
+
+func (w *WebhookWorker) StartWithReport(ctx context.Context, interval time.Duration, report func(claimed int, runErr error)) {
+	if interval <= 0 {
+		interval = time.Second
+	}
+	if report == nil {
+		report = func(int, error) {}
+	}
+	if w == nil || w.repo == nil || w.secrets == nil {
+		report(0, nil)
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	run := func() {
+		claimed, err := w.runOnceWithReport(ctx)
+		report(claimed, err)
+	}
+
+	run()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run()
+		}
+	}
+}
+
+func (w *WebhookWorker) runOnceWithReport(ctx context.Context) (int, error) {
+	events, err := w.repo.ClaimDueOutboxEvents(w.batchSize, w.nowFn())
+	if err != nil {
+		return 0, err
+	}
+	for _, e := range events {
+		w.handleEvent(ctx, e)
+	}
+	return len(events), nil
 }
 
 func (w *WebhookWorker) RunOnce(ctx context.Context) {
@@ -208,4 +254,14 @@ func normalizeWebhookBackoff(minutes []int) []time.Duration {
 		out = []time.Duration{time.Minute}
 	}
 	return out
+}
+
+func NewWebhookReportHook() func(claimed int, runErr error) {
+	return func(claimed int, runErr error) {
+		if runErr != nil {
+			log.Printf("notify compensation run failed: err=%v claimed=%d", runErr, claimed)
+			return
+		}
+		log.Printf("notify compensation run done: claimed=%d", claimed)
+	}
 }

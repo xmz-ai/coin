@@ -181,3 +181,32 @@
 - 回归结果：S0（通过/失败），S1（通过/失败）
 - 风险与阻塞：
 - 明日计划：
+
+---
+
+## 10) 验收演练记录（2026-03-15）
+
+### 10.1 性能与并发基线（重点场景）
+
+- 退款并发不超退（真实 PostgreSQL）：`TestTC9020PostgresConcurrentRefundCASNoOverRefund` 通过。
+- 分页稳定性（seek，不重不漏 + 排序契约）：`TestTC1105APIListTransactionsSeekPagination` 通过。
+
+### 10.2 对账巡检演练
+
+- 账户余额与流水一致性：
+  - API 侧：`TestTC1123~TC1126` 覆盖 credit/debit/transfer/refund 的余额与 `account_change_log` 对齐。
+  - PostgreSQL 侧：`TestTC9010~TC9013` 覆盖借贷/异步/退款场景下余额与流水写入一致。
+- 账本模式一致性（`book_enabled=true`）：`TestTC9017~TC9019` 通过，校验 `account_book` 与 `account_book_change_log` 写入及 FEFO 扣减一致性。
+
+### 10.3 Go/No-Go Checklist
+
+- [x] 主链路可用：开户/交易/退款
+- [x] 幂等正确：重复请求统一 409 且无副作用
+- [x] 一致性正确：余额与流水一致、并发退款不超退
+- [x] 稳定性正确：Outbox/Webhook/补偿可收敛
+- [x] 安全达标：验签、防重放、密钥密文
+
+### 10.4 回归执行结果
+
+- `bash ./scripts/test/postgres.sh`：通过（已覆盖 TC9001~TC9005、TC9010~TC9020、TC9014~TC9019）。
+- `go test ./...`：通过。

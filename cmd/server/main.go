@@ -51,6 +51,11 @@ func main() {
 	go transferWorker.Start(ctx, 500*time.Millisecond)
 	go webhookWorker.Start(ctx, time.Duration(cfg.WebhookWorkerIntervalMS)*time.Millisecond)
 
+	txnCompWorker := service.NewTransferPollingWorker(repo, asyncTransferProcessor, 200)
+	notifyCompWorker := service.NewWebhookWorker(repo, secretManager, cfg.WebhookMaxRetries, cfg.WebhookWorkerBatchSize, cfg.WebhookRetryBackoffMinute)
+	go txnCompWorker.StartWithReport(ctx, time.Duration(cfg.TxnCompensationIntervalMS)*time.Millisecond, service.NewCompensationReportHook())
+	go notifyCompWorker.StartWithReport(ctx, time.Duration(cfg.NotifyCompensationIntervalMS)*time.Millisecond, service.NewWebhookReportHook())
+
 	authMiddleware := api.NewAuthMiddleware(api.AuthMiddlewareConfig{
 		SecretProvider: secretManager,
 		TimeWindow:     time.Duration(cfg.AuthWindowSeconds) * time.Second,

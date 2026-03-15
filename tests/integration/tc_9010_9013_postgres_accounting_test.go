@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -181,6 +182,106 @@ func TestTC9013PostgresRefundWritesReverseLogsAndBalances(t *testing.T) {
 	}
 	if check[creditAccountNo] != -50 || check[debitAccountNo] != 50 {
 		t.Fatalf("unexpected refund deltas: %+v", check)
+	}
+}
+
+func TestTC9020PostgresConcurrentRefundCASNoOverRefund(t *testing.T) {
+	repo, _, merchant, debitAccountNo, creditAccountNo, _ := setupPostgresTransferFixture(t, service.TxnStatusInit, 200)
+
+	originTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a9140"
+	if err := repo.CreateTransferTxn(service.TransferTxn{
+		TxnNo:            originTxnNo,
+		MerchantNo:       merchant.MerchantNo,
+		OutTradeNo:       "ord_9020_origin",
+		BizType:          "TRANSFER",
+		TransferScene:    service.SceneP2P,
+		DebitAccountNo:   debitAccountNo,
+		CreditAccountNo:  creditAccountNo,
+		Amount:           100,
+		RefundableAmount: 100,
+		Status:           service.TxnStatusProcessing,
+	}); err != nil {
+		t.Fatalf("create origin txn failed: %v", err)
+	}
+	applied, err := repo.ApplyTransferDebitStage(originTxnNo, debitAccountNo, 100)
+	if err != nil || !applied {
+		t.Fatalf("apply origin debit stage failed: applied=%v err=%v", applied, err)
+	}
+	applied, err = repo.ApplyTransferCreditStage(originTxnNo, creditAccountNo, 100)
+	if err != nil || !applied {
+		t.Fatalf("apply origin credit stage failed: applied=%v err=%v", applied, err)
+	}
+
+	refundTxnA := "01956f4e-9d22-73bc-8e11-3f5e9c7a9141"
+	refundTxnB := "01956f4e-9d22-73bc-8e11-3f5e9c7a9142"
+	for _, item := range []service.TransferTxn{
+		{
+			TxnNo:            refundTxnA,
+			MerchantNo:       merchant.MerchantNo,
+			OutTradeNo:       "ord_9020_refund_a",
+			BizType:          "REFUND",
+			Amount:           80,
+			RefundOfTxnNo:    originTxnNo,
+			RefundableAmount: 0,
+			Status:           service.TxnStatusInit,
+		},
+		{
+			TxnNo:            refundTxnB,
+			MerchantNo:       merchant.MerchantNo,
+			OutTradeNo:       "ord_9020_refund_b",
+			BizType:          "REFUND",
+			Amount:           80,
+			RefundOfTxnNo:    originTxnNo,
+			RefundableAmount: 0,
+			Status:           service.TxnStatusInit,
+		},
+	} {
+		if err := repo.CreateTransferTxn(item); err != nil {
+			t.Fatalf("create refund txn failed: %v", err)
+		}
+	}
+
+	refundSvc := service.NewRefundService(repo)
+	type result struct{ err error }
+	ch := make(chan result, 2)
+	var wg sync.WaitGroup
+	for _, refundTxnNo := range []string{refundTxnA, refundTxnB} {
+		wg.Add(1)
+		go func(refundTxnNo string) {
+			defer wg.Done()
+			_, err := refundSvc.SubmitRefund(service.RefundRequest{
+				MerchantNo:  merchant.MerchantNo,
+				RefundTxnNo: refundTxnNo,
+				OriginTxnNo: originTxnNo,
+				Amount:      80,
+			})
+			ch <- result{err: err}
+		}(refundTxnNo)
+	}
+	wg.Wait()
+	close(ch)
+
+	success := 0
+	exceeded := 0
+	for item := range ch {
+		if item.err == nil {
+			success++
+			continue
+		}
+		if item.err == service.ErrRefundAmountExceeded {
+			exceeded++
+		}
+	}
+	if success != 1 || exceeded != 1 {
+		t.Fatalf("expected one success and one ErrRefundAmountExceeded, got success=%d exceeded=%d", success, exceeded)
+	}
+
+	origin, ok := repo.GetTransferTxn(originTxnNo)
+	if !ok {
+		t.Fatalf("origin txn not found")
+	}
+	if origin.RefundableAmount != 20 {
+		t.Fatalf("expected origin refundable_amount=20, got %d", origin.RefundableAmount)
 	}
 }
 

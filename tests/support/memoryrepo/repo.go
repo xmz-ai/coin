@@ -29,6 +29,8 @@ type Repo struct {
 	notifyLogsByTxn  map[string][]service.NotifyLog
 
 	secretsByMerchantNo map[string]string
+	txnCompRuns         int
+	notifyCompRuns      int
 }
 
 type AccountChange struct {
@@ -47,14 +49,14 @@ type outboxRecord struct {
 
 func New() *Repo {
 	return &Repo{
-		merchantsByNo:   map[string]service.Merchant{},
-		merchantsByID:   map[string]service.Merchant{},
-		accountsByNo:    map[string]service.Account{},
-		customersByK:    map[string]service.Customer{},
-		customersByNo:   map[string]service.Customer{},
-		transferTxnByK:   map[string]service.TransferTxn{},
-		transferTxnByNo:  map[string]service.TransferTxn{},
-		accountChanges:   make([]AccountChange, 0),
+		merchantsByNo:       map[string]service.Merchant{},
+		merchantsByID:       map[string]service.Merchant{},
+		accountsByNo:        map[string]service.Account{},
+		customersByK:        map[string]service.Customer{},
+		customersByNo:       map[string]service.Customer{},
+		transferTxnByK:      map[string]service.TransferTxn{},
+		transferTxnByNo:     map[string]service.TransferTxn{},
+		accountChanges:      make([]AccountChange, 0),
 		webhookConfigs:      map[string]service.WebhookConfig{},
 		outboxByEventID:     map[string]outboxRecord{},
 		outboxEventOrder:    make([]string, 0),
@@ -613,6 +615,30 @@ func (r *Repo) AppliedChangeCount() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.appliedChangeCt
+}
+
+func (r *Repo) IncTxnCompensationRun() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.txnCompRuns++
+}
+
+func (r *Repo) IncNotifyCompensationRun() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.notifyCompRuns++
+}
+
+func (r *Repo) TxnCompensationRunCount() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.txnCompRuns
+}
+
+func (r *Repo) NotifyCompensationRunCount() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.notifyCompRuns
 }
 
 func (r *Repo) ListAccountChangesByTxnNo(txnNo string) []AccountChange {
