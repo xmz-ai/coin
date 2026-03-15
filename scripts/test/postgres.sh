@@ -68,6 +68,6 @@ export GOCACHE="${ROOT_DIR}/.cache/go-build"
 mkdir -p "$GOCACHE"
 
 echo "[pg-test] running postgres integration tests"
-"$GO_BIN" test -v ./tests/integration -run 'TestTC9001|TestTC9002|TestTC9003|TestTC9004|TestTC9005|TestTC9010|TestTC9011|TestTC9012|TestTC9013|TestTC9014|TestTC9015|TestTC9016|TestTC9017|TestTC9018|TestTC9019' -count=1
+"$GO_BIN" test -v ./tests/integration -run 'TestTC9001|TestTC9002|TestTC9003|TestTC9004|TestTC9005|TestTC9010|TestTC9011|TestTC9012|TestTC9013|TestTC9014|TestTC9015|TestTC9016|TestTC9017|TestTC9018|TestTC9019|TestTC9020' -count=1
 
 echo "[pg-test] done"

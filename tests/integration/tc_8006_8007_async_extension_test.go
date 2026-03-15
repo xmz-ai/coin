@@ -1,8 +1,11 @@
 package integration
 
 import (
+	"context"
 	"testing"
+	"time"
 
+	idpkg "github.com/xmz-ai/coin/internal/platform/id"
 	"github.com/xmz-ai/coin/internal/service"
 )
 
@@ -17,20 +20,61 @@ func TestTC8006WebhookSignatureDeterministic(t *testing.T) {
 }
 
 func TestTC8007CompensationTasksForTxnAndNotify(t *testing.T) {
-	svc := service.NewAsyncService()
-	txnNo := svc.RecordStuckTxn("m1", "ord_8007")
+	repo, merchantNo := setupWebhookWorkerFixture(t)
 
-	// txn compensation
-	svc.RunTxnCompensation()
-	if got := svc.GetTxnStatus(txnNo); got != service.TxnStatusRecvSuccess {
-		t.Fatalf("expected txn compensated to RECV_SUCCESS, got %s", got)
+	ids := idpkg.NewFixedUUIDProvider([]string{
+		"01956f4e-c111-71aa-b2d2-2b079f7e2801",
+	})
+	transferSvc := service.NewTransferService(repo, ids)
+	txn, err := transferSvc.Submit(service.TransferRequest{
+		MerchantNo:       merchantNo,
+		OutTradeNo:       "ord_8007_comp",
+		BizType:          service.BizTypeTransfer,
+		TransferScene:    service.SceneP2P,
+		DebitAccountNo:   "6217701201801101001",
+		CreditAccountNo:  "6217701201801101002",
+		Amount:           60,
+		RefundableAmount: 60,
+		Status:           service.TxnStatusPaySuccess,
+	})
+	if err != nil {
+		t.Fatalf("submit txn failed: %v", err)
 	}
 
-	// notify compensation (retry pending events)
-	_ = svc.RecordMainTxnSuccess("m1", "ord_8007_notify")
-	svc.RunNotifyCompensation(func(_ service.OutboxEvent) bool { return true })
-	pending := svc.ListOutboxPending()
-	if len(pending) != 0 {
-		t.Fatalf("expected no pending outbox after notify compensation")
+	if err := repo.UpsertWebhookConfig(merchantNo, "https://merchant.example.com/webhook", true); err != nil {
+		t.Fatalf("upsert webhook config failed: %v", err)
+	}
+	repo.SetMerchantSecret(merchantNo, "")
+
+	processor := service.NewTransferAsyncProcessor(repo)
+	txnWorker := service.NewTransferPollingWorker(repo, processor, 100)
+	notifyWorker := service.NewWebhookWorker(repo, repo, 8, 100, []int{1})
+	compWorker := service.NewCompensationWorker(txnWorker, notifyWorker, repo)
+
+	compWorker.RunOnce(context.Background())
+
+	if got, ok := repo.GetTransferTxn(txn.TxnNo); !ok || got.Status != service.TxnStatusRecvSuccess {
+		t.Fatalf("expected txn compensated to RECV_SUCCESS, got %+v ok=%v", got, ok)
+	}
+	if repo.TxnCompensationRunCount() != 1 {
+		t.Fatalf("expected txn compensation run count=1, got %d", repo.TxnCompensationRunCount())
+	}
+	if repo.NotifyCompensationRunCount() != 1 {
+		t.Fatalf("expected notify compensation run count=1, got %d", repo.NotifyCompensationRunCount())
+	}
+
+	events, err := repo.ClaimDueOutboxEvents(10, time.Now().UTC().Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("claim events failed: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 pending outbox events, got %+v", events)
+	}
+	retryByTxnNo := map[string]int{}
+	for _, item := range events {
+		retryByTxnNo[item.TxnNo] = item.RetryCount
+	}
+	if retryByTxnNo[txn.TxnNo] != 1 {
+		t.Fatalf("expected compensated txn retry_count=1, got map=%+v", retryByTxnNo)
 	}
 }

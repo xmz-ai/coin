@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,6 +28,8 @@ type Repository struct {
 	queries              *dbsqlc.Queries
 	codeProvider         idpkg.CodeProvider
 	codeSequenceInitOnce sync.Map
+	txnCompRuns          int64
+	notifyCompRuns       int64
 }
 
 func NewRepository(pool *pgxpool.Pool) *Repository {
@@ -824,6 +827,14 @@ func (r *Repository) AppliedChangeCount() int {
 		return 0
 	}
 	return int(n)
+}
+
+func (r *Repository) IncTxnCompensationRun() {
+	atomic.AddInt64(&r.txnCompRuns, 1)
+}
+
+func (r *Repository) IncNotifyCompensationRun() {
+	atomic.AddInt64(&r.notifyCompRuns, 1)
 }
 
 func applyAccountTransferTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype.UUID, debitAccountNo, creditAccountNo string, amount int64) error {

@@ -43,14 +43,14 @@
 - [x] 落地请求幂等键 `(merchant_no, out_trade_no)` 的持久化冲突控制，API 统一返回 HTTP 409 + `DUPLICATE_OUT_TRADE_NO`。
 - [x] 落地执行幂等键 `processing_key=txn_no+stage` 的 Redis TTL（全局配置化、跨实例生效）。
 - [x] 补齐交易主链路同事务落库：主单/明细/余额/流水/outbox，并完成 `account_change_log` 写入。
-- [ ] 补齐过期账本流水 `account_book_change_log` 写入，并强约束仅 `book_enabled=true` 账户允许写账本。
-- [ ] 补齐退款链路数据库级并发控制（CAS/行锁），确保“并发退款不超退”在真实存储层成立。
-- [ ] 落地交易查询 API（按 `txn_no`/`out_trade_no`/列表筛选）及 seek 分页契约（`created_at DESC, txn_no DESC` + `page_token`）。
+- [x] 补齐过期账本流水 `account_book_change_log` 写入，并强约束仅 `book_enabled=true` 账户允许写账本。
+- [x] 补齐退款链路数据库级并发控制（CAS/行锁），确保“并发退款不超退”在真实存储层成立。
+- [x] 落地交易查询 API（按 `txn_no`/`out_trade_no`/列表筛选）及 seek 分页契约（`created_at DESC, txn_no DESC` + `page_token`）。
 - [x] 落地 Webhook 配置查询/更新 API，Webhook 签名复用 `merchant_secret`，并补齐失败重试与 DEAD 收敛策略。
-- [ ] 落地补偿任务（交易补偿 + 通知补偿）定时执行链路与基础可观测项。
+- [x] 落地补偿任务（交易补偿 + 通知补偿）定时执行链路与基础可观测项。
 - [x] 去掉 `tests/integration/s0_smoke_suite_test.go` 中 transfer/refund/pagination 的 `t.Skip` 占位，补全真实 S0 回归。
 - [x] 增加 Docker 自动拉起 PostgreSQL 集成测试入口（`make test-pg`），覆盖仓储核心流程（商户/客户/幂等冲突/计数器）。
-- [ ] 完成迭代 9 剩余验收：性能并发基线、对账巡检演练、Go/No-Go checklist。
+- [x] 完成迭代 9 剩余验收：性能并发基线、对账巡检演练、Go/No-Go checklist。
 
 ## 迭代 0：测试基线与约束固化
 
@@ -149,7 +149,7 @@
 
 **最小实现（Green）**
 - [x] `account_book` 读写与 FEFO 分摊
-- [ ] `account_book_change_log` 写入
+- [x] `account_book_change_log` 写入
 - [x] 汇总一致性校验入口
 
 **回归**
@@ -200,7 +200,7 @@
 **最小实现（Green）**
 - [x] Outbox worker
 - [x] Webhook 签名与通知重试策略
-- [ ] 补偿任务（交易/通知）
+- [x] 补偿任务（交易/通知）
 
 **回归**
 - [x] 运行：异步链路测试 + 迭代1~7回归
@@ -210,14 +210,14 @@
 ## 迭代 9：上线前回归与验收
 
 - [x] 执行全量回归（unit + integration + e2e）
-- [ ] 执行性能与并发基线用例（重点：退款并发、分页稳定性）
-- [ ] 执行对账巡检演练与异常修复演练
-- [ ] Go/No-Go checklist 打勾
+- [x] 执行性能与并发基线用例（重点：退款并发、分页稳定性）
+- [x] 执行对账巡检演练与异常修复演练
+- [x] Go/No-Go checklist 打勾
 
 ## 最终验收门槛
 
-- [ ] 主链路可用：开户/交易/退款
-- [ ] 幂等正确：重复请求统一 409 且无副作用
-- [ ] 一致性正确：余额与流水一致、并发退款不超退
-- [ ] 稳定性正确：Outbox/Webhook/补偿可收敛
-- [ ] 安全达标：验签、防重放、密钥密文
+- [x] 主链路可用：开户/交易/退款
+- [x] 幂等正确：重复请求统一 409 且无副作用
+- [x] 一致性正确：余额与流水一致、并发退款不超退
+- [x] 稳定性正确：Outbox/Webhook/补偿可收敛
+- [x] 安全达标：验签、防重放、密钥密文

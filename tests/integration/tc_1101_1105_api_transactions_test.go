@@ -226,11 +226,8 @@ func TestTC1105APIListTransactionsSeekPagination(t *testing.T) {
 	}
 
 	seen := map[string]struct{}{}
-	for _, row := range page1Items {
-		m := row.(map[string]any)
-		seen[m["txn_no"].(string)] = struct{}{}
-	}
-	for _, row := range page2Items {
+	all := append(page1Items, page2Items...)
+	for _, row := range all {
 		m := row.(map[string]any)
 		txnNo := m["txn_no"].(string)
 		if _, ok := seen[txnNo]; ok {
@@ -240,6 +237,27 @@ func TestTC1105APIListTransactionsSeekPagination(t *testing.T) {
 	}
 	if len(seen) != 3 {
 		t.Fatalf("expected 3 unique txns, got %d", len(seen))
+	}
+
+	for i := 1; i < len(all); i++ {
+		prev := all[i-1].(map[string]any)
+		curr := all[i].(map[string]any)
+		prevAt, err := time.Parse(time.RFC3339Nano, prev["created_at"].(string))
+		if err != nil {
+			t.Fatalf("parse prev created_at failed: %v", err)
+		}
+		currAt, err := time.Parse(time.RFC3339Nano, curr["created_at"].(string))
+		if err != nil {
+			t.Fatalf("parse curr created_at failed: %v", err)
+		}
+		prevAt = prevAt.UTC()
+		currAt = currAt.UTC()
+		if prevAt.Before(currAt) {
+			t.Fatalf("expected DESC created_at ordering, got prev=%s curr=%s", prevAt, currAt)
+		}
+		if prevAt.Equal(currAt) && prev["txn_no"].(string) < curr["txn_no"].(string) {
+			t.Fatalf("expected DESC txn_no ordering on same created_at, got prev=%s curr=%s", prev["txn_no"].(string), curr["txn_no"].(string))
+		}
 	}
 }
 
@@ -825,6 +843,83 @@ func TestTC1122APIMerchantMeReturnsConfigAndRequestID(t *testing.T) {
 	}
 	if data["receivable_account_no"] != merchant.ReceivableAccountNo {
 		t.Fatalf("unexpected receivable_account_no: %v", data["receivable_account_no"])
+	}
+}
+
+func TestTC1127APIGetWebhookConfigDefault(t *testing.T) {
+	r, _, merchantNo, secret := newTxnAPITestServer(t)
+
+	req := signedAPIRequest(t, http.MethodGet, "/api/v1/webhooks/config", merchantNo, secret, "nonce-1127", nil)
+	resp := httptest.NewRecorder()
+	r.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+
+	body := decodeJSONMap(t, resp.Body.Bytes())
+	if body["code"] != "SUCCESS" {
+		t.Fatalf("expected SUCCESS, got %v", body["code"])
+	}
+	data := body["data"].(map[string]any)
+	if data["url"] != "" {
+		t.Fatalf("expected empty url, got %v", data["url"])
+	}
+	if data["enabled"] != false {
+		t.Fatalf("expected enabled=false, got %v", data["enabled"])
+	}
+	retryPolicy, ok := data["retry_policy"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected retry_policy object")
+	}
+	if retryPolicy["max_retries"] != float64(8) {
+		t.Fatalf("unexpected max_retries: %v", retryPolicy["max_retries"])
+	}
+	backoff, ok := retryPolicy["backoff"].([]any)
+	if !ok || len(backoff) != 5 {
+		t.Fatalf("unexpected backoff policy: %v", retryPolicy["backoff"])
+	}
+}
+
+func TestTC1128APIPutWebhookConfigThenGet(t *testing.T) {
+	r, repo, merchantNo, secret := newTxnAPITestServer(t)
+
+	putReq := signedAPIRequest(t, http.MethodPut, "/api/v1/webhooks/config", merchantNo, secret, "nonce-1128-put", map[string]any{
+		"url":     "https://merchant.example.com/coin/webhook",
+		"enabled": true,
+	})
+	putResp := httptest.NewRecorder()
+	r.ServeHTTP(putResp, putReq)
+	if putResp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", putResp.Code, putResp.Body.String())
+	}
+
+	cfg, found, err := repo.GetWebhookConfig(merchantNo)
+	if err != nil {
+		t.Fatalf("get webhook config from repo failed: %v", err)
+	}
+	if !found {
+		t.Fatalf("expected webhook config persisted")
+	}
+	if cfg.URL != "https://merchant.example.com/coin/webhook" || !cfg.Enabled {
+		t.Fatalf("unexpected persisted webhook config: %+v", cfg)
+	}
+
+	getReq := signedAPIRequest(t, http.MethodGet, "/api/v1/webhooks/config", merchantNo, secret, "nonce-1128-get", nil)
+	getResp := httptest.NewRecorder()
+	r.ServeHTTP(getResp, getReq)
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", getResp.Code, getResp.Body.String())
+	}
+	body := decodeJSONMap(t, getResp.Body.Bytes())
+	if body["code"] != "SUCCESS" {
+		t.Fatalf("expected SUCCESS, got %v", body["code"])
+	}
+	data := body["data"].(map[string]any)
+	if data["url"] != "https://merchant.example.com/coin/webhook" {
+		t.Fatalf("unexpected url: %v", data["url"])
+	}
+	if data["enabled"] != true {
+		t.Fatalf("expected enabled=true, got %v", data["enabled"])
 	}
 }
 
