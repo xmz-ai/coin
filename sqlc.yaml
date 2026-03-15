@@ -1,0 +1,15 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    schema:
+      - "migrations/000001_init.up.sql"
+      - "migrations/000002_txn_credit_expire_at.up.sql"
+    queries:
+      - "internal/db/sql"
+    gen:
+      go:
+        package: "dbsqlc"
+        out: "internal/db/sqlc"
+        sql_package: "pgx/v5"
+        emit_json_tags: false
+        emit_interface: false

@@ -1,0 +1,1248 @@
+package db
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
+	dbsqlc "github.com/xmz-ai/coin/internal/db/sqlc"
+	"github.com/xmz-ai/coin/internal/domain"
+	idpkg "github.com/xmz-ai/coin/internal/platform/id"
+	"github.com/xmz-ai/coin/internal/service"
+)
+
+const opTimeout = 3 * time.Second
+
+type Repository struct {
+	pool                 *pgxpool.Pool
+	queries              *dbsqlc.Queries
+	codeProvider         idpkg.CodeProvider
+	codeSequenceInitOnce sync.Map
+}
+
+func NewRepository(pool *pgxpool.Pool) *Repository {
+	r := &Repository{
+		pool:    pool,
+		queries: dbsqlc.New(pool),
+	}
+	r.codeProvider = idpkg.NewDBCodeProvider(r)
+	return r
+}
+
+func (r *Repository) withTimeout() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), opTimeout)
+}
+
+func (r *Repository) CreateMerchant(m service.Merchant) error {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	merchantID, err := parseUUID(m.MerchantID)
+	if err != nil {
+		return err
+	}
+
+	err = r.queries.CreateMerchant(ctx, dbsqlc.CreateMerchantParams{
+		MerchantID:          merchantID,
+		MerchantNo:          m.MerchantNo,
+		Name:                m.Name,
+		BudgetAccountNo:     m.BudgetAccountNo,
+		ReceivableAccountNo: m.ReceivableAccountNo,
+	})
+	if isUniqueViolation(err) {
+		return service.ErrMerchantNoExists
+	}
+	return err
+}
+
+func (r *Repository) GetMerchantByNo(merchantNo string) (service.Merchant, bool) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	row, err := r.queries.GetMerchantByNo(ctx, merchantNo)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return service.Merchant{}, false
+	}
+	if err != nil {
+		return service.Merchant{}, false
+	}
+	return service.Merchant{
+		MerchantID:          row.MerchantID,
+		MerchantNo:          row.MerchantNo,
+		Name:                row.Name,
+		BudgetAccountNo:     row.BudgetAccountNo,
+		ReceivableAccountNo: row.ReceivableAccountNo,
+	}, true
+}
+
+func (r *Repository) CreateAccount(a service.Account) error {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	customerNo := strings.TrimSpace(a.CustomerNo)
+
+	err := r.queries.CreateAccount(ctx, dbsqlc.CreateAccountParams{
+		AccountNo:         a.AccountNo,
+		MerchantNo:        a.MerchantNo,
+		CustomerNo:        nullableText(customerNo),
+		AccountType:       a.AccountType,
+		AllowOverdraft:    a.AllowOverdraft,
+		MaxOverdraftLimit: a.MaxOverdraftLimit,
+		AllowDebitOut:     a.AllowDebitOut,
+		AllowCreditIn:     a.AllowCreditIn,
+		AllowTransfer:     a.AllowTransfer,
+		BookEnabled:       a.BookEnabled,
+		Balance:           a.Balance,
+	})
+	if isUniqueViolation(err) {
+		return service.ErrAccountNoExists
+	}
+	return err
+}
+
+func (r *Repository) NewMerchantNo() (string, error) {
+	return r.codeProvider.NewMerchantNo()
+}
+
+func (r *Repository) NewCustomerNo() (string, error) {
+	return r.codeProvider.NewCustomerNo()
+}
+
+func (r *Repository) NewAccountNo(merchantNo, accountType string) (string, error) {
+	return r.codeProvider.NewAccountNo(merchantNo, accountType)
+}
+
+func (r *Repository) LeaseRange(codeType, scopeKey string, batchSize int64) (int64, int64, error) {
+	if strings.TrimSpace(codeType) == "" || strings.TrimSpace(scopeKey) == "" || batchSize <= 0 {
+		return 0, 0, fmt.Errorf("invalid lease args")
+	}
+
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	seqKey := codeType + ":" + scopeKey
+	if _, ok := r.codeSequenceInitOnce.Load(seqKey); !ok {
+		if err := r.queries.InitCodeSequence(ctx, dbsqlc.InitCodeSequenceParams{
+			CodeType: codeType,
+			ScopeKey: scopeKey,
+		}); err != nil {
+			return 0, 0, err
+		}
+		r.codeSequenceInitOnce.Store(seqKey, struct{}{})
+	}
+
+	row, err := r.queries.LeaseCodeRange(ctx, dbsqlc.LeaseCodeRangeParams{
+		BatchSize: batchSize,
+		CodeType:  codeType,
+		ScopeKey:  scopeKey,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		r.codeSequenceInitOnce.Delete(seqKey)
+		return 0, 0, idpkg.ErrCodeAllocatorUnavailable
+	}
+	if err != nil {
+		return 0, 0, err
+	}
+	return row.StartValue, row.EndValue, nil
+}
+
+func (r *Repository) GetAccount(accountNo string) (service.Account, bool) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	row, err := r.queries.GetAccountByNo(ctx, accountNo)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return service.Account{}, false
+	}
+	if err != nil {
+		return service.Account{}, false
+	}
+	return accountFromGetAccountRow(row), true
+}
+
+func (r *Repository) UpdateAccountCapabilities(accountNo string, allowDebitOut, allowCreditIn, allowTransfer bool) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+	_ = r.queries.UpdateAccountCapabilities(ctx, dbsqlc.UpdateAccountCapabilitiesParams{
+		AllowDebitOut: allowDebitOut,
+		AllowCreditIn: allowCreditIn,
+		AllowTransfer: allowTransfer,
+		AccountNo:     accountNo,
+	})
+}
+
+func (r *Repository) CreateCustomer(c service.Customer) error {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	customerID, err := parseUUID(c.CustomerID)
+	if err != nil {
+		return err
+	}
+
+	err = r.queries.CreateCustomer(ctx, dbsqlc.CreateCustomerParams{
+		CustomerID: customerID,
+		CustomerNo: c.CustomerNo,
+		MerchantNo: c.MerchantNo,
+		OutUserID:  c.OutUserID,
+	})
+	if isUniqueViolation(err) {
+		return service.ErrCustomerExists
+	}
+	return err
+}
+
+func (r *Repository) GetCustomerByOutUserID(merchantNo, outUserID string) (service.Customer, bool) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	row, err := r.queries.GetCustomerByOutUserID(ctx, dbsqlc.GetCustomerByOutUserIDParams{
+		MerchantNo: merchantNo,
+		OutUserID:  outUserID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return service.Customer{}, false
+	}
+	if err != nil {
+		return service.Customer{}, false
+	}
+	return service.Customer{
+		CustomerID: row.CustomerID,
+		CustomerNo: row.CustomerNo,
+		MerchantNo: row.MerchantNo,
+		OutUserID:  row.OutUserID,
+	}, true
+}
+
+func (r *Repository) GetMerchantByID(merchantID string) (service.Merchant, bool) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	merchantUUID, err := parseUUID(merchantID)
+	if err != nil {
+		return service.Merchant{}, false
+	}
+
+	row, err := r.queries.GetMerchantByID(ctx, merchantUUID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return service.Merchant{}, false
+	}
+	if err != nil {
+		return service.Merchant{}, false
+	}
+	return service.Merchant{
+		MerchantID:          row.MerchantID,
+		MerchantNo:          row.MerchantNo,
+		Name:                row.Name,
+		BudgetAccountNo:     row.BudgetAccountNo,
+		ReceivableAccountNo: row.ReceivableAccountNo,
+	}, true
+}
+
+func (r *Repository) GetAccountByCustomerNo(merchantNo, customerNo string) (service.Account, bool) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	accountNo, err := r.queries.GetAccountNoByCustomerNo(ctx, dbsqlc.GetAccountNoByCustomerNoParams{
+		MerchantNo: merchantNo,
+		CustomerNo: nullableText(customerNo),
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return service.Account{}, false
+	}
+	if err != nil {
+		return service.Account{}, false
+	}
+
+	row, err := r.queries.GetAccountByNo(ctx, accountNo)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return service.Account{}, false
+	}
+	if err != nil {
+		return service.Account{}, false
+	}
+	return accountFromGetAccountRow(row), true
+}
+
+func (r *Repository) CreateTransferTxn(txn service.TransferTxn) error {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	txnUUID, err := parseUUID(txn.TxnNo)
+	if err != nil {
+		return err
+	}
+
+	err = r.queries.CreateTransferTxn(ctx, dbsqlc.CreateTransferTxnParams{
+		TxnNo:            txnUUID,
+		MerchantNo:       txn.MerchantNo,
+		OutTradeNo:       txn.OutTradeNo,
+		BizType:          txn.BizType,
+		TransferScene:    nullIfEmpty(txn.TransferScene),
+		DebitAccountNo:   nullIfEmpty(txn.DebitAccountNo),
+		CreditAccountNo:  nullIfEmpty(txn.CreditAccountNo),
+		CreditExpireAt:   nullableTimestamp(&txn.CreditExpireAt, !txn.CreditExpireAt.IsZero()),
+		Amount:           txn.Amount,
+		Status:           txn.Status,
+		RefundOfTxnNo:    nullIfEmpty(txn.RefundOfTxnNo),
+		RefundableAmount: txn.RefundableAmount,
+		ErrorCode:        nullIfEmpty(txn.ErrorCode),
+		ErrorMsg:         nullIfEmpty(txn.ErrorMsg),
+	})
+	if isUniqueViolation(err) {
+		return service.ErrDuplicateOutTradeNo
+	}
+	return err
+}
+
+func (r *Repository) GetTransferTxn(txnNo string) (service.TransferTxn, bool) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	txnUUID, err := parseUUID(txnNo)
+	if err != nil {
+		return service.TransferTxn{}, false
+	}
+
+	row, err := r.queries.GetTransferTxnByNo(ctx, txnUUID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return service.TransferTxn{}, false
+	}
+	if err != nil {
+		return service.TransferTxn{}, false
+	}
+	return transferTxnFromByNoRow(row), true
+}
+
+func (r *Repository) GetTransferTxnByOutTradeNo(merchantNo, outTradeNo string) (service.TransferTxn, bool) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	row, err := r.queries.GetTransferTxnByOutTradeNo(ctx, dbsqlc.GetTransferTxnByOutTradeNoParams{
+		MerchantNo: merchantNo,
+		OutTradeNo: outTradeNo,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return service.TransferTxn{}, false
+	}
+	if err != nil {
+		return service.TransferTxn{}, false
+	}
+	return transferTxnFromByOutTradeRow(row), true
+}
+
+func (r *Repository) ListTransferTxns(filter service.TxnListFilter) ([]service.TransferTxn, string) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	pageSize := filter.PageSize
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if pageSize > 200 {
+		pageSize = 200
+	}
+
+	cursorAt, cursorTxnNo, hasCursor := service.DecodePageToken(filter.PageToken)
+	listParams := dbsqlc.ListTransferTxnsParams{
+		MerchantNo:      filter.MerchantNo,
+		HasOutUserID:    filter.OutUserID != "",
+		OutUserID:       filter.OutUserID,
+		HasScene:        filter.Scene != "",
+		Scene:           nullableText(filter.Scene),
+		HasStatus:       filter.Status != "",
+		Status:          filter.Status,
+		HasStartTime:    filter.StartTime != nil,
+		StartTime:       nullableTimestamp(filter.StartTime, filter.StartTime != nil),
+		HasEndTime:      filter.EndTime != nil,
+		EndTime:         nullableTimestamp(filter.EndTime, filter.EndTime != nil),
+		HasCursor:       hasCursor,
+		CursorCreatedAt: nullableTimestamp(&cursorAt, hasCursor),
+		PageLimit:       int32(pageSize + 1),
+	}
+	if hasCursor {
+		cursorUUID, err := parseUUID(cursorTxnNo)
+		if err != nil {
+			return nil, ""
+		}
+		listParams.CursorTxnNo = cursorUUID
+	}
+
+	rows, err := r.queries.ListTransferTxns(ctx, listParams)
+	if err != nil {
+		return nil, ""
+	}
+
+	items := make([]service.TransferTxn, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, transferTxnFromListRow(row))
+	}
+
+	if len(items) <= pageSize {
+		return items, ""
+	}
+	page := items[:pageSize]
+	last := page[len(page)-1]
+	return page, service.EncodePageToken(last.CreatedAt, last.TxnNo)
+}
+
+func (r *Repository) ListTransferTxnsByStatus(status string, limit int) ([]service.TransferTxn, error) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	rows, err := r.queries.ListTransferTxnsByStatus(ctx, dbsqlc.ListTransferTxnsByStatusParams{
+		Status:    status,
+		PageLimit: int32(limit),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]service.TransferTxn, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, transferTxnFromListByStatusRow(row))
+	}
+	return items, nil
+}
+
+func (r *Repository) UpdateTransferTxnStatus(txnNo, status, errorCode, errorMsg string) error {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	txnUUID, err := parseUUID(txnNo)
+	if err != nil {
+		return err
+	}
+	return r.queries.UpdateTransferTxnStatus(ctx, dbsqlc.UpdateTransferTxnStatusParams{
+		Status:    status,
+		ErrorCode: nullIfEmpty(errorCode),
+		ErrorMsg:  nullIfEmpty(errorMsg),
+		TxnNo:     txnUUID,
+	})
+}
+
+func (r *Repository) TransitionTransferTxnStatus(txnNo, fromStatus, toStatus, errorCode, errorMsg string) (bool, error) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	txnUUID, err := parseUUID(txnNo)
+	if err != nil {
+		return false, err
+	}
+
+	affected, err := r.queries.UpdateTransferTxnStatusFrom(ctx, dbsqlc.UpdateTransferTxnStatusFromParams{
+		NextStatus: toStatus,
+		ErrorCode:  nullIfEmpty(errorCode),
+		ErrorMsg:   nullIfEmpty(errorMsg),
+		TxnNo:      txnUUID,
+		FromStatus: fromStatus,
+	})
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
+}
+
+func (r *Repository) UpdateTransferTxnParties(txnNo, debitAccountNo, creditAccountNo string) error {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	txnUUID, err := parseUUID(txnNo)
+	if err != nil {
+		return err
+	}
+	return r.queries.UpdateTransferTxnParties(ctx, dbsqlc.UpdateTransferTxnPartiesParams{
+		DebitAccountNo:  textValue(debitAccountNo),
+		CreditAccountNo: textValue(creditAccountNo),
+		TxnNo:           txnUUID,
+	})
+}
+
+func (r *Repository) TryDecreaseTxnRefundable(txnNo string, amount int64) (left int64, ok bool, err error) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	txnUUID, err := parseUUID(txnNo)
+	if err != nil {
+		return 0, false, err
+	}
+
+	left, err = r.queries.TryDecreaseTxnRefundable(ctx, dbsqlc.TryDecreaseTxnRefundableParams{
+		Amount: amount,
+		TxnNo:  txnUUID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return left, true, nil
+}
+
+func (r *Repository) ApplyTransferDebitStage(txnNo, debitAccountNo string, amount int64) (bool, error) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	txnUUID, err := parseUUID(txnNo)
+	if err != nil {
+		return false, service.ErrAccountResolveFailed
+	}
+
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	qtx := r.queries.WithTx(tx)
+	stage, err := qtx.GetTransferTxnStageForUpdate(ctx, txnUUID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, service.ErrTxnNotFound
+	}
+	if err != nil {
+		return false, err
+	}
+	if stage.Status != service.TxnStatusProcessing {
+		if err := tx.Commit(ctx); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+
+	stageDebitAccountNo := stage.DebitAccountNo
+	if stageDebitAccountNo == "" {
+		stageDebitAccountNo = debitAccountNo
+	}
+	if stageDebitAccountNo == "" {
+		return false, service.ErrAccountResolveFailed
+	}
+	if debitAccountNo != "" && stage.DebitAccountNo != "" && debitAccountNo != stage.DebitAccountNo {
+		return false, service.ErrAccountResolveFailed
+	}
+	if err := applyAccountDebitTx(ctx, qtx, txnUUID, stageDebitAccountNo, amount); err != nil {
+		return false, err
+	}
+	if err := qtx.UpdateTransferTxnStatus(ctx, dbsqlc.UpdateTransferTxnStatusParams{
+		Status:    service.TxnStatusPaySuccess,
+		ErrorCode: nil,
+		ErrorMsg:  nil,
+		TxnNo:     txnUUID,
+	}); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (r *Repository) ApplyTransferCreditStage(txnNo, creditAccountNo string, amount int64) (bool, error) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	txnUUID, err := parseUUID(txnNo)
+	if err != nil {
+		return false, service.ErrAccountResolveFailed
+	}
+
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	qtx := r.queries.WithTx(tx)
+	stage, err := qtx.GetTransferTxnStageForUpdate(ctx, txnUUID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, service.ErrTxnNotFound
+	}
+	if err != nil {
+		return false, err
+	}
+	if stage.Status != service.TxnStatusPaySuccess {
+		if err := tx.Commit(ctx); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+
+	stageCreditAccountNo := stage.CreditAccountNo
+	if stageCreditAccountNo == "" {
+		stageCreditAccountNo = creditAccountNo
+	}
+	if stageCreditAccountNo == "" {
+		return false, service.ErrAccountResolveFailed
+	}
+	if creditAccountNo != "" && stage.CreditAccountNo != "" && creditAccountNo != stage.CreditAccountNo {
+		return false, service.ErrAccountResolveFailed
+	}
+	if err := applyAccountCreditTx(ctx, qtx, txnUUID, stageCreditAccountNo, amount, pgTimestampPtr(stage.CreditExpireAt)); err != nil {
+		return false, err
+	}
+	if err := qtx.UpdateTransferTxnStatus(ctx, dbsqlc.UpdateTransferTxnStatusParams{
+		Status:    service.TxnStatusRecvSuccess,
+		ErrorCode: nil,
+		ErrorMsg:  nil,
+		TxnNo:     txnUUID,
+	}); err != nil {
+		return false, err
+	}
+	txnRow, err := qtx.GetTransferTxnByNo(ctx, txnUUID)
+	if err != nil {
+		return false, err
+	}
+	if err := insertOutboxEventTx(ctx, tx, txnUUID, txnRow.MerchantNo, txnRow.OutTradeNo); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (r *Repository) ApplyRefund(refundTxnNo, originTxnNo string, amount int64) (left int64, ok bool, err error) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	refundTxnUUID, err := parseUUID(refundTxnNo)
+	if err != nil {
+		return 0, false, err
+	}
+	originTxnUUID, err := parseUUID(originTxnNo)
+	if err != nil {
+		return 0, false, err
+	}
+
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return 0, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	qtx := r.queries.WithTx(tx)
+
+	origin, err := qtx.GetOriginTxnForUpdate(ctx, originTxnUUID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, service.ErrTxnNotFound
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if origin.RefundableAmount < amount {
+		return origin.RefundableAmount, false, nil
+	}
+	left = origin.RefundableAmount - amount
+
+	if err := qtx.DecreaseOriginTxnRefundable(ctx, dbsqlc.DecreaseOriginTxnRefundableParams{
+		Amount:      amount,
+		OriginTxnNo: originTxnUUID,
+	}); err != nil {
+		return 0, false, err
+	}
+
+	refundDebit := origin.CreditAccountNo
+	refundCredit := origin.DebitAccountNo
+	if err := applyAccountTransferTx(ctx, qtx, refundTxnUUID, refundDebit, refundCredit, amount); err != nil {
+		return 0, false, err
+	}
+
+	if err := qtx.UpdateTransferTxnParties(ctx, dbsqlc.UpdateTransferTxnPartiesParams{
+		DebitAccountNo:  textValue(refundDebit),
+		CreditAccountNo: textValue(refundCredit),
+		TxnNo:           refundTxnUUID,
+	}); err != nil {
+		return 0, false, err
+	}
+	if err := qtx.UpdateTransferTxnStatus(ctx, dbsqlc.UpdateTransferTxnStatusParams{
+		Status:    service.TxnStatusRecvSuccess,
+		ErrorCode: nil,
+		ErrorMsg:  nil,
+		TxnNo:     refundTxnUUID,
+	}); err != nil {
+		return 0, false, err
+	}
+	refundTxnRow, err := qtx.GetTransferTxnByNo(ctx, refundTxnUUID)
+	if err != nil {
+		return 0, false, err
+	}
+	if err := insertOutboxEventTx(ctx, tx, refundTxnUUID, refundTxnRow.MerchantNo, refundTxnRow.OutTradeNo); err != nil {
+		return 0, false, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, false, err
+	}
+	return left, true, nil
+}
+
+func (r *Repository) UpsertWebhookConfig(merchantNo, url string, enabled bool) error {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	return r.queries.UpsertWebhookConfig(ctx, dbsqlc.UpsertWebhookConfigParams{
+		MerchantNo: merchantNo,
+		Url:        url,
+		Enabled:    enabled,
+	})
+}
+
+func (r *Repository) GetWebhookConfig(merchantNo string) (service.WebhookConfig, bool, error) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	row, err := r.queries.GetWebhookConfig(ctx, merchantNo)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return service.WebhookConfig{}, false, nil
+	}
+	if err != nil {
+		return service.WebhookConfig{}, false, err
+	}
+	return service.WebhookConfig{
+		URL:     row.Url,
+		Enabled: row.Enabled,
+	}, true, nil
+}
+
+func (r *Repository) ClaimDueOutboxEvents(limit int, now time.Time) ([]service.OutboxEventDelivery, error) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	rows, err := r.queries.ClaimDueOutboxEvents(ctx, dbsqlc.ClaimDueOutboxEventsParams{
+		NowAt:     pgtype.Timestamptz{Time: now.UTC(), Valid: true},
+		PageLimit: int32(limit),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]service.OutboxEventDelivery, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, service.OutboxEventDelivery{
+			EventID:       row.EventID,
+			TxnNo:         row.TxnNo,
+			MerchantNo:    row.MerchantNo,
+			OutTradeNo:    row.OutTradeNo,
+			BizType:       row.BizType,
+			TransferScene: row.TransferScene,
+			Amount:        row.Amount,
+			Status:        row.Status,
+			RetryCount:    int(row.RetryCount),
+		})
+	}
+	return items, nil
+}
+
+func (r *Repository) MarkOutboxEventSuccess(eventID string) error {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	eventUUID, err := parseUUID(eventID)
+	if err != nil {
+		return err
+	}
+	return r.queries.MarkOutboxEventSuccess(ctx, eventUUID)
+}
+
+func (r *Repository) MarkOutboxEventRetry(eventID string, retryCount int, nextRetryAt time.Time, dead bool) error {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	eventUUID, err := parseUUID(eventID)
+	if err != nil {
+		return err
+	}
+	return r.queries.MarkOutboxEventRetry(ctx, dbsqlc.MarkOutboxEventRetryParams{
+		RetryCount:  int32(retryCount),
+		NextRetryAt: pgtype.Timestamptz{Time: nextRetryAt.UTC(), Valid: true},
+		MarkDead:    dead,
+		EventID:     eventUUID,
+	})
+}
+
+func (r *Repository) InsertNotifyLog(txnNo, status string, retries int) error {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	txnUUID, err := parseUUID(txnNo)
+	if err != nil {
+		return err
+	}
+	return r.queries.InsertNotifyLog(ctx, dbsqlc.InsertNotifyLogParams{
+		TxnNo:   txnUUID,
+		Status:  status,
+		Retries: int32(retries),
+	})
+}
+
+func (r *Repository) TxnCount() int {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	n, err := r.queries.TxnCount(ctx)
+	if err != nil {
+		return 0
+	}
+	return int(n)
+}
+
+func (r *Repository) IncAppliedChange() {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+	_ = r.queries.IncAppliedChange(ctx)
+}
+
+func (r *Repository) AppliedChangeCount() int {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	n, err := r.queries.AppliedChangeCount(ctx)
+	if err != nil {
+		return 0
+	}
+	return int(n)
+}
+
+func applyAccountTransferTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype.UUID, debitAccountNo, creditAccountNo string, amount int64) error {
+	if debitAccountNo == "" || creditAccountNo == "" || amount <= 0 {
+		return service.ErrAccountResolveFailed
+	}
+
+	if err := applyAccountDebitTx(ctx, q, txnUUID, debitAccountNo, amount); err != nil {
+		return err
+	}
+	if err := applyAccountCreditTx(ctx, q, txnUUID, creditAccountNo, amount, nil); err != nil {
+		return err
+	}
+	return nil
+}
+
+func applyAccountDebitTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype.UUID, debitAccountNo string, amount int64) error {
+	if debitAccountNo == "" || amount <= 0 {
+		return service.ErrAccountResolveFailed
+	}
+
+	debitRow, err := q.GetAccountForUpdateByNo(ctx, debitAccountNo)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return service.ErrAccountResolveFailed
+	}
+	if err != nil {
+		return err
+	}
+
+	debit := accountFromGetAccountForUpdateRow(debitRow)
+	if !debit.AllowDebitOut {
+		return service.ErrAccountForbidDebit
+	}
+
+	if debit.BookEnabled {
+		books, err := q.ListAvailableAccountBooksForUpdate(ctx, dbsqlc.ListAvailableAccountBooksForUpdateParams{
+			AccountNo: debit.AccountNo,
+			NowUtc:    pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
+		})
+		if err != nil {
+			return err
+		}
+
+		type bookChange struct {
+			BookNo       pgtype.UUID
+			ExpireAt     pgtype.Timestamptz
+			Delta        int64
+			BalanceAfter int64
+		}
+
+		left := amount
+		changes := make([]bookChange, 0, len(books))
+		for _, book := range books {
+			if left == 0 {
+				break
+			}
+			if book.Balance <= 0 {
+				continue
+			}
+			use := book.Balance
+			if use > left {
+				use = left
+			}
+			after := book.Balance - use
+
+			if err := q.UpdateAccountBookBalance(ctx, dbsqlc.UpdateAccountBookBalanceParams{
+				BookNo:  book.BookNo,
+				Balance: after,
+			}); err != nil {
+				return err
+			}
+			changes = append(changes, bookChange{
+				BookNo:       book.BookNo,
+				ExpireAt:     book.ExpireAt,
+				Delta:        -use,
+				BalanceAfter: after,
+			})
+			left -= use
+		}
+		if left > 0 {
+			return service.ErrInsufficientBalance
+		}
+
+		debitAfter := debit.Balance - amount
+		if err := q.UpdateAccountBalance(ctx, dbsqlc.UpdateAccountBalanceParams{
+			Balance:   debitAfter,
+			AccountNo: debit.AccountNo,
+		}); err != nil {
+			return err
+		}
+		if err := q.InsertAccountChange(ctx, dbsqlc.InsertAccountChangeParams{
+			TxnNo:        txnUUID,
+			AccountNo:    debit.AccountNo,
+			Delta:        -amount,
+			BalanceAfter: debitAfter,
+		}); err != nil {
+			return err
+		}
+		for _, change := range changes {
+			if err := q.InsertAccountBookChange(ctx, dbsqlc.InsertAccountBookChangeParams{
+				TxnNo:        txnUUID,
+				AccountNo:    debit.AccountNo,
+				BookNo:       change.BookNo,
+				Delta:        change.Delta,
+				BalanceAfter: change.BalanceAfter,
+				ExpireAt:     change.ExpireAt,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if err := domain.Account(debit).CanDebit(amount); err != nil {
+		return err
+	}
+
+	debitAfter := debit.Balance - amount
+	if err := q.UpdateAccountBalance(ctx, dbsqlc.UpdateAccountBalanceParams{
+		Balance:   debitAfter,
+		AccountNo: debit.AccountNo,
+	}); err != nil {
+		return err
+	}
+	if err := q.InsertAccountChange(ctx, dbsqlc.InsertAccountChangeParams{
+		TxnNo:        txnUUID,
+		AccountNo:    debit.AccountNo,
+		Delta:        -amount,
+		BalanceAfter: debitAfter,
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func applyAccountCreditTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype.UUID, creditAccountNo string, amount int64, creditExpireAt *time.Time) error {
+	if creditAccountNo == "" || amount <= 0 {
+		return service.ErrAccountResolveFailed
+	}
+
+	creditRow, err := q.GetAccountForUpdateByNo(ctx, creditAccountNo)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return service.ErrAccountResolveFailed
+	}
+	if err != nil {
+		return err
+	}
+
+	credit := accountFromGetAccountForUpdateRow(creditRow)
+	if !credit.AllowCreditIn {
+		return service.ErrAccountForbidCredit
+	}
+
+	if credit.BookEnabled {
+		if creditExpireAt == nil || creditExpireAt.IsZero() {
+			return service.ErrExpireAtRequired
+		}
+		expireAt := creditExpireAt.UTC()
+		bookNo, err := idpkg.NewRuntimeUUIDProvider().NewUUIDv7()
+		if err != nil {
+			return err
+		}
+		bookUUID, err := parseUUID(bookNo)
+		if err != nil {
+			return err
+		}
+
+		book, err := q.UpsertAccountBookBalance(ctx, dbsqlc.UpsertAccountBookBalanceParams{
+			BookNo:    bookUUID,
+			AccountNo: credit.AccountNo,
+			ExpireAt:  pgtype.Timestamptz{Time: expireAt, Valid: true},
+			Delta:     amount,
+		})
+		if err != nil {
+			return err
+		}
+
+		creditAfter := credit.Balance + amount
+		if err := q.UpdateAccountBalance(ctx, dbsqlc.UpdateAccountBalanceParams{
+			Balance:   creditAfter,
+			AccountNo: credit.AccountNo,
+		}); err != nil {
+			return err
+		}
+		if err := q.InsertAccountChange(ctx, dbsqlc.InsertAccountChangeParams{
+			TxnNo:        txnUUID,
+			AccountNo:    credit.AccountNo,
+			Delta:        amount,
+			BalanceAfter: creditAfter,
+		}); err != nil {
+			return err
+		}
+		if err := q.InsertAccountBookChange(ctx, dbsqlc.InsertAccountBookChangeParams{
+			TxnNo:        txnUUID,
+			AccountNo:    credit.AccountNo,
+			BookNo:       book.BookNo,
+			Delta:        amount,
+			BalanceAfter: book.Balance,
+			ExpireAt:     book.ExpireAt,
+		}); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	creditAfter := credit.Balance + amount
+	if err := q.UpdateAccountBalance(ctx, dbsqlc.UpdateAccountBalanceParams{
+		Balance:   creditAfter,
+		AccountNo: credit.AccountNo,
+	}); err != nil {
+		return err
+	}
+	if err := q.InsertAccountChange(ctx, dbsqlc.InsertAccountChangeParams{
+		TxnNo:        txnUUID,
+		AccountNo:    credit.AccountNo,
+		Delta:        amount,
+		BalanceAfter: creditAfter,
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func accountFromGetAccountRow(row dbsqlc.GetAccountByNoRow) service.Account {
+	return service.Account{
+		AccountNo:         row.AccountNo,
+		MerchantNo:        row.MerchantNo,
+		CustomerNo:        row.CustomerNo,
+		AccountType:       row.AccountType,
+		AllowOverdraft:    row.AllowOverdraft,
+		MaxOverdraftLimit: row.MaxOverdraftLimit,
+		AllowDebitOut:     row.AllowDebitOut,
+		AllowCreditIn:     row.AllowCreditIn,
+		AllowTransfer:     row.AllowTransfer,
+		BookEnabled:       row.BookEnabled,
+		Balance:           row.Balance,
+	}
+}
+
+func accountFromGetAccountForUpdateRow(row dbsqlc.GetAccountForUpdateByNoRow) service.Account {
+	return service.Account{
+		AccountNo:         row.AccountNo,
+		MerchantNo:        row.MerchantNo,
+		CustomerNo:        row.CustomerNo,
+		AccountType:       row.AccountType,
+		AllowOverdraft:    row.AllowOverdraft,
+		MaxOverdraftLimit: row.MaxOverdraftLimit,
+		AllowDebitOut:     row.AllowDebitOut,
+		AllowCreditIn:     row.AllowCreditIn,
+		AllowTransfer:     row.AllowTransfer,
+		BookEnabled:       row.BookEnabled,
+		Balance:           row.Balance,
+	}
+}
+
+func transferTxnFromByNoRow(row dbsqlc.GetTransferTxnByNoRow) service.TransferTxn {
+	return service.TransferTxn{
+		TxnNo:            row.TxnNo,
+		MerchantNo:       row.MerchantNo,
+		OutTradeNo:       row.OutTradeNo,
+		BizType:          row.BizType,
+		TransferScene:    row.TransferScene,
+		DebitAccountNo:   row.DebitAccountNo,
+		CreditAccountNo:  row.CreditAccountNo,
+		Amount:           row.Amount,
+		RefundOfTxnNo:    row.RefundOfTxnNo,
+		RefundableAmount: row.RefundableAmount,
+		Status:           row.Status,
+		ErrorCode:        row.ErrorCode,
+		ErrorMsg:         row.ErrorMsg,
+		CreatedAt:        pgTimestampToTime(row.CreatedAt),
+	}
+}
+
+func transferTxnFromByOutTradeRow(row dbsqlc.GetTransferTxnByOutTradeNoRow) service.TransferTxn {
+	return service.TransferTxn{
+		TxnNo:            row.TxnNo,
+		MerchantNo:       row.MerchantNo,
+		OutTradeNo:       row.OutTradeNo,
+		BizType:          row.BizType,
+		TransferScene:    row.TransferScene,
+		DebitAccountNo:   row.DebitAccountNo,
+		CreditAccountNo:  row.CreditAccountNo,
+		Amount:           row.Amount,
+		RefundOfTxnNo:    row.RefundOfTxnNo,
+		RefundableAmount: row.RefundableAmount,
+		Status:           row.Status,
+		ErrorCode:        row.ErrorCode,
+		ErrorMsg:         row.ErrorMsg,
+		CreatedAt:        pgTimestampToTime(row.CreatedAt),
+	}
+}
+
+func transferTxnFromListRow(row dbsqlc.ListTransferTxnsRow) service.TransferTxn {
+	return service.TransferTxn{
+		TxnNo:            row.TxnNo,
+		MerchantNo:       row.MerchantNo,
+		OutTradeNo:       row.OutTradeNo,
+		BizType:          row.BizType,
+		TransferScene:    row.TransferScene,
+		DebitAccountNo:   row.DebitAccountNo,
+		CreditAccountNo:  row.CreditAccountNo,
+		Amount:           row.Amount,
+		RefundOfTxnNo:    row.RefundOfTxnNo,
+		RefundableAmount: row.RefundableAmount,
+		Status:           row.Status,
+		ErrorCode:        row.ErrorCode,
+		ErrorMsg:         row.ErrorMsg,
+		CreatedAt:        pgTimestampToTime(row.CreatedAt),
+	}
+}
+
+func transferTxnFromListByStatusRow(row dbsqlc.ListTransferTxnsByStatusRow) service.TransferTxn {
+	return service.TransferTxn{
+		TxnNo:            row.TxnNo,
+		MerchantNo:       row.MerchantNo,
+		OutTradeNo:       row.OutTradeNo,
+		BizType:          row.BizType,
+		TransferScene:    row.TransferScene,
+		DebitAccountNo:   row.DebitAccountNo,
+		CreditAccountNo:  row.CreditAccountNo,
+		Amount:           row.Amount,
+		RefundOfTxnNo:    row.RefundOfTxnNo,
+		RefundableAmount: row.RefundableAmount,
+		Status:           row.Status,
+		ErrorCode:        row.ErrorCode,
+		ErrorMsg:         row.ErrorMsg,
+		CreatedAt:        pgTimestampToTime(row.CreatedAt),
+	}
+}
+
+func parseUUID(v string) (pgtype.UUID, error) {
+	var u pgtype.UUID
+	if err := u.Scan(strings.TrimSpace(v)); err != nil {
+		return pgtype.UUID{}, err
+	}
+	return u, nil
+}
+
+func mustPGUUID(v uuid.UUID) pgtype.UUID {
+	var out pgtype.UUID
+	copy(out.Bytes[:], v[:])
+	out.Valid = true
+	return out
+}
+
+func parseOptionalUUID(v string) (pgtype.UUID, error) {
+	if strings.TrimSpace(v) == "" {
+		return pgtype.UUID{}, nil
+	}
+	return parseUUID(v)
+}
+
+func nullableText(v string) pgtype.Text {
+	if v == "" {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: v, Valid: true}
+}
+
+func textValue(v string) pgtype.Text {
+	return pgtype.Text{String: v, Valid: true}
+}
+
+func nullableTimestamp(t *time.Time, valid bool) pgtype.Timestamptz {
+	if !valid || t == nil {
+		return pgtype.Timestamptz{}
+	}
+	return pgtype.Timestamptz{Time: t.UTC(), Valid: true}
+}
+
+func pgTimestampPtr(ts pgtype.Timestamptz) *time.Time {
+	if !ts.Valid {
+		return nil
+	}
+	v := ts.Time.UTC()
+	return &v
+}
+
+func pgTimestampToTime(ts pgtype.Timestamptz) time.Time {
+	if !ts.Valid {
+		return time.Time{}
+	}
+	return ts.Time.UTC()
+}
+
+func insertOutboxEventTx(ctx context.Context, tx pgx.Tx, txnUUID pgtype.UUID, merchantNo, outTradeNo string) error {
+	qtx := dbsqlc.New(tx)
+	return qtx.InsertOutboxEvent(ctx, dbsqlc.InsertOutboxEventParams{
+		EventID:    deterministicOutboxEventID(txnUUID, "TxnSucceeded"),
+		TxnNo:      txnUUID,
+		MerchantNo: merchantNo,
+		OutTradeNo: nullIfEmpty(outTradeNo),
+		Status:     "PENDING",
+	})
+}
+
+func deterministicOutboxEventID(txnUUID pgtype.UUID, eventType string) pgtype.UUID {
+	seed := make([]byte, 0, len(txnUUID.Bytes)+1+len(eventType))
+	seed = append(seed, txnUUID.Bytes[:]...)
+	seed = append(seed, ':')
+	seed = append(seed, eventType...)
+	return mustPGUUID(uuid.NewSHA1(uuid.NameSpaceOID, seed))
+}
+
+func isUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23505"
+	}
+	return false
+}
+
+func nullIfEmpty(v string) any {
+	if v == "" {
+		return nil
+	}
+	return v
+}

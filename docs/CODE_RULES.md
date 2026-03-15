@@ -9,7 +9,7 @@
 1. **内部主键统一 UUIDv7**：用于系统内关联、分布式生成、低冲突。
 2. **外部展示/输入优先数字编码**：便于电话沟通、人工录入、客服排障。
 3. **禁止暴露自增主键**：`BIGSERIAL id` 仅数据库内部使用。
-4. **幂等靠业务键，不靠发号算法**：`UNIQUE (merchant_id, out_trade_no)` 必须保留。
+4. **幂等靠业务键，不靠发号算法**：`UNIQUE (merchant_no, out_trade_no)` 必须保留。
 5. **编码不得包含敏感信息**：不嵌入手机号、证件号等 PII。
 
 ---
@@ -19,10 +19,10 @@
 | 对象 | 字段 | 类型 | 示例 | 规则 |
 |---|---|---|---|---|
 | 商户（内部） | `merchant_id` | UUIDv7 | `01956f4e-7b3e-7a4d-9f6b-4d9de4f7c001` | 系统生成，36位标准UUID串 |
-| 商户（外部） | `merchant_no` | 数字编码 | `1000123456789012` | 16位数字，末位Luhn校验 |
+| 商户（外部） | `merchant_no` | 数字编码 | `1000179451308670` | 16位数字，末位Luhn校验 |
 | 客户（内部） | `customer_id` | UUIDv7 | `01956f4e-8c11-71aa-b2d2-2b079f7e1001` | 系统生成，36位标准UUID串 |
-| 客户（外部） | `customer_no` | 数字编码 | `2000123456789018` | 16位数字，末位Luhn校验 |
-| 账户（外部） | `account_no` | 数字编码 | `6217701201001234567` | 19位数字，银行卡风格+Luhn |
+| 客户（外部） | `customer_no` | 数字编码 | `2000154207329815` | 16位数字，末位Luhn校验 |
+| 账户（外部） | `account_no` | 数字编码 | `6217707910011902236` | 19位数字，银行卡风格+Luhn |
 | 交易（内部） | `txn_no` | UUIDv7 | `01956f4e-9d22-73bc-8e11-3f5e9c7a2001` | 系统生成，36位标准UUID串 |
 | 事件（内部） | `event_id` | UUIDv7 | `01956f4e-ae33-75cd-90a2-4c6f9d8b3001` | 系统生成，36位标准UUID串 |
 | 账本（内部） | `book_no` | UUIDv7 | `01956f4e-bf44-77de-a1b3-5d7a0e9c4001` | 系统生成，36位标准UUID串 |
@@ -80,7 +80,7 @@
    - `newMerchantIdV7()` / `newCustomerIdV7()`
    - `newTxnNoV7()` / `newEventIdV7()` / `newBookNoV7()`
    - `newMerchantNo()` / `newCustomerNo()` / `newAccountNo()`
-2. 唯一键冲突重试（最多3次）。
+2. 唯一键冲突直接失败（不做业务侧冲突重试）。
 3. API 网关先做格式校验，再进入业务校验。
 4. 日志统一打点：`merchant_id, merchant_no, customer_id, customer_no, account_no, txn_no, out_trade_no, event_id`。
 
@@ -100,5 +100,5 @@
 - [ ] 商户/客户/账户有数字外码
 - [ ] `account_no` 为19位+Luhn
 - [ ] `merchant_no/customer_no` 为16位+Luhn
-- [ ] 幂等仍为 `(merchant_id, out_trade_no)`
+- [ ] 幂等仍为 `(merchant_no, out_trade_no)`
 - [ ] DDL/API 与本文一致

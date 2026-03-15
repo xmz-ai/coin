@@ -1,0 +1,13 @@
+DROP TABLE IF EXISTS webhook_config;
+DROP TABLE IF EXISTS notify_log;
+DROP TABLE IF EXISTS outbox_event;
+DROP TABLE IF EXISTS account_book_change_log;
+DROP TABLE IF EXISTS account_book;
+DROP TABLE IF EXISTS account_change_log;
+DROP TABLE IF EXISTS txn;
+DROP TABLE IF EXISTS account;
+DROP TABLE IF EXISTS customer;
+DROP TABLE IF EXISTS code_sequence;
+DROP TABLE IF EXISTS merchant_api_credential;
+DROP TABLE IF EXISTS applied_change_counter;
+DROP TABLE IF EXISTS merchant;
