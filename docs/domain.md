@@ -1,11 +1,12 @@
 # Credits 账务系统领域模型细化（Use Case 驱动）
 
-> 基于 `plan.md` 当前已确认原则：
+> 当前已确认原则：
 > - 三户一本：客户、账户、商户、账本
 > - 商户开户自动绑定预算账户与收款账户
-> - 账户支持特性开关（透支/转账/过期）
-> - 仅 `support_expiry=true` 时启用账本；账本是按过期时间切分的一层子账户
-> - `support_expiry=false` 时仅账户记账，不落账本
+> - 账户支持特性开关（透支/转账/账本模式）
+> - 仅 `book_enabled=true` 时启用账本；账户作为父账户，账本作为子账本
+> - `book_enabled=false` 时仅账户记账，不落账本
+> - V1 的账本用途仅为按过期时间切分；冻结等能力后续通过新增账本类型扩展
 
 ---
 
@@ -25,13 +26,13 @@
 ## 1.2 上下文映射
 - 上游（调用方）：业务系统（订单、营销、运营）
 - 下游（被调用）：Webhook 通知消费者
-- 基础设施：MySQL、Redis、Outbox Worker、调度器
+- 基础设施：PostgreSQL、Redis、Outbox Worker、调度器
 
 ## 1.3 商户鉴权上下文
-- 每个商户发放一组 API 凭证（`merchant_id` + `merchant_secret`）。
+- 每个商户发放一组 API 凭证（`merchant_no` + `merchant_secret`）。
 - 所有交易请求在网关/应用层完成签名验签与商户身份确认。
-- 交易域内不再引入独立 `app_id`，统一以 `merchant_id` 作为租户与幂等隔离键。
-- `merchant_secret` 仅用于鉴权，不落交易主单；服务端在凭证表持久化可解密密文（`secret_ciphertext`），当前采用 `key_provider=LOCAL` + `kms_key_id=local_v1`。
+- 交易域内不再引入独立 `app_id`，统一以 `merchant_no` 作为租户与幂等隔离键。
+- `merchant_secret` 仅用于鉴权，不落交易主单；服务端在凭证表持久化可解密密文（`secret_ciphertext`），当前采用 `key_provider=LOCAL` + `kms_key_id=LOCAL_KMS_KEY_V1`。
 
 ---
 
@@ -41,7 +42,8 @@
 
 ### 实体：Merchant
 **主键/标识**
-- `merchant_id`（业务唯一）
+- `merchant_id`（内部 UUID）
+- `merchant_no`（商户编码，对外暴露/关联）
 
 **核心属性**
 - `name`
@@ -55,16 +57,19 @@
 
 ### 实体：MerchantAccountBinding
 **标识**
-- `merchant_id`（唯一）
+- `merchant_no`（唯一）
 
 **属性**
 - `budget_account_no`
 - `receivable_account_no`
 
 **不变量**
-- `uniq(merchant_id)`
+- `uniq(merchant_no)`
 - `budget_account_no != receivable_account_no`
-- 两个账号都必须归属该商户（`owner_type=MERCHANT && owner_id=merchant_id`）
+- 两个账号都必须归属该商户（`owner_type=MERCHANT && owner_id=merchant_no`）
+
+> 当前实现中，绑定信息直接内嵌在 `merchant.budget_account_no / merchant.receivable_account_no`，
+> 暂未单独拆表 `merchant_account_binding`。
 
 ---
 
@@ -73,9 +78,10 @@
 ### 实体：Customer
 **标识**
 - `customer_id`
+- `customer_no`（外部数字编码）
 
 **属性**
-- `merchant_id`（归属商户）
+- `merchant_no`（归属商户）
 - `out_user_id`（商户侧用户ID）
 - `status`（ACTIVE/INACTIVE）
 - `created_at`
@@ -83,7 +89,7 @@
 
 **规则**
 - Customer 必须归属且仅归属一个 Merchant。
-- `out_user_id` 在商户内唯一（`uniq(merchant_id, out_user_id)`）。
+- `out_user_id` 在商户内唯一（`uniq(merchant_no, out_user_id)`）。
 - Customer 可拥有多个 Account。
 - Customer 停用后禁止新交易，但不影响历史账务查询。
 
@@ -110,7 +116,7 @@
 - `allow_overdraft`（bool）
 - `max_overdraft_limit`（BIGINT）
 - `allow_transfer`（bool）
-- `support_expiry`（bool）
+- `book_enabled`（bool）
 
 **状态属性**
 - `status`（ACTIVE/INACTIVE/CLOSED）
@@ -123,7 +129,11 @@
 - `allow_transfer`
 - `allow_credit_in`（是否支持入账）
 - `allow_debit_out`（是否支持出账）
-- `support_expiry`
+- `book_enabled`
+
+说明：
+- `book_enabled` 表示“是否启用父账户+子账本模式”，不是“是否已经存在 book 数据”。
+- `book_enabled=true` 时仍允许懒创建账本（首次入账再建 book）。
 
 ### Account 关键不变量
 1. `allow_overdraft=false` 时，不允许透支（扣减必须满足 `balance >= amount`）。
@@ -134,12 +144,12 @@
 4. `allow_credit_in=false` 的账户禁止作为入账方。
 5. `allow_debit_out=false` 的账户禁止作为出账方。
 6. `status != ACTIVE` 的账户禁止参与借贷方向记账。
-7. 若 `support_expiry=false`，该账户不允许出现任何 `account_book` 记录。
-8. 若 `support_expiry=true`，账户可关联多个账本，且账本只允许一级。
+7. 若 `book_enabled=false`，该账户不允许出现任何 `account_book` 记录。
+8. 若 `book_enabled=true`，账户可关联多个账本，且账本只允许一级。
 
 ---
 
-## 2.4 AccountBook 聚合（仅过期账户）
+## 2.4 AccountBook 聚合（账本模式账户，V1=过期维度）
 
 ### 实体：AccountBook
 **标识**
@@ -147,7 +157,7 @@
 
 **归属属性**
 - `account_no`
-- `expire_at`（到期时间，非空）
+- `expire_at`（到期时间，V1 非空）
 
 **金额属性**
 - `balance`（BIGINT）
@@ -161,7 +171,8 @@
 1. `uniq(account_no, expire_at)`：每个过期时间一个账本。
 2. 账本不能再挂子账本（模型上无 parent_book_no）。
 3. 账本余额汇总应等于该账户所有账本余额总和：
-   - `account.balance = Σ account_book.balance(account_no)`（仅对 `support_expiry=true` 账户成立）。
+   - `account.balance = Σ account_book.balance(account_no)`（仅对 `book_enabled=true` 账户成立）。
+4. V1 不支持冻结状态字段；后续冻结能力通过新增账本类型与账本间转移扩展。
 
 ---
 
@@ -172,12 +183,14 @@
 - `txn_no`
 
 **幂等属性**
-- `merchant_id`
-- `out_trade_no`（`uniq(merchant_id, out_trade_no)`）
+- `merchant_no`
+- `out_trade_no`（`uniq(merchant_no, out_trade_no)`）
 
 **业务属性**
 - `biz_type`（TRANSFER/REFUND）
 - `transfer_scene`（ISSUE/CONSUME/P2P/ADJUST；仅 `biz_type=TRANSFER` 时有值）
+- `debit_account_no`（交易借方账户）
+- `credit_account_no`（交易贷方账户）
 - `amount`
 - `status`（INIT/PROCESSING/PAY_SUCCESS/RECV_SUCCESS/FAILED）
 - `refund_of_txn_no`（退款单关联）
@@ -187,24 +200,23 @@
 - `created_at`
 - `updated_at`
 
-### 实体：TxnDetail（交易明细）
-**关联**
-- `txn_no`
+**边界说明**
+- `txn` 的唯一职责是记录“商户侧发起的交易语义”：
+  - 交易双方、金额、状态、可退金额、幂等关系。
+- `txn` 不承载实际资金路由细节（如 book 级拆分）；资金流向由流水表表达：
+  - `account_change_log`
+  - `account_book_change_log`（仅过期账户）
 
-**记账属性**
-- `debit_account_no`
-- `credit_account_no`
-- `debit_book_no`（可空，仅过期账户）
-- `credit_book_no`（可空，仅过期账户）
-- `amount`
-- `status`
-- `refundable_amount`
+### 实体：TxnDetail（暂不启用）
+- 本期不支持聚合支付/多账户拆分交易，故不建 `txn_detail`。
+- 后续仅在“单笔交易需要多条账户明细”时再引入 `txn_detail`（一单多明细）。
 
 ### Txn 不变量
 1. `amount > 0`
 2. 退款总额不超过原单可退金额：`sum(refunds) <= original.refundable_amount_initial`
-3. `support_expiry=false` 账户对应 detail 中 book_no 必须为空
-4. `support_expiry=true` 且发生过期记账时，book_no 必须非空且属于该 account_no
+3. `biz_type=TRANSFER` 时 `transfer_scene` 必须有值；`biz_type=REFUND` 时 `transfer_scene` 必须为空
+4. `biz_type=REFUND` 时 `refund_of_txn_no` 必填
+5. `refundable_amount >= 0`
 
 ---
 
@@ -215,8 +227,8 @@
 - 所有账户都必须落该流水
 
 ### 实体：AccountBookChangeLog
-- 仅过期账户落账本级流水
-- 用于恢复“按过期时间”余额轨迹
+- 仅 `book_enabled=true` 账户落账本级流水
+- V1 用于恢复“按过期时间”余额轨迹
 
 ### 实体：OutboxEvent
 - 交易域事件（如 `TxnSucceeded`、`TxnFailed`）
@@ -246,17 +258,17 @@
 - 再执行余额变化（账户路径 or 账本路径）
 - 最后写流水与推进状态
 
-## 3.3 ExpiryBookRoutingService
+## 3.3 BookRoutingService（V1: Expiry）
 职责：
-- `support_expiry=true` 账户下选择参与记账的账本集合
+- `book_enabled=true` 账户下选择参与记账的账本集合
 
-策略（待最终拍板）：
+策略（已拍板）：
 - FEFO（先到期先扣）
-- 入账写入指定 `expire_at` 对应账本
+- 入账写入指定 `expire_at` 对应账本（`expire_at` 必填）
 
 ## 3.4 RefundService
 职责：
-- 原单可退金额校验、退款明细生成、余额回补
+- 原单可退金额校验、退款账户集合校验、余额回补
 
 关键规则：
 - `refundable_amount` CAS 递减控制并发退款
@@ -282,10 +294,10 @@
 
 ### 数据流
 - 写入：`merchant`、`account`(2条)、`merchant_account_binding`
-- 输出：`merchant_id` + 两个系统账号
+- 输出：`merchant_no` + 两个系统账号
 
 ### 后置不变量
-- `merchant_id` 存在唯一绑定关系
+- `merchant_no` 存在唯一绑定关系
 - 两个账户均归属于该商户
 
 ---
@@ -301,7 +313,7 @@
 ### 流程
 1. 创建/校验 `customer`
 2. 创建 `account`（可指定 capability）
-3. 若 `support_expiry=true`，不强制预建账本（可按入账懒创建）
+3. 若 `book_enabled=true`，不强制预建账本（可按入账懒创建）
 
 ### 数据流
 - 写入：`customer`、`account`
@@ -317,12 +329,12 @@
 商户向客户发放 credits。
 
 ### 前置
-- `uniq(merchant_id, out_trade_no)` 不冲突
+- `uniq(merchant_no, out_trade_no)` 不冲突
 - 借方账户（通常商户预算账户）满足扣减条件
 - 贷方账户状态 ACTIVE
 
 ### 流程
-1. 创建 `txn(status=INIT)` + `txn_detail`
+1. 创建 `txn(status=INIT)`（主单记录双方账户、金额、幂等键）
 2. 状态 `INIT -> PROCESSING`
 3. 扣借方：
    - 非过期账户：直接减 `account.balance`
@@ -330,12 +342,12 @@
 4. 入贷方：
    - 非过期账户：加 `account.balance`
    - 过期账户：按 `expire_at` 写入/更新 `account_book`，同步更新 `account.balance`
-5. 写 `account_change_log`；必要时写 `book_change_log`
+5. 写 `account_change_log`；必要时写 `account_book_change_log`
 6. 状态 `PROCESSING -> PAY_SUCCESS -> RECV_SUCCESS`
 7. 写 `outbox_event`（成功事件）
 
 ### 数据流
-- 写：`txn`、`txn_detail`、`account`/`account_book`、`account_change_log`、`book_change_log`(可选)、`outbox_event`
+- 写：`txn`、`account`/`account_book`、`account_change_log`、`account_book_change_log`(可选)、`outbox_event`
 - 异步：Worker 读取 outbox，投递 Webhook，写 `notify_log`
 
 ---
@@ -350,7 +362,7 @@
 - 账户能力允许扣减（透支规则）
 
 ### 流程
-与 UC-03 类似，但通常只有单边记账（或配对到系统收口账户）。
+与 UC-03 类似，交易主单仍记录借贷双方账户（可能是显式传入或默认系统账户）。
 
 ### 关键规则
 - 出账能力：`allow_debit_out=true`
@@ -401,15 +413,15 @@
 
 ---
 
-## UC-07 过期账户记账（support_expiry=true）
+## UC-07 账本模式记账（book_enabled=true，V1=过期）
 
 ### 触发
-对过期账户发起扣减/入账。
+对 `book_enabled=true` 账户发起扣减/入账。
 
 ### 扣减路径
-1. 查询账户下有效账本（`expire_at >= now`）
+1. 查询账户下有效账本（`expire_at > now_utc`）
 2. 按 FEFO 排序扣减
-3. 多账本拆分生成多条 `book_change_log`
+3. 多账本拆分生成多条 `account_book_change_log`
 4. 账户汇总余额同步减少
 
 ### 入账路径
@@ -422,7 +434,7 @@
 
 ---
 
-## UC-08 非过期账户记账（support_expiry=false）
+## UC-08 非账本模式记账（book_enabled=false）
 
 ### 触发
 对普通账户发起扣减/入账。
@@ -430,7 +442,7 @@
 ### 路径
 - 仅更新 `account.balance`
 - 仅写 `account_change_log`
-- `txn_detail.debit_book_no/credit_book_no` 必须为空
+- 交易主单不记录 `book_no`，book 级路由信息仅落账本流水
 
 ---
 
@@ -457,8 +469,8 @@ outbox 事件投递失败或超时。
 - 任一阶段异常：`-> FAILED`
 
 ## 5.3 记账路径分流
-- `support_expiry=false`：Account Path
-- `support_expiry=true`：AccountBook Path + Account Summary Sync
+- `book_enabled=false`：Account Path
+- `book_enabled=true`：AccountBook Path + Account Summary Sync（V1 按过期维度）
 
 ---
 
@@ -481,7 +493,7 @@ outbox 事件投递失败或超时。
 - `event_type`
 - `occurred_at`
 - `txn_no`（有交易时）
-- `merchant_id`
+- `merchant_no`
 - `out_trade_no`
 - `operator/system_source`
 
@@ -491,19 +503,20 @@ outbox 事件投递失败或超时。
 
 1. 余额更新：`SELECT ... FOR UPDATE` + 条件更新
 2. 幂等：
-   - 业务幂等：`uniq(merchant_id, out_trade_no)`
+   - 业务幂等：`uniq(merchant_no, out_trade_no)`
    - 执行幂等：`processing_key`（Redis）
 3. 退款并发：`refundable_amount` CAS
 4. 外部副作用：Outbox 与主交易同事务
 
 ---
 
-## 8. 需要最终拍板的实现策略（影响代码实现）
+## 8. 已拍板实现策略（影响代码实现）
 
-1. 幂等 TTL：是否按 `biz_type` 配置化
-2. 透支默认策略：默认关闭 or 按场景模板
-3. 过期扣减策略：FEFO 是否固定
-4. 账本入账策略：必须显式传 `expire_at` 还是支持默认 TTL 推导
+1. 幂等执行键（`processing_key`）TTL：全局统一 TTL（不按 `biz_type` 分配）。
+2. 透支默认策略：默认关闭；但商户初始预算账户例外，默认 `allow_overdraft=true && max_overdraft_limit=0`（无限透支）。
+3. `book_enabled` 仅表示是否启用子账本模式，不表示是否已有 book 数据。
+4. V1 账本扣减策略：固定 FEFO（按 `expire_at`）。
+5. V1 账本入账策略：必须显式传 `expire_at`（不做默认 TTL 推导）。
 
 ---
 
@@ -524,7 +537,6 @@ outbox 事件投递失败或超时。
   - `type BookSelector interface { SelectForDebit(...) }`
 - `domain/transaction.go`
   - `type Txn`
-  - `type TxnDetail`
   - `func (t *Txn) Transit(to TxnStatus) error`
 - `domain/state_machine.go`
   - 状态迁移矩阵与校验器
@@ -533,8 +545,8 @@ outbox 事件投递失败或超时。
 
 ## 10. 验证清单（建模完成后必须通过）
 
-1. 非过期账户交易不会产生任何账本数据。
-2. 过期账户的账本余额汇总恒等于账户余额。
+1. `book_enabled=false` 账户交易不会产生任何账本数据。
+2. `book_enabled=true` 账户的账本余额汇总恒等于账户余额。
 3. 商户开户后一定存在预算+收款绑定，且不可重复绑定。
 4. 转账受 `allow_transfer` 严格约束。
 5. 透支规则与 `max_overdraft_limit` 一致。
@@ -562,7 +574,7 @@ outbox 事件投递失败或超时。
 
 迁移原则：
 1. `BUDGET/COLLECTION` 必须可映射到商户系统账户（开户自动创建）。
-2. legacy 的 `PERSONAL/PUBLIC` 差异，不通过“是否有账本”硬编码区分，而通过 `support_expiry` 显式控制。
+2. legacy 的 `PERSONAL/PUBLIC` 差异，不通过“是否有账本”硬编码区分，而通过 `book_enabled` 显式控制。
 3. 禁付/可转账等能力，不由账户类型推断，全部落到 capability 字段。
 
 ### 11.2 子账户类型与币种借鉴
@@ -610,43 +622,42 @@ outbox 事件投递失败或超时。
 
 新模型落地：
 - 仍保留“账户路径/账本路径”分流能力
-- 但分流条件统一为 `support_expiry`，不再按账户大类硬编码
-- 对于混合路径（过期账户与非过期账户互转）明确支持，并在 `txn_detail` 保留 book_no 可空字段
+- 但分流条件统一为 `book_enabled`，不再按账户大类硬编码
+- 对于混合路径（`book_enabled=true/false` 账户互转）明确支持；book 级拆分只体现在流水，不写入交易主单
 
 ---
 
-## 12. Use Case 输入/输出契约（应用层接口草案）
+## 12. Use Case 输入/输出契约（Service 层接口草案）
 
 > 本节用于把领域规则下沉到接口契约，便于后续 API/Service 实现。
 
 ### 12.1 UC-01 商户开户
 
 **Input**
-- `merchant_id`
 - `name`
 - `operator`
 
 **Output**
-- `merchant_id`
+- `merchant_no`
 - `merchant_secret`（仅返回一次）
 - `budget_account_no`
 - `receivable_account_no`
 
 **校验**
-- `merchant_id` 唯一
+- `merchant_no` 唯一
 - 绑定关系唯一且预算/收款账号不同
 
 ### 12.2 UC-03 发放（Credit）
 
 **Input**
-- `merchant_id`
+- `merchant_no`
 - `out_trade_no`
 - `debit_account_no`（通常预算账户）
 - `credit_account_no`
 - `amount`
 - `biz_type=TRANSFER`
 - `transfer_scene=ISSUE`
-- `expire_at`（可选，仅当入账方 `support_expiry=true` 时可传）
+- `expire_at`（当入账方 `book_enabled=true` 时必填）
 
 **Output**
 - `txn_no`
@@ -664,7 +675,7 @@ outbox 事件投递失败或超时。
 ### 12.3 UC-04 扣减（Debit）
 
 **Input**
-- `merchant_id`
+- `merchant_no`
 - `out_trade_no`
 - `debit_account_no`
 - `amount`
@@ -679,19 +690,19 @@ outbox 事件投递失败或超时。
 **校验**
 - 出账能力：`allow_debit_out=true`
 - 透支能力规则（`allow_overdraft/max_overdraft_limit`）
-- 非过期账户不得产生 book_no
+- 非过期账户不得产生 `account_book_change_log`
 
 ### 12.4 UC-05 转账（Transfer）
 
 **Input**
-- `merchant_id`
+- `merchant_no`
 - `out_trade_no`
 - `from_account_no`
 - `to_account_no`
 - `amount`
 - `biz_type=TRANSFER`
 - `transfer_scene=P2P`
-- `to_expire_at`（可选，目标账户支持过期时可传）
+- `to_expire_at`（当目标账户 `book_enabled=true` 时必填）
 
 **Output**
 - `txn_no`
@@ -709,7 +720,7 @@ outbox 事件投递失败或超时。
 ### 12.5 UC-06 退款（Refund）
 
 **Input**
-- `merchant_id`
+- `merchant_no`
 - `out_trade_no`
 - `refund_of_txn_no`
 - `amount`
@@ -732,8 +743,8 @@ outbox 事件投递失败或超时。
 ## 13. 迁移时必须保留的规则清单（来自 coin-core）
 
 1. **双层幂等**：请求幂等 + 执行幂等必须同时存在。
-2. **退款并发控制**：原单与明细可退金额必须 CAS 递减。
+2. **退款并发控制**：原单 `txn.refundable_amount` 必须 CAS 递减，保证并发不超退。
 3. **账户/账本双流水**：过期账户需同时有账户汇总流水与账本流水。
 4. **状态机守卫**：禁止绕过状态机直接改终态。
 5. **补偿闭环**：交易补偿与通知重试都要保留。
-6. **可观测字段统一**：日志/事件至少包含 `txn_no/merchant_id/out_trade_no/account_no`。
+6. **可观测字段统一**：日志/事件至少包含 `txn_no/merchant_no/out_trade_no/account_no`。

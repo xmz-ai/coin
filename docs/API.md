@@ -1,9 +1,9 @@
 # Credits Ledger - API 设计（HTTP）
 
-> 与 `plan.md` / `domain.md` / `DDL.md` 对齐。
-> - 租户键：`merchant_id`
-> - 请求幂等：`merchant_id + out_trade_no`
-> - 鉴权：`merchant_id + merchant_secret` 签名
+> 与 `DDL.md` / `CODE_RULES.md` / `requirements-design.md` 对齐。
+> - 对外租户键：`merchant_no`
+> - 请求幂等：`merchant_no + out_trade_no`
+> - 鉴权：`merchant_no + merchant_secret` 签名
 > - Customer 必须归属 Merchant
 
 ---
@@ -15,7 +15,7 @@
 - `txn_no/event_id/book_no` 返回值为**纯 UUIDv7**，不带 `txn_`/`evt_`/`book_` 前缀
 
 ## 1.2 Header
-- `X-Merchant-Id`: 商户内部ID（UUIDv7，必填）
+- `X-Merchant-No`: 商户外部编码（16位数字，必填）
 - `X-Timestamp`: 毫秒时间戳（必填）
 - `X-Nonce`: 随机串（必填）
 - `X-Signature`: 签名值（必填）
@@ -24,7 +24,7 @@
 ## 1.3 签名规则（建议）
 
 签名明文：
-`METHOD + "\n" + PATH + "\n" + X-Merchant-Id + "\n" + X-Timestamp + "\n" + X-Nonce + "\n" + SHA256(body)`
+`METHOD + "\n" + PATH + "\n" + X-Merchant-No + "\n" + X-Timestamp + "\n" + X-Nonce + "\n" + SHA256(body)`
 
 签名算法：
 - `HMAC-SHA256(secret, signing_string)`
@@ -32,10 +32,15 @@
 
 安全要求：
 1. `X-Timestamp` 与服务端时间差不超过 5 分钟。
-2. `X-Nonce` 在时间窗口内不可重放（Redis 去重）。
-3. `merchant_secret` 仅商户侧持有；服务端存可解密密文（`secret_ciphertext`），验签时使用 `key_provider=LOCAL` + `kms_key_id=local_v1` 解密后参与 HMAC 计算。
+2. `X-Nonce` 参与签名计算，不做服务端去重校验。
+3. `merchant_secret` 仅商户侧持有；服务端存可解密密文（`secret_ciphertext`），验签时使用 `key_provider=LOCAL` + `kms_key_id=LOCAL_KMS_KEY_V1` 解密后参与 HMAC 计算。
 
-## 1.4 响应结构
+## 1.4 字段口径统一（重要）
+- 对外鉴权与接口字段统一使用：`merchant_no`（Header: `X-Merchant-No`）。
+- 除 `merchant` 主表外，业务关联字段统一使用：`merchant_no`。
+- 签名串第三段固定为 `X-Merchant-No`，不得使用 `merchant_id`。
+
+## 1.5 响应结构
 
 ```json
 {
@@ -56,25 +61,60 @@
 }
 ```
 
-## 1.5 错误码（核心）
+## 1.6 错误码（核心）
 - `SUCCESS`
 - `INVALID_PARAM`
 - `INVALID_SIGNATURE`
+- `AUTH_HEADER_MISSING`
+- `TIMESTAMP_OUT_OF_WINDOW`
 - `MERCHANT_NOT_FOUND`
 - `MERCHANT_DISABLED`
 - `CUSTOMER_NOT_FOUND`
 - `CUSTOMER_NOT_BELONG_TO_MERCHANT`
 - `ACCOUNT_NOT_FOUND`
+- `OUT_USER_ID_NOT_FOUND`
+- `ACCOUNT_RESOLVE_CONFLICT`
 - `ACCOUNT_DISABLED`
 - `ACCOUNT_FORBID_DEBIT`
 - `ACCOUNT_FORBID_CREDIT`
 - `ACCOUNT_FORBID_TRANSFER`
 - `INSUFFICIENT_BALANCE`
-- `IDEMPOTENT_CONFLICT`
+- `DUPLICATE_OUT_TRADE_NO`
 - `TXN_NOT_FOUND`
 - `REFUND_AMOUNT_EXCEEDED`
 - `TXN_STATUS_INVALID`
 - `INTERNAL_ERROR`
+
+## 1.7 错误码与 HTTP 语义映射
+
+| code | HTTP | retryable | client_action |
+|---|---:|---|---|
+| `SUCCESS` | 200 | 否 | 正常处理返回结果 |
+| `INVALID_PARAM` | 400 | 否 | 修正请求参数后重试 |
+| `INVALID_SIGNATURE` | 401 | 否 | 修正签名实现/密钥后重试 |
+| `AUTH_HEADER_MISSING` | 400 | 否 | 补齐鉴权 Header 后重试 |
+| `TIMESTAMP_OUT_OF_WINDOW` | 401 | 否 | 校准客户端时钟并重试 |
+| `MERCHANT_NOT_FOUND` | 404 | 否 | 检查商户号配置 |
+| `MERCHANT_DISABLED` | 403 | 否 | 联系平台恢复商户状态 |
+| `CUSTOMER_NOT_FOUND` | 404 | 否 | 先创建客户或修正标识 |
+| `CUSTOMER_NOT_BELONG_TO_MERCHANT` | 403 | 否 | 修正商户与客户归属关系 |
+| `ACCOUNT_NOT_FOUND` | 404 | 否 | 检查账号或先开户 |
+| `OUT_USER_ID_NOT_FOUND` | 404 | 否 | 修正 user_id 或先创建该用户对应账户 |
+| `ACCOUNT_RESOLVE_CONFLICT` | 409 | 否 | 保留一种定位方式或修正为同一账户 |
+| `ACCOUNT_DISABLED` | 403 | 否 | 更换可用账户或恢复账户状态 |
+| `ACCOUNT_FORBID_DEBIT` | 403 | 否 | 更换允许出账账户或调整能力 |
+| `ACCOUNT_FORBID_CREDIT` | 403 | 否 | 更换允许入账账户或调整能力 |
+| `ACCOUNT_FORBID_TRANSFER` | 403 | 否 | 更换允许转账账户或调整能力 |
+| `INSUFFICIENT_BALANCE` | 409 | 否 | 充值/调账后重试 |
+| `DUPLICATE_OUT_TRADE_NO` | 409 | 否 | 重复下单不被支持，请查单或更换 `out_trade_no` |
+| `TXN_NOT_FOUND` | 404 | 否 | 检查 `txn_no/out_trade_no` |
+| `REFUND_AMOUNT_EXCEEDED` | 409 | 否 | 降低退款金额或查询可退余额 |
+| `TXN_STATUS_INVALID` | 409 | 否 | 按状态机允许路径操作 |
+| `INTERNAL_ERROR` | 500 | 是 | 先按 `out_trade_no` 查单确认；确认需新交易时使用新 `out_trade_no` |
+
+说明：
+- 建议客户端仅在 `retryable=true` 或网络超时场景重试。
+- V1 不支持使用同一 `out_trade_no` 重复下单。
 
 ---
 
@@ -99,7 +139,6 @@ Response:
   "code": "SUCCESS",
   "message": "ok",
   "data": {
-    "merchant_id": "01956f4e-7b3e-7a4d-9f6b-4d9de4f7c001",
     "merchant_no": "1000123456789012",
     "merchant_secret": "msk_xxx_only_once",
     "budget_account_no": "6217701201001234567",
@@ -114,7 +153,8 @@ Response:
 
 ## 2.2 轮转商户密钥
 
-- `POST /api/v1/merchants/{merchant_id}/secret:rotate`
+- `POST /api/v1/merchants/{merchant_no}/secret:rotate`
+- 生效规则：新密钥生效后旧密钥立即失效
 
 Request:
 
@@ -131,14 +171,39 @@ Response:
   "code": "SUCCESS",
   "message": "ok",
   "data": {
-    "merchant_id": "01956f4e-7b3e-7a4d-9f6b-4d9de4f7c001",
+    "merchant_no": "1000123456789012",
     "merchant_secret": "msk_new_only_once",
     "secret_version": 2
   }
 }
 ```
 
-## 2.3 创建客户
+## 2.3 查询当前商户配置
+
+- `GET /api/v1/merchants/me`
+
+Response:
+
+```json
+{
+  "code": "SUCCESS",
+  "message": "ok",
+  "data": {
+    "merchant_no": "1000123456789012",
+    "name": "Demo Merchant",
+    "status": "ACTIVE",
+    "budget_account_no": "6217701201001234567",
+    "receivable_account_no": "6217701202001234566",
+    "secret_version": 2
+  }
+}
+```
+
+说明：
+- 仅返回当前鉴权商户配置。
+- `secret_version` 在商户尚未轮转密钥时可能为 `0`。
+
+## 2.4 创建客户
 
 - `POST /api/v1/customers`
 
@@ -157,9 +222,7 @@ Response:
   "code": "SUCCESS",
   "message": "ok",
   "data": {
-    "customer_id": "01956f4e-8c11-71aa-b2d2-2b079f7e1001",
     "customer_no": "2000123456789018",
-    "merchant_id": "01956f4e-7b3e-7a4d-9f6b-4d9de4f7c001",
     "merchant_no": "1000123456789012",
     "out_user_id": "u_90001"
   }
@@ -167,8 +230,30 @@ Response:
 ```
 
 说明：
-- `merchant_id` 从鉴权上下文获取，不接受 body 覆盖。
-- `out_user_id` 在商户内唯一（`merchant_id + out_user_id`）。
+- `merchant_no` 从鉴权上下文获取，不接受 body 覆盖。
+- `out_user_id` 在商户内唯一（`merchant_no + out_user_id`）。
+
+## 2.5 按 out_user_id 查询客户
+
+- `GET /api/v1/customers/by-out-user-id/{out_user_id}`
+
+Response:
+
+```json
+{
+  "code": "SUCCESS",
+  "message": "ok",
+  "data": {
+    "customer_no": "2000123456789018",
+    "merchant_no": "1000123456789012",
+    "out_user_id": "u_90001",
+    "status": "ACTIVE"
+  }
+}
+```
+
+说明：
+- 仅允许查询当前鉴权商户下客户。
 
 ---
 
@@ -183,7 +268,7 @@ Request:
 ```json
 {
   "owner_type": "CUSTOMER",
-  "owner_id": "01956f4e-8c11-71aa-b2d2-2b079f7e1001",
+  "owner_out_user_id": "u_90001",
   "account_scene": "CUSTOM",
   "currency": "CREDIT",
   "capability": {
@@ -192,7 +277,7 @@ Request:
     "allow_transfer": true,
     "allow_credit_in": true,
     "allow_debit_out": true,
-    "support_expiry": false
+    "book_enabled": false
   }
 }
 ```
@@ -210,9 +295,11 @@ Response:
 ```
 
 校验：
-1. `owner_type=CUSTOMER` 时，`owner_id` 必须归属当前商户。
-2. `allow_overdraft=true && max_overdraft_limit=0` 表示无限透支。
-3. `max_overdraft_limit < 0` 非法。
+1. `owner_type=CUSTOMER` 时，`owner_out_user_id` 或 `owner_customer_no` 二选一，且必须归属当前商户。
+2. 同时传 `owner_out_user_id` 与 `owner_customer_no` 且解析不一致，返回 `ACCOUNT_RESOLVE_CONFLICT`。
+3. `allow_overdraft=true && max_overdraft_limit=0` 表示无限透支。
+4. `max_overdraft_limit < 0` 非法。
+5. `book_enabled=true` 表示启用父账户+子账本模式（不是“已有账本数据”），V1 子账本仅按 `expire_at` 维度切分。
 
 ## 3.2 更新账户能力
 
@@ -246,7 +333,7 @@ Response:
   "data": {
     "account_no": "6217701201001234567",
     "balance": 120000,
-    "support_expiry": true,
+    "book_enabled": true,
     "book_balance_sum": 120000
   }
 }
@@ -255,6 +342,12 @@ Response:
 ---
 
 ## 4. 交易接口
+
+账户定位通用规则：
+1. `*_account_no` 与对应 `*_out_user_id` 可二选一。
+2. `*_out_user_id` 仅用于定位商户下客户账户，不用于定位商户系统账户。
+3. 同侧同时传两者时：若解析结果一致则允许通过；若解析不一致返回 `ACCOUNT_RESOLVE_CONFLICT`。
+4. 发放接口（`/transactions/credit`）使用简化字段 `user_id` 表示入账用户。
 
 ## 4.1 发放（Issue，TRANSFER 场景）
 
@@ -265,12 +358,9 @@ Request:
 ```json
 {
   "out_trade_no": "ord_90001",
-  "biz_type": "TRANSFER",
-  "transfer_scene": "ISSUE",
-  "debit_account_no": "6217701202001234566",
-  "credit_account_no": "6217701201001234567",
+  "user_id": "u_90001",
   "amount": 1000,
-  "expire_at": "2026-12-31T23:59:59.000Z"
+  "expire_in_days": 30
 }
 ```
 
@@ -281,16 +371,25 @@ Response:
   "code": "SUCCESS",
   "data": {
     "txn_no": "01956f4e-9d22-73bc-8e11-3f5e9c7a2001",
-    "status": "RECV_SUCCESS"
+    "status": "INIT"
   }
 }
 ```
 
+说明：
+- HTTP 状态码为 `201 Created`
+- 建单成功即返回，服务端优先进程内异步执行；轮询 worker 仅用于故障恢复兜底
+
 校验：
-1. 幂等键：`merchant_id + out_trade_no`
-2. 借方需 `allow_debit_out=true`
-3. 贷方需 `allow_credit_in=true`
-4. 若贷方 `support_expiry=true`，可使用/创建 `account_book`
+1. 幂等键：`merchant_no + out_trade_no`
+2. `biz_type/transfer_scene` 由服务端固定写入 `TRANSFER/ISSUE`，请求无需传入
+3. 账户定位（借方）：优先 `debit_account_no`，仍未提供则默认商户 `budget_account_no`
+4. 账户定位（贷方）：优先 `credit_account_no`，否则 `user_id`（ISSUE 不提供贷方则报 `INVALID_PARAM`）
+5. 同时传 `credit_account_no` 与 `user_id` 且解析不一致，返回 `ACCOUNT_RESOLVE_CONFLICT`
+6. 借方需 `allow_debit_out=true`
+7. 贷方需 `allow_credit_in=true`
+8. 若贷方 `book_enabled=true`，`expire_in_days` 必填（`>0`），服务端按 `now_utc + expire_in_days` 计算到期时间
+9. `user_id` 未匹配客户账户时返回 `OUT_USER_ID_NOT_FOUND`（语义：按 `user_id` 解析不到账户）
 
 ## 4.2 扣减（Consume，TRANSFER 场景）
 
@@ -303,7 +402,7 @@ Request:
   "out_trade_no": "ord_90002",
   "biz_type": "TRANSFER",
   "transfer_scene": "CONSUME",
-  "debit_account_no": "6217701201001234567",
+  "debit_out_user_id": "u_90001",
   "amount": 300
 }
 ```
@@ -315,13 +414,22 @@ Response:
   "code": "SUCCESS",
   "data": {
     "txn_no": "01956f4e-9d22-73bc-8e11-3f5e9c7a2002",
-    "status": "RECV_SUCCESS"
+    "status": "INIT"
   }
 }
 ```
 
+说明：
+- HTTP 状态码为 `201 Created`
+- 建单成功即返回，服务端优先进程内异步执行；轮询 worker 仅用于故障恢复兜底
+
 校验：
+- 账户定位（借方）：优先 `debit_account_no`，否则 `debit_out_user_id`（CONSUME 借方必填其一）
+- 账户定位（贷方）：优先 `credit_account_no`，否则 `credit_out_user_id`，仍未提供则默认当前商户 `receivable_account_no`
+- 同侧同时传 `*_account_no` 与 `*_out_user_id` 且解析不一致，返回 `ACCOUNT_RESOLVE_CONFLICT`
 - `allow_debit_out=true`
+- 显式或解析出的贷方需 `allow_credit_in=true`
+- `*_out_user_id` 未匹配客户/默认账户时返回 `OUT_USER_ID_NOT_FOUND`
 - 透支规则：
   - `allow_overdraft=false` => `balance >= amount`
   - `allow_overdraft=true && max_overdraft_limit>0` => `balance + limit >= amount`
@@ -338,19 +446,27 @@ Request:
   "out_trade_no": "ord_90003",
   "biz_type": "TRANSFER",
   "transfer_scene": "P2P",
-  "from_account_no": "6217701201001234567",
-  "to_account_no": "6217701202001234566",
+  "from_out_user_id": "u_90001",
+  "to_out_user_id": "u_90002",
   "amount": 500,
   "to_expire_at": "2026-12-31T23:59:59.000Z"
 }
 ```
 
 校验：
-1. `from.allow_transfer=true`
-2. `from.allow_debit_out=true`
-3. `to.allow_credit_in=true`
-4. 币种一致
-5. 转出转入同事务
+1. 账户定位：`from_account_no` 或 `from_out_user_id` 二选一；`to_account_no` 或 `to_out_user_id` 二选一
+2. P2P 不走商户默认账户兜底，from/to 两侧必须可解析
+3. 同侧同时传 `*_account_no` 与 `*_out_user_id` 且解析不一致，返回 `ACCOUNT_RESOLVE_CONFLICT`
+4. `from.allow_transfer=true`
+5. `from.allow_debit_out=true`
+6. `to.allow_credit_in=true`
+7. 若 `to.book_enabled=true`，`to_expire_at` 必填，并按该时间使用/创建 `account_book`
+8. 币种一致
+9. 转出转入同事务
+
+说明：
+- HTTP 状态码为 `201 Created`
+- 建单成功即返回，服务端优先进程内异步执行；轮询 worker 仅用于故障恢复兜底
 
 ## 4.4 退款（Refund）
 
@@ -376,7 +492,9 @@ Request:
 校验：
 1. 原单存在且可退
 2. `amount <= origin.refundable_amount`
-3. 并发退款通过 CAS 保证不超退
+3. 若传 `refund_breakdown`，则其金额总和必须等于 `amount`
+4. 若传 `refund_breakdown`，其中 `account_no` 必须属于原交易涉及的账户集合
+5. 并发退款通过 CAS 保证不超退
 
 ## 4.5 查询交易
 
@@ -385,19 +503,110 @@ Request:
 
 返回主单状态、明细、错误码、可退余额。
 
+## 4.6 交易列表查询
+
+分页口径：
+- 使用 seek 分页，稳定排序键为 `created_at DESC, txn_no DESC`。
+- `page_token` 编码上一页最后一条记录的 `(created_at, txn_no)`。
+- 下一页条件按同序比较：`(created_at, txn_no) < (:created_at, :txn_no)`。
+
+- `GET /api/v1/transactions`
+
+Query 参数（示例）：
+- `start_time` / `end_time`（UTC）
+- `status`（如 `RECV_SUCCESS/FAILED`）
+- `transfer_scene`（`ISSUE/CONSUME/P2P`）
+- `out_user_id`（可选，用于按客户维度过滤）
+- `page_size`（默认 20，最大 200）
+- `page_token`（游标，编码 `created_at + txn_no`）
+
+Response:
+
+```json
+{
+  "code": "SUCCESS",
+  "data": {
+    "items": [
+      {
+        "txn_no": "01956f4e-9d22-73bc-8e11-3f5e9c7a2001",
+        "out_trade_no": "ord_90001",
+        "transfer_scene": "ISSUE",
+        "amount": 1000,
+        "status": "RECV_SUCCESS",
+        "created_at": "2026-03-12T11:30:00.000Z"
+      }
+    ],
+    "next_page_token": "eyJvZmZzZXQiOjIwfQ=="
+  }
+}
+```
+
+## 4.7 接入方最小请求示例
+
+### 示例 A：最简发放（商户预算账户默认出账）
+
+- 场景：商户给 `user_id=u_90001` 发放 1000 分。
+- 要点：不传 `debit_account_no`，默认走商户 `budget_account_no`。
+
+```json
+{
+  "out_trade_no": "ord_issue_min_001",
+  "user_id": "u_90001",
+  "amount": 1000
+}
+```
+
+### 示例 B：最简扣减（商户收款账户默认入账）
+
+- 场景：从 `out_user_id=u_90001` 扣减 300 分。
+- 要点：不传 `credit_account_no`，默认入商户 `receivable_account_no`。
+
+```json
+{
+  "out_trade_no": "ord_consume_min_001",
+  "biz_type": "TRANSFER",
+  "transfer_scene": "CONSUME",
+  "debit_out_user_id": "u_90001",
+  "amount": 300
+}
+```
+
+### 示例 C：P2P 转账（用户到用户）
+
+- 场景：`u_90001` 向 `u_90002` 转 500 分。
+- 要点：P2P 不走商户默认账户，from/to 必须可解析。
+
+```json
+{
+  "out_trade_no": "ord_p2p_min_001",
+  "biz_type": "TRANSFER",
+  "transfer_scene": "P2P",
+  "from_out_user_id": "u_90001",
+  "to_out_user_id": "u_90002",
+  "amount": 500
+}
+```
+
 ---
 
 ## 5. 幂等与重试语义
 
 ## 5.1 幂等语义
-- Key: `(merchant_id, out_trade_no)`
-- 相同请求体重复提交：返回首次成功结果
-- 相同 key 但请求体关键字段不一致：返回 `IDEMPOTENT_CONFLICT`
+- Key: `(merchant_no, out_trade_no)`
+- 执行幂等键（`processing_key`）TTL：全局统一 TTL
+- 同 key 后续重复请求：一律返回 HTTP 409（不支持重复下单）
+- 重复请求拒绝时不得产生任何副作用（余额/流水/状态均不变）
 
-## 5.2 客户端超时重试建议
-1. 先用相同 `out_trade_no` 重试原接口。
-2. 或走“按 out_trade_no 查询”确认状态。
-3. 禁止客户端随机更换 `out_trade_no` 盲重试。
+## 5.2 重复请求处理规则
+
+- 同一 `merchant_no` 下，若 `out_trade_no` 已存在：直接返回 HTTP 409。
+- 不再区分“相同请求体重放”与“关键字段冲突”两种分支。
+- 重复请求返回后，系统状态必须保持不变（无额外记账、无额外流水、无状态推进）。
+
+## 5.3 客户端超时重试建议
+1. 不要使用相同 `out_trade_no` 重试下单接口（会返回 409）。
+2. 通过“按 out_trade_no 查询”确认原请求处理结果。
+3. 仅在业务上确认需要新交易时，使用新的 `out_trade_no` 发起新请求。
 
 ---
 
@@ -415,7 +624,7 @@ Request:
   "event_id": "01956f4e-ae33-75cd-90a2-4c6f9d8b3001",
   "event_type": "TxnSucceeded",
   "occurred_at": "2026-03-12T11:30:00.000Z",
-  "merchant_id": "01956f4e-7b3e-7a4d-9f6b-4d9de4f7c001",
+  "merchant_no": "1000123456789012",
   "txn_no": "01956f4e-9d22-73bc-8e11-3f5e9c7a2001",
   "out_trade_no": "ord_90001",
   "biz_type": "TRANSFER",
@@ -427,9 +636,50 @@ Request:
 
 ## 6.3 回调验签（建议）
 - Header: `X-Event-Id`, `X-Signature`, `X-Timestamp`
-- 签名算法同 API，secret 使用商户 webhook secret（建议与 API secret 分离）
+- 签名算法同 API，V1 复用商户 API `merchant_secret`
 
-## 6.4 重试策略
+## 6.4 Webhook 配置管理
+
+### 6.4.1 查询配置
+- `GET /api/v1/webhooks/config`
+
+### 6.4.2 更新配置
+- `PUT /api/v1/webhooks/config`
+
+Request:
+
+```json
+{
+  "url": "https://merchant.example.com/coin/webhook",
+  "enabled": true,
+  "retry_policy": {
+    "max_retries": 8,
+    "backoff": ["1m", "5m", "15m", "1h", "6h"]
+  }
+}
+```
+
+Response:
+
+```json
+{
+  "code": "SUCCESS",
+  "data": {
+    "url": "https://merchant.example.com/coin/webhook",
+    "enabled": true,
+    "retry_policy": {
+      "max_retries": 8,
+      "backoff": ["1m", "5m", "15m", "1h", "6h"]
+    }
+  }
+}
+```
+
+约束：
+- 仅允许操作当前鉴权商户配置。
+- `url` 必须为 `https`。
+
+## 6.5 重试策略
 - 指数退避（如 1m/5m/15m/1h/6h）
 - 达上限后标记 DEAD，进入人工处理队列
 
@@ -442,24 +692,24 @@ Request:
 - 任一步异常：`-> FAILED`
 
 ## 7.2 事务边界
-- 单笔交易内：主单、明细、余额、流水、outbox 同事务。
+- 单笔交易内：主单、余额、流水、outbox 同事务。
 - Webhook 投递异步执行，不阻塞主交易提交。
 
 ---
 
 ## 8. API 与 DDL 字段映射要点
 
-1. `merchant_id` 从鉴权上下文注入到 `txn.merchant_id`。
+1. `merchant_no` 从鉴权上下文解析后直接写入 `txn.merchant_no`。
 2. `out_trade_no` 写入 `txn.out_trade_no` 并受唯一键保护。
-3. `support_expiry=true` 时，detail 可落 `debit_book_no/credit_book_no`。
+3. `book_enabled=true` 时，book 路径记录在 `account_book` / `account_book_change_log`。
 4. 所有金额字段统一 int64（最小货币单位）。
 
 ---
 
 ## 9. 最小测试矩阵（接口层）
 
-1. 鉴权失败：签名错误、时间戳过期、nonce 重放。
-2. 幂等：重复请求一致返回；冲突请求报 `IDEMPOTENT_CONFLICT`。
+1. 鉴权失败：签名错误、时间戳过期、鉴权头缺失。
+2. 幂等：同 `out_trade_no` 重复请求统一返回 `DUPLICATE_OUT_TRADE_NO`（HTTP 409），且无副作用。
 3. 能力约束：
    - `allow_credit_in=false` 不能入账
    - `allow_debit_out=false` 不能出账
@@ -468,6 +718,6 @@ Request:
    - 有限透支成功/失败边界
    - 无限透支（limit=0）可通过
 5. 过期路径：
-   - `support_expiry=false` 不落账本
-   - `support_expiry=true` 落账本并与账户汇总对齐
+   - `book_enabled=false` 不落账本
+   - `book_enabled=true` 落账本并与账户汇总对齐
 6. 退款并发：多并发退款不超原单可退金额。

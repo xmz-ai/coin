@@ -1,30 +1,3 @@
-# Credits Ledger - DDL 设计（PostgreSQL 16）
-
-> 与 `docs/domain.md` 对齐（V1）
-> - 交易租户键：`merchant_no`
-> - 幂等键：`uniq(merchant_no, out_trade_no)`
-> - Customer/Account/Txn/Outbox/Webhook 均以 `merchant_no` 关联商户
-> - V1 不引入 `txn_detail`
-> - 不配置数据库外键（`FOREIGN KEY/REFERENCES`）
-
----
-
-## 1. 设计约束
-
-1. 金额使用 `BIGINT`（最小货币单位）。
-2. 时间使用 `TIMESTAMPTZ`（UTC）。
-3. 主业务键：
-   - 内部标识：`merchant_id/customer_id/txn_no/event_id/book_no`（UUID）
-   - 业务租户键：`merchant_no`
-4. 数据关联完整性由应用层与任务巡检保障（DDL 不配置外键约束）。
-
----
-
-## 2. 核心表结构（与 migrations/000001_init.up.sql 一致）
-
-## 2.1 merchant
-
-```sql
 CREATE TABLE IF NOT EXISTS merchant (
   merchant_id UUID PRIMARY KEY,
   merchant_no VARCHAR(16) NOT NULL UNIQUE,
@@ -37,11 +10,7 @@ CREATE TABLE IF NOT EXISTS merchant (
   CHECK (budget_account_no ~ '^[0-9]{19}$'),
   CHECK (receivable_account_no ~ '^[0-9]{19}$')
 );
-```
 
-## 2.2 merchant_api_credential
-
-```sql
 CREATE TABLE IF NOT EXISTS merchant_api_credential (
   credential_id BIGSERIAL PRIMARY KEY,
   merchant_no VARCHAR(16) NOT NULL,
@@ -54,11 +23,7 @@ CREATE TABLE IF NOT EXISTS merchant_api_credential (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (merchant_no, secret_version)
 );
-```
 
-## 2.2.1 code_sequence（编码发号序列表）
-
-```sql
 CREATE TABLE IF NOT EXISTS code_sequence (
   code_type VARCHAR(32) NOT NULL,
   scope_key VARCHAR(32) NOT NULL,
@@ -68,11 +33,7 @@ CREATE TABLE IF NOT EXISTS code_sequence (
   PRIMARY KEY (code_type, scope_key),
   CHECK (next_value >= 0)
 );
-```
 
-## 2.3 customer
-
-```sql
 CREATE TABLE IF NOT EXISTS customer (
   customer_id UUID PRIMARY KEY,
   customer_no VARCHAR(16) NOT NULL UNIQUE,
@@ -84,11 +45,7 @@ CREATE TABLE IF NOT EXISTS customer (
   CHECK (customer_no ~ '^[0-9]{16}$'),
   CHECK (merchant_no ~ '^[0-9]{16}$')
 );
-```
 
-## 2.4 account
-
-```sql
 CREATE TABLE IF NOT EXISTS account (
   account_no VARCHAR(19) PRIMARY KEY,
   merchant_no VARCHAR(16) NOT NULL,
@@ -111,11 +68,7 @@ CREATE TABLE IF NOT EXISTS account (
 
 CREATE INDEX IF NOT EXISTS idx_account_merchant ON account(merchant_no);
 CREATE INDEX IF NOT EXISTS idx_account_customer ON account(merchant_no, customer_no);
-```
 
-## 2.5 txn
-
-```sql
 CREATE TABLE IF NOT EXISTS txn (
   txn_no UUID PRIMARY KEY,
   merchant_no VARCHAR(16) NOT NULL,
@@ -147,11 +100,7 @@ CREATE TABLE IF NOT EXISTS txn (
 CREATE INDEX IF NOT EXISTS idx_txn_status_updated ON txn(status, updated_at);
 CREATE INDEX IF NOT EXISTS idx_txn_refund_of ON txn(refund_of_txn_no);
 CREATE INDEX IF NOT EXISTS idx_txn_merchant_created ON txn(merchant_no, created_at DESC, txn_no DESC);
-```
 
-## 2.6 account_change_log
-
-```sql
 CREATE TABLE IF NOT EXISTS account_change_log (
   change_id BIGSERIAL PRIMARY KEY,
   txn_no UUID NOT NULL,
@@ -164,11 +113,7 @@ CREATE TABLE IF NOT EXISTS account_change_log (
 
 CREATE INDEX IF NOT EXISTS idx_account_change_log_txn_no ON account_change_log(txn_no);
 CREATE INDEX IF NOT EXISTS idx_account_change_log_account_created ON account_change_log(account_no, created_at DESC);
-```
 
-## 2.7 account_book
-
-```sql
 CREATE TABLE IF NOT EXISTS account_book (
   book_no UUID PRIMARY KEY,
   account_no VARCHAR(19) NOT NULL,
@@ -178,11 +123,7 @@ CREATE TABLE IF NOT EXISTS account_book (
   UNIQUE (account_no, expire_at),
   CHECK (account_no ~ '^[0-9]{19}$')
 );
-```
 
-## 2.8 account_book_change_log
-
-```sql
 CREATE TABLE IF NOT EXISTS account_book_change_log (
   change_id BIGSERIAL PRIMARY KEY,
   txn_no UUID NOT NULL,
@@ -197,11 +138,7 @@ CREATE TABLE IF NOT EXISTS account_book_change_log (
 
 CREATE INDEX IF NOT EXISTS idx_account_book_change_log_txn_no ON account_book_change_log(txn_no);
 CREATE INDEX IF NOT EXISTS idx_account_book_change_log_account_created ON account_book_change_log(account_no, created_at DESC);
-```
 
-## 2.9 outbox_event
-
-```sql
 CREATE TABLE IF NOT EXISTS outbox_event (
   event_id UUID PRIMARY KEY,
   txn_no UUID NOT NULL,
@@ -217,11 +154,7 @@ CREATE TABLE IF NOT EXISTS outbox_event (
 );
 
 CREATE INDEX IF NOT EXISTS idx_outbox_event_status_retry ON outbox_event(status, next_retry_at);
-```
 
-## 2.10 notify_log
-
-```sql
 CREATE TABLE IF NOT EXISTS notify_log (
   notify_id BIGSERIAL PRIMARY KEY,
   txn_no UUID NOT NULL,
@@ -229,11 +162,7 @@ CREATE TABLE IF NOT EXISTS notify_log (
   retries INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-```
 
-## 2.11 webhook_config
-
-```sql
 CREATE TABLE IF NOT EXISTS webhook_config (
   merchant_no VARCHAR(16) PRIMARY KEY,
   url TEXT NOT NULL,
@@ -242,11 +171,7 @@ CREATE TABLE IF NOT EXISTS webhook_config (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CHECK (merchant_no ~ '^[0-9]{16}$')
 );
-```
 
-## 2.12 applied_change_counter
-
-```sql
 CREATE TABLE IF NOT EXISTS applied_change_counter (
   id SMALLINT PRIMARY KEY CHECK (id = 1),
   value BIGINT NOT NULL DEFAULT 0
@@ -255,13 +180,3 @@ CREATE TABLE IF NOT EXISTS applied_change_counter (
 INSERT INTO applied_change_counter(id, value)
 VALUES (1, 0)
 ON CONFLICT (id) DO NOTHING;
-```
-
----
-
-## 3. 与 domain.md 的一致性说明
-
-1. `txn` 仅记录交易语义（双方账户、金额、状态、可退金额），不承载 book 路由细节。
-2. V1 不引入 `txn_detail`，book 级路径由流水表表达。
-3. `book_enabled=false` 不应产生 `account_book*` 数据（应用层与测试保障）。
-4. 幂等键为 `(merchant_no, out_trade_no)`。
