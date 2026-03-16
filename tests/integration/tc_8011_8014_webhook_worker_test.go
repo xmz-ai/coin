@@ -120,6 +120,69 @@ func TestTC8012WebhookWorkerDeliverySuccessWithSignature(t *testing.T) {
 	}
 }
 
+func TestTC8012WebhookWorkerRefundEventType(t *testing.T) {
+	repo, pool, secrets, merchantNo := setupWebhookWorkerFixture(t)
+
+	if _, err := pool.Exec(context.Background(), `DELETE FROM outbox_event`); err != nil {
+		t.Fatalf("clear outbox events failed: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `DELETE FROM notify_log`); err != nil {
+		t.Fatalf("clear notify logs failed: %v", err)
+	}
+
+	refundTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a8112"
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO txn (
+			txn_no, merchant_no, out_trade_no, biz_type, transfer_scene,
+			debit_account_no, credit_account_no, amount, status,
+			refund_of_txn_no, refundable_amount, created_at, updated_at
+		)
+		VALUES ($1::uuid, $2, 'ord_8012_refund', 'REFUND', NULL, NULL, NULL, 30, 'RECV_SUCCESS', NULL, 0, NOW(), NOW())
+	`, refundTxnNo, merchantNo); err != nil {
+		t.Fatalf("insert refund txn failed: %v", err)
+	}
+	refundEventID := "01956f4e-9d22-73bc-8e11-3f5e9c7a8f12"
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO outbox_event (
+			event_id, txn_no, merchant_no, out_trade_no, status, retry_count, next_retry_at, created_at, updated_at
+		)
+		VALUES ($1::uuid, $2::uuid, $3, 'ord_8012_refund', 'PENDING', 0, NULL, NOW(), NOW())
+	`, refundEventID, refundTxnNo, merchantNo); err != nil {
+		t.Fatalf("insert refund outbox event failed: %v", err)
+	}
+
+	gotEventType := ""
+	hit := int32(0)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hit, 1)
+		defer r.Body.Close()
+
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode body failed: %v", err)
+		}
+		if v, _ := payload["event_type"].(string); v != "" {
+			gotEventType = v
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	if err := repo.UpsertWebhookConfig(merchantNo, ts.URL+"/coin/webhook", true); err != nil {
+		t.Fatalf("upsert webhook config failed: %v", err)
+	}
+
+	worker := service.NewWebhookWorker(repo, secrets, 8, 100, []int{1, 5})
+	worker.RunOnce(nil)
+
+	if atomic.LoadInt32(&hit) != 1 {
+		t.Fatalf("expected webhook endpoint hit once")
+	}
+	if gotEventType != "TxnRefunded" {
+		t.Fatalf("expected event_type TxnRefunded, got %s", gotEventType)
+	}
+}
+
 func TestTC8013WebhookWorkerRetryAndDead(t *testing.T) {
 	repo, pool, secrets, merchantNo := setupWebhookWorkerFixture(t)
 

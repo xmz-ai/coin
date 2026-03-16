@@ -18,9 +18,9 @@ type StageProcessingGuardWithError interface {
 }
 
 type TransferAsyncProcessor struct {
-	repo   Repository
-	guard  StageProcessingGuard
-	queue  chan string
+	repo  Repository
+	guard StageProcessingGuard
+	queue chan string
 }
 
 func NewTransferAsyncProcessor(repo Repository) *TransferAsyncProcessor {
@@ -79,7 +79,6 @@ func (p *TransferAsyncProcessor) Process(txnNo string) error {
 		case TxnStatusInit:
 			ok, err := p.tryStage(txn.TxnNo, TxnStatusInit)
 			if err != nil {
-				_ = p.fail(txnNo, TxnStatusInit, "PROCESSING_KEY_UNAVAILABLE", err.Error())
 				return err
 			}
 			if !ok {
@@ -96,7 +95,6 @@ func (p *TransferAsyncProcessor) Process(txnNo string) error {
 		case TxnStatusProcessing:
 			ok, err := p.tryStage(txn.TxnNo, TxnStatusProcessing)
 			if err != nil {
-				_ = p.fail(txnNo, TxnStatusProcessing, "PROCESSING_KEY_UNAVAILABLE", err.Error())
 				return err
 			}
 			if !ok {
@@ -124,7 +122,6 @@ func (p *TransferAsyncProcessor) Process(txnNo string) error {
 		case TxnStatusPaySuccess:
 			ok, err := p.tryStage(txn.TxnNo, TxnStatusPaySuccess)
 			if err != nil {
-				_ = p.fail(txnNo, TxnStatusPaySuccess, "PROCESSING_KEY_UNAVAILABLE", err.Error())
 				return err
 			}
 			if !ok {

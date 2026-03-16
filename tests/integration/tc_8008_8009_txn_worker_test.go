@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -10,6 +11,18 @@ import (
 	idpkg "github.com/xmz-ai/coin/internal/platform/id"
 	"github.com/xmz-ai/coin/internal/service"
 )
+
+type failingStageGuard struct {
+	err error
+}
+
+func (g failingStageGuard) TryBegin(txnNo, stage string) bool {
+	return false
+}
+
+func (g failingStageGuard) TryBeginWithError(txnNo, stage string) (bool, error) {
+	return false, g.err
+}
 
 func TestTC8008TransferWorkerProcessesInitTxn(t *testing.T) {
 	repo, _, merchant, debitAccountNo, creditAccountNo := setupWorkerTransferFixture(t)
@@ -133,6 +146,45 @@ func TestTC8010TransferEnqueueFastPathWithoutPollingWorker(t *testing.T) {
 	}
 	got, _ := repo.GetTransferTxn(txn.TxnNo)
 	t.Fatalf("expected fast-path enqueue to finish without polling worker, got status=%s", got.Status)
+}
+
+func TestTC8010GuardUnavailableDoesNotFailTxn(t *testing.T) {
+	repo, _, merchant, debitAccountNo, creditAccountNo := setupWorkerTransferFixture(t)
+
+	transferSvc := service.NewTransferService(repo, idpkg.NewFixedUUIDProvider([]string{
+		"01956f4e-9d22-73bc-8e11-3f5e9c7a8811",
+	}))
+	txn, err := transferSvc.Submit(service.TransferRequest{
+		MerchantNo:       merchant.MerchantNo,
+		OutTradeNo:       "ord_8010_guard_unavailable",
+		BizType:          "TRANSFER",
+		TransferScene:    service.SceneP2P,
+		DebitAccountNo:   debitAccountNo,
+		CreditAccountNo:  creditAccountNo,
+		Amount:           100,
+		RefundableAmount: 100,
+		Status:           service.TxnStatusInit,
+	})
+	if err != nil {
+		t.Fatalf("submit txn failed: %v", err)
+	}
+
+	guardErr := errors.New("processing guard unavailable")
+	processor := service.NewTransferAsyncProcessorWithGuard(repo, failingStageGuard{err: guardErr})
+	if err := processor.Process(txn.TxnNo); err == nil {
+		t.Fatalf("expected process error on guard unavailable")
+	}
+
+	got, ok := repo.GetTransferTxn(txn.TxnNo)
+	if !ok {
+		t.Fatalf("txn not found")
+	}
+	if got.Status != service.TxnStatusInit {
+		t.Fatalf("expected txn status remain INIT on guard error, got %s", got.Status)
+	}
+	if got.ErrorCode != "" {
+		t.Fatalf("expected empty error_code, got %s", got.ErrorCode)
+	}
 }
 
 func setupWorkerTransferFixture(t *testing.T) (*db.Repository, *pgxpool.Pool, service.Merchant, string, string) {

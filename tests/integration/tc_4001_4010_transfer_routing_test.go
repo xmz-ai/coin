@@ -145,6 +145,25 @@ func TestTC4008ForbidTransferRejected(t *testing.T) {
 	}
 }
 
+func TestTC4008P2PToSideForbidTransferAllowed(t *testing.T) {
+	repo, m, from, to := setupTransferAccounts(t)
+	repo.UpdateAccountCapabilities(to, true, true, false)
+	svc := service.NewTransferRoutingService(repo)
+
+	res, err := svc.Resolve(service.TransferRoutingRequest{
+		MerchantNo:      m.MerchantNo,
+		Scene:           service.SceneP2P,
+		DebitAccountNo:  from,
+		CreditAccountNo: to,
+	})
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	if res.DebitAccountNo != from || res.CreditAccountNo != to {
+		t.Fatalf("unexpected routing result: %+v", res)
+	}
+}
+
 func TestTC4009StateMachineValidTransitions(t *testing.T) {
 	sm := service.NewTxnStateMachine(service.TxnStatusInit)
 	if err := sm.Transit(service.TxnStatusProcessing); err != nil {

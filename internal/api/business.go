@@ -559,7 +559,7 @@ func (h *BusinessHandler) handleTransfer(c *gin.Context) {
 }
 
 func (h *BusinessHandler) handleRefund(c *gin.Context) {
-	if h == nil || h.transfer == nil || h.asyncTransfer == nil || h.merchants == nil {
+	if h == nil || h.transfer == nil || h.asyncTransfer == nil || h.merchants == nil || h.query == nil {
 		writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "business handler not configured")
 		return
 	}
@@ -604,6 +604,27 @@ func (h *BusinessHandler) handleRefund(c *gin.Context) {
 	if len(req.Breakdown) > 0 && sum != req.Amount {
 		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "refund_breakdown amount mismatch")
 		return
+	}
+	if len(req.Breakdown) > 0 {
+		origin, found := h.query.GetByTxnNo(req.RefundOfTxnNo)
+		if !found || origin.MerchantNo != merchantNo {
+			writeRefundError(c, service.ErrTxnNotFound)
+			return
+		}
+		allowed := map[string]struct{}{}
+		if v := strings.TrimSpace(origin.DebitAccountNo); v != "" {
+			allowed[v] = struct{}{}
+		}
+		if v := strings.TrimSpace(origin.CreditAccountNo); v != "" {
+			allowed[v] = struct{}{}
+		}
+		for _, item := range req.Breakdown {
+			accountNo := strings.TrimSpace(item.AccountNo)
+			if _, ok := allowed[accountNo]; !ok {
+				writeRefundError(c, service.ErrRefundAccountNotInOrigin)
+				return
+			}
+		}
 	}
 
 	txn, err := h.transfer.Submit(service.TransferRequest{
