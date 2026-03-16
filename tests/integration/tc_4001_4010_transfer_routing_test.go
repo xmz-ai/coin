@@ -4,9 +4,9 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/xmz-ai/coin/internal/db"
 	idpkg "github.com/xmz-ai/coin/internal/platform/id"
 	"github.com/xmz-ai/coin/internal/service"
-	"github.com/xmz-ai/coin/tests/support/memoryrepo"
 )
 
 func TestTC4001IssueDefaultsDebitToBudget(t *testing.T) {
@@ -188,9 +188,9 @@ func TestTC4011CrossMerchantAccountRejected(t *testing.T) {
 	}
 }
 
-func setupTransferAccounts(t *testing.T) (*memoryrepo.Repo, service.Merchant, string, string) {
+func setupTransferAccounts(t *testing.T) (*db.Repository, service.Merchant, string, string) {
 	t.Helper()
-	repo := memoryrepo.New()
+	repo := db.NewRepository(setupPostgresPool(t))
 	ids := idpkg.NewFixedUUIDProvider([]string{
 		"01956f4e-7b3e-7a4d-9f6b-4d9de4f7c001",
 		"01956f4e-8c11-71aa-b2d2-2b079f7e1001",
@@ -208,7 +208,11 @@ func setupTransferAccounts(t *testing.T) (*memoryrepo.Repo, service.Merchant, st
 	}
 	from := "6217701201004001001"
 	to := "6217701201004001002"
-	repo.CreateAccount(service.Account{AccountNo: from, MerchantNo: m.MerchantNo, CustomerNo: c.CustomerNo, AccountType: "CUSTOMER", AllowDebitOut: true, AllowCreditIn: true, AllowTransfer: true})
-	repo.CreateAccount(service.Account{AccountNo: to, MerchantNo: m.MerchantNo, CustomerNo: c.CustomerNo, AccountType: "CUSTOMER", AllowDebitOut: true, AllowCreditIn: true, AllowTransfer: true})
+	if err := repo.CreateAccount(service.Account{AccountNo: from, MerchantNo: m.MerchantNo, CustomerNo: c.CustomerNo, AccountType: "CUSTOMER", AllowDebitOut: true, AllowCreditIn: true, AllowTransfer: true}); err != nil {
+		t.Fatalf("create from account failed: %v", err)
+	}
+	if err := repo.CreateAccount(service.Account{AccountNo: to, MerchantNo: m.MerchantNo, CustomerNo: c.CustomerNo, AccountType: "CUSTOMER", AllowDebitOut: true, AllowCreditIn: true, AllowTransfer: true}); err != nil {
+		t.Fatalf("create to account failed: %v", err)
+	}
 	return repo, m, from, to
 }

@@ -645,6 +645,7 @@ SELECT
   COALESCE(t.transfer_scene, '') AS transfer_scene,
   COALESCE(t.debit_account_no, '') AS debit_account_no,
   COALESCE(t.credit_account_no, '') AS credit_account_no,
+  t.credit_expire_at,
   t.amount,
   COALESCE(t.refund_of_txn_no::text, '')::text AS refund_of_txn_no,
   t.refundable_amount,
@@ -665,6 +666,7 @@ type GetTransferTxnByNoRow struct {
 	TransferScene    string
 	DebitAccountNo   string
 	CreditAccountNo  string
+	CreditExpireAt   pgtype.Date
 	Amount           int64
 	RefundOfTxnNo    string
 	RefundableAmount int64
@@ -685,6 +687,7 @@ func (q *Queries) GetTransferTxnByNo(ctx context.Context, txnNo pgtype.UUID) (Ge
 		&i.TransferScene,
 		&i.DebitAccountNo,
 		&i.CreditAccountNo,
+		&i.CreditExpireAt,
 		&i.Amount,
 		&i.RefundOfTxnNo,
 		&i.RefundableAmount,
@@ -705,6 +708,7 @@ SELECT
   COALESCE(t.transfer_scene, '') AS transfer_scene,
   COALESCE(t.debit_account_no, '') AS debit_account_no,
   COALESCE(t.credit_account_no, '') AS credit_account_no,
+  t.credit_expire_at,
   t.amount,
   COALESCE(t.refund_of_txn_no::text, '')::text AS refund_of_txn_no,
   t.refundable_amount,
@@ -731,6 +735,7 @@ type GetTransferTxnByOutTradeNoRow struct {
 	TransferScene    string
 	DebitAccountNo   string
 	CreditAccountNo  string
+	CreditExpireAt   pgtype.Date
 	Amount           int64
 	RefundOfTxnNo    string
 	RefundableAmount int64
@@ -751,6 +756,7 @@ func (q *Queries) GetTransferTxnByOutTradeNo(ctx context.Context, arg GetTransfe
 		&i.TransferScene,
 		&i.DebitAccountNo,
 		&i.CreditAccountNo,
+		&i.CreditExpireAt,
 		&i.Amount,
 		&i.RefundOfTxnNo,
 		&i.RefundableAmount,
@@ -1134,6 +1140,7 @@ SELECT
   COALESCE(t.transfer_scene, '') AS transfer_scene,
   COALESCE(t.debit_account_no, '') AS debit_account_no,
   COALESCE(t.credit_account_no, '') AS credit_account_no,
+  t.credit_expire_at,
   t.amount,
   COALESCE(t.refund_of_txn_no::text, '')::text AS refund_of_txn_no,
   t.refundable_amount,
@@ -1199,6 +1206,7 @@ type ListTransferTxnsRow struct {
 	TransferScene    string
 	DebitAccountNo   string
 	CreditAccountNo  string
+	CreditExpireAt   pgtype.Date
 	Amount           int64
 	RefundOfTxnNo    string
 	RefundableAmount int64
@@ -1241,6 +1249,7 @@ func (q *Queries) ListTransferTxns(ctx context.Context, arg ListTransferTxnsPara
 			&i.TransferScene,
 			&i.DebitAccountNo,
 			&i.CreditAccountNo,
+			&i.CreditExpireAt,
 			&i.Amount,
 			&i.RefundOfTxnNo,
 			&i.RefundableAmount,
@@ -1268,6 +1277,7 @@ SELECT
   COALESCE(t.transfer_scene, '') AS transfer_scene,
   COALESCE(t.debit_account_no, '') AS debit_account_no,
   COALESCE(t.credit_account_no, '') AS credit_account_no,
+  t.credit_expire_at,
   t.amount,
   COALESCE(t.refund_of_txn_no::text, '')::text AS refund_of_txn_no,
   t.refundable_amount,
@@ -1294,6 +1304,7 @@ type ListTransferTxnsByStatusRow struct {
 	TransferScene    string
 	DebitAccountNo   string
 	CreditAccountNo  string
+	CreditExpireAt   pgtype.Date
 	Amount           int64
 	RefundOfTxnNo    string
 	RefundableAmount int64
@@ -1320,6 +1331,7 @@ func (q *Queries) ListTransferTxnsByStatus(ctx context.Context, arg ListTransfer
 			&i.TransferScene,
 			&i.DebitAccountNo,
 			&i.CreditAccountNo,
+			&i.CreditExpireAt,
 			&i.Amount,
 			&i.RefundOfTxnNo,
 			&i.RefundableAmount,

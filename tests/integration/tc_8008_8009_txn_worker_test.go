@@ -1,16 +1,18 @@
 package integration
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/xmz-ai/coin/internal/db"
 	idpkg "github.com/xmz-ai/coin/internal/platform/id"
 	"github.com/xmz-ai/coin/internal/service"
-	"github.com/xmz-ai/coin/tests/support/memoryrepo"
 )
 
 func TestTC8008TransferWorkerProcessesInitTxn(t *testing.T) {
-	repo, merchant, debitAccountNo, creditAccountNo := setupWorkerTransferFixture(t)
+	repo, _, merchant, debitAccountNo, creditAccountNo := setupWorkerTransferFixture(t)
 
 	transferSvc := service.NewTransferService(repo, idpkg.NewFixedUUIDProvider([]string{
 		"01956f4e-9d22-73bc-8e11-3f5e9c7a8801",
@@ -53,12 +55,16 @@ func TestTC8008TransferWorkerProcessesInitTxn(t *testing.T) {
 }
 
 func TestTC8009TransferWorkerContinuesFromPaySuccess(t *testing.T) {
-	repo, merchant, debitAccountNo, creditAccountNo := setupWorkerTransferFixture(t)
+	repo, pool, merchant, debitAccountNo, creditAccountNo := setupWorkerTransferFixture(t)
 
 	// Simulate debit stage already completed.
 	debit, _ := repo.GetAccount(debitAccountNo)
 	debit.Balance = 900
-	repo.CreateAccount(debit)
+	if _, err := pool.Exec(context.Background(), `
+		UPDATE account SET balance = $1 WHERE account_no = $2
+	`, debit.Balance, debit.AccountNo); err != nil {
+		t.Fatalf("seed debit balance failed: %v", err)
+	}
 
 	if err := repo.CreateTransferTxn(service.TransferTxn{
 		TxnNo:            "01956f4e-9d22-73bc-8e11-3f5e9c7a8809",
@@ -94,7 +100,7 @@ func TestTC8009TransferWorkerContinuesFromPaySuccess(t *testing.T) {
 }
 
 func TestTC8010TransferEnqueueFastPathWithoutPollingWorker(t *testing.T) {
-	repo, merchant, debitAccountNo, creditAccountNo := setupWorkerTransferFixture(t)
+	repo, _, merchant, debitAccountNo, creditAccountNo := setupWorkerTransferFixture(t)
 
 	transferSvc := service.NewTransferService(repo, idpkg.NewFixedUUIDProvider([]string{
 		"01956f4e-9d22-73bc-8e11-3f5e9c7a8810",
@@ -129,10 +135,11 @@ func TestTC8010TransferEnqueueFastPathWithoutPollingWorker(t *testing.T) {
 	t.Fatalf("expected fast-path enqueue to finish without polling worker, got status=%s", got.Status)
 }
 
-func setupWorkerTransferFixture(t *testing.T) (*memoryrepo.Repo, service.Merchant, string, string) {
+func setupWorkerTransferFixture(t *testing.T) (*db.Repository, *pgxpool.Pool, service.Merchant, string, string) {
 	t.Helper()
 
-	repo := memoryrepo.New()
+	pool := setupPostgresPool(t)
+	repo := db.NewRepository(pool)
 	ids := idpkg.NewFixedUUIDProvider([]string{
 		"01956f4e-7b3e-7a4d-9f6b-4d9de4f7c880",
 		"01956f4e-8c11-71aa-b2d2-2b079f7e1880",
@@ -152,7 +159,7 @@ func setupWorkerTransferFixture(t *testing.T) (*memoryrepo.Repo, service.Merchan
 
 	debitAccountNo := "6217701201008008001"
 	creditAccountNo := "6217701201008008002"
-	repo.CreateAccount(service.Account{
+	if err := repo.CreateAccount(service.Account{
 		AccountNo:     debitAccountNo,
 		MerchantNo:    merchant.MerchantNo,
 		CustomerNo:    customer.CustomerNo,
@@ -161,8 +168,10 @@ func setupWorkerTransferFixture(t *testing.T) (*memoryrepo.Repo, service.Merchan
 		AllowCreditIn: true,
 		AllowTransfer: true,
 		Balance:       1000,
-	})
-	repo.CreateAccount(service.Account{
+	}); err != nil {
+		t.Fatalf("create debit account failed: %v", err)
+	}
+	if err := repo.CreateAccount(service.Account{
 		AccountNo:     creditAccountNo,
 		MerchantNo:    merchant.MerchantNo,
 		CustomerNo:    customer.CustomerNo,
@@ -171,7 +180,9 @@ func setupWorkerTransferFixture(t *testing.T) (*memoryrepo.Repo, service.Merchan
 		AllowCreditIn: true,
 		AllowTransfer: true,
 		Balance:       0,
-	})
+	}); err != nil {
+		t.Fatalf("create credit account failed: %v", err)
+	}
 
-	return repo, merchant, debitAccountNo, creditAccountNo
+	return repo, pool, merchant, debitAccountNo, creditAccountNo
 }

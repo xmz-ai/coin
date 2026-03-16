@@ -2,6 +2,7 @@ package integration
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,15 +11,18 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/xmz-ai/coin/internal/api"
+	"github.com/xmz-ai/coin/internal/db"
 	idpkg "github.com/xmz-ai/coin/internal/platform/id"
+	"github.com/xmz-ai/coin/internal/platform/security"
 	"github.com/xmz-ai/coin/internal/service"
-	"github.com/xmz-ai/coin/tests/support/memoryrepo"
 )
 
 const (
@@ -27,7 +31,7 @@ const (
 )
 
 func TestTC1101APICreditSuccess(t *testing.T) {
-	r, repo, merchantNo, secret := newTxnAPITestServer(t)
+	r, repo, _, merchantNo, secret := newTxnAPITestServer(t)
 
 	req := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/credit", merchantNo, secret, "nonce-1101", map[string]any{
 		"out_trade_no": "ord_1101",
@@ -60,7 +64,7 @@ func TestTC1101APICreditSuccess(t *testing.T) {
 }
 
 func TestTC1102APICreditDuplicateReturns409(t *testing.T) {
-	r, repo, merchantNo, secret := newTxnAPITestServer(t)
+	r, repo, _, merchantNo, secret := newTxnAPITestServer(t)
 
 	first := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/credit", merchantNo, secret, "nonce-1102-1", map[string]any{
 		"out_trade_no": "ord_1102",
@@ -94,14 +98,13 @@ func TestTC1102APICreditDuplicateReturns409(t *testing.T) {
 }
 
 func TestTC1102APICreditBookEnabledRequiresExpireInDays(t *testing.T) {
-	r, repo, merchantNo, secret := newTxnAPITestServer(t)
+	r, repo, pool, merchantNo, secret := newTxnAPITestServer(t)
 
 	creditAccount, ok := repo.GetAccount(testCreditAccountNo)
 	if !ok {
 		t.Fatalf("credit account not found")
 	}
-	creditAccount.BookEnabled = true
-	repo.CreateAccount(creditAccount)
+	setAccountBookEnabled(t, pool, creditAccount.AccountNo, true)
 
 	req := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/credit", merchantNo, secret, "nonce-1102-book", map[string]any{
 		"out_trade_no": "ord_1102_book",
@@ -120,14 +123,14 @@ func TestTC1102APICreditBookEnabledRequiresExpireInDays(t *testing.T) {
 }
 
 func TestTC1102APICreditBookEnabledNormalizesExpireInDaysToUTCDate(t *testing.T) {
-	r, repo, merchantNo, secret := newTxnAPITestServer(t)
+	r, repo, pool, merchantNo, secret := newTxnAPITestServer(t)
 
 	creditAccount, ok := repo.GetAccount(testCreditAccountNo)
 	if !ok {
 		t.Fatalf("credit account not found")
 	}
 	creditAccount.BookEnabled = true
-	repo.CreateAccount(creditAccount)
+	setAccountBookEnabled(t, pool, creditAccount.AccountNo, true)
 
 	req := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/credit", merchantNo, secret, "nonce-1102-book-norm", map[string]any{
 		"out_trade_no":    "ord_1102_book_norm",
@@ -159,7 +162,7 @@ func TestTC1102APICreditBookEnabledNormalizesExpireInDaysToUTCDate(t *testing.T)
 }
 
 func TestTC1103APIGetByOutTradeNo(t *testing.T) {
-	r, _, merchantNo, secret := newTxnAPITestServer(t)
+	r, _, _, merchantNo, secret := newTxnAPITestServer(t)
 
 	createReq := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/credit", merchantNo, secret, "nonce-1103-1", map[string]any{
 		"out_trade_no": "ord_1103",
@@ -187,7 +190,7 @@ func TestTC1103APIGetByOutTradeNo(t *testing.T) {
 }
 
 func TestTC1104APIGetByTxnNo(t *testing.T) {
-	r, _, merchantNo, secret := newTxnAPITestServer(t)
+	r, _, _, merchantNo, secret := newTxnAPITestServer(t)
 
 	createReq := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/credit", merchantNo, secret, "nonce-1104-1", map[string]any{
 		"out_trade_no": "ord_1104",
@@ -218,7 +221,7 @@ func TestTC1104APIGetByTxnNo(t *testing.T) {
 }
 
 func TestTC1105APIListTransactionsSeekPagination(t *testing.T) {
-	r, _, merchantNo, secret := newTxnAPITestServer(t)
+	r, _, _, merchantNo, secret := newTxnAPITestServer(t)
 
 	for i := 1; i <= 3; i++ {
 		outTradeNo := "ord_1105_" + strconv.Itoa(i)
@@ -301,7 +304,7 @@ func TestTC1105APIListTransactionsSeekPagination(t *testing.T) {
 }
 
 func TestTC1106APIDebitSuccessAndDuplicate409(t *testing.T) {
-	r, _, merchantNo, secret := newTxnAPITestServer(t)
+	r, _, _, merchantNo, secret := newTxnAPITestServer(t)
 
 	req := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/debit", merchantNo, secret, "nonce-1106-1", map[string]any{
 		"out_trade_no":     "ord_1106",
@@ -334,7 +337,7 @@ func TestTC1106APIDebitSuccessAndDuplicate409(t *testing.T) {
 }
 
 func TestTC1107APITransferForbidTransfer(t *testing.T) {
-	r, repo, merchantNo, secret := newTxnAPITestServer(t)
+	r, repo, _, merchantNo, secret := newTxnAPITestServer(t)
 	repo.UpdateAccountCapabilities(testDebitAccountNo, true, true, false)
 
 	req := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/transfer", merchantNo, secret, "nonce-1107-1", map[string]any{
@@ -357,7 +360,7 @@ func TestTC1107APITransferForbidTransfer(t *testing.T) {
 }
 
 func TestTC1108APITransferSuccess(t *testing.T) {
-	r, _, merchantNo, secret := newTxnAPITestServer(t)
+	r, _, _, merchantNo, secret := newTxnAPITestServer(t)
 
 	req := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/transfer", merchantNo, secret, "nonce-1108-1", map[string]any{
 		"out_trade_no":    "ord_1108",
@@ -400,7 +403,7 @@ func TestTC1108APITransferSuccess(t *testing.T) {
 }
 
 func TestTC1109APIRefundSuccess(t *testing.T) {
-	r, repo, merchantNo, secret := newTxnAPITestServer(t)
+	r, repo, _, merchantNo, secret := newTxnAPITestServer(t)
 
 	originReq := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/transfer", merchantNo, secret, "nonce-1109-origin", map[string]any{
 		"out_trade_no":    "ord_1109_origin",
@@ -465,7 +468,7 @@ func TestTC1109APIRefundSuccess(t *testing.T) {
 }
 
 func TestTC1110APIRefundAmountExceeded(t *testing.T) {
-	r, repo, merchantNo, secret := newTxnAPITestServer(t)
+	r, repo, _, merchantNo, secret := newTxnAPITestServer(t)
 
 	originReq := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/transfer", merchantNo, secret, "nonce-1110-origin", map[string]any{
 		"out_trade_no":    "ord_1110_origin",
@@ -535,7 +538,7 @@ func TestTC1110APIRefundAmountExceeded(t *testing.T) {
 }
 
 func TestTC1111APIRefundBreakdownInvalid(t *testing.T) {
-	r, _, merchantNo, secret := newTxnAPITestServer(t)
+	r, _, _, merchantNo, secret := newTxnAPITestServer(t)
 
 	originReq := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/transfer", merchantNo, secret, "nonce-1111-origin", map[string]any{
 		"out_trade_no":    "ord_1111_origin",
@@ -568,7 +571,7 @@ func TestTC1111APIRefundBreakdownInvalid(t *testing.T) {
 }
 
 func TestTC1112APIRefundConcurrentNoOverRefund(t *testing.T) {
-	r, repo, merchantNo, secret := newTxnAPITestServer(t)
+	r, repo, _, merchantNo, secret := newTxnAPITestServer(t)
 
 	originReq := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/transfer", merchantNo, secret, "nonce-1112-origin", map[string]any{
 		"out_trade_no":    "ord_1112_origin",
@@ -683,7 +686,7 @@ func TestTC1112APIRefundConcurrentNoOverRefund(t *testing.T) {
 }
 
 func TestTC1113APIRefundCrossMerchantOriginRejected(t *testing.T) {
-	r, repo, merchantNo, secret := newTxnAPITestServer(t)
+	r, repo, _, merchantNo, secret := newTxnAPITestServer(t)
 
 	otherMerchantSvc := service.NewMerchantService(repo, idpkg.NewFixedUUIDProvider([]string{
 		"01956f4e-9d22-73bc-8e11-3f5e9c7a2f13",
@@ -753,7 +756,7 @@ func TestTC1113APIRefundCrossMerchantOriginRejected(t *testing.T) {
 }
 
 func TestTC1114APIDebitByOutUserIDSuccess(t *testing.T) {
-	r, repo, merchantNo, secret := newTxnAPITestServer(t)
+	r, repo, _, merchantNo, secret := newTxnAPITestServer(t)
 
 	req := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/debit", merchantNo, secret, "nonce-1114-1", map[string]any{
 		"out_trade_no":      "ord_1114",
@@ -787,7 +790,7 @@ func TestTC1114APIDebitByOutUserIDSuccess(t *testing.T) {
 }
 
 func TestTC1115APIDebitResolveConflict(t *testing.T) {
-	r, _, merchantNo, secret := newTxnAPITestServer(t)
+	r, _, _, merchantNo, secret := newTxnAPITestServer(t)
 
 	req := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/debit", merchantNo, secret, "nonce-1115-1", map[string]any{
 		"out_trade_no":      "ord_1115",
@@ -807,7 +810,7 @@ func TestTC1115APIDebitResolveConflict(t *testing.T) {
 }
 
 func TestTC1116APITransferByOutUserIDSuccess(t *testing.T) {
-	r, _, merchantNo, secret := newTxnAPITestServer(t)
+	r, _, _, merchantNo, secret := newTxnAPITestServer(t)
 
 	req := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/transfer", merchantNo, secret, "nonce-1116-1", map[string]any{
 		"out_trade_no":     "ord_1116",
@@ -839,14 +842,14 @@ func TestTC1116APITransferByOutUserIDSuccess(t *testing.T) {
 }
 
 func TestTC1117APITransferBookEnabledRequiresToExpireAt(t *testing.T) {
-	r, repo, merchantNo, secret := newTxnAPITestServer(t)
+	r, repo, pool, merchantNo, secret := newTxnAPITestServer(t)
 
 	creditAccount, ok := repo.GetAccount(testCreditAccountNo)
 	if !ok {
 		t.Fatalf("credit account not found")
 	}
 	creditAccount.BookEnabled = true
-	repo.CreateAccount(creditAccount)
+	setAccountBookEnabled(t, pool, creditAccount.AccountNo, true)
 
 	req := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/transfer", merchantNo, secret, "nonce-1117-1", map[string]any{
 		"out_trade_no":     "ord_1117",
@@ -867,14 +870,14 @@ func TestTC1117APITransferBookEnabledRequiresToExpireAt(t *testing.T) {
 }
 
 func TestTC1118APITransferBookEnabledAcceptsToExpireAt(t *testing.T) {
-	r, repo, merchantNo, secret := newTxnAPITestServer(t)
+	r, repo, pool, merchantNo, secret := newTxnAPITestServer(t)
 
 	creditAccount, ok := repo.GetAccount(testCreditAccountNo)
 	if !ok {
 		t.Fatalf("credit account not found")
 	}
 	creditAccount.BookEnabled = true
-	repo.CreateAccount(creditAccount)
+	setAccountBookEnabled(t, pool, creditAccount.AccountNo, true)
 
 	req := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/transfer", merchantNo, secret, "nonce-1118-1", map[string]any{
 		"out_trade_no":     "ord_1118",
@@ -908,7 +911,7 @@ func TestTC1118APITransferBookEnabledAcceptsToExpireAt(t *testing.T) {
 }
 
 func TestTC1119APIListTransactionsFilterByOutUserID(t *testing.T) {
-	r, _, merchantNo, secret := newTxnAPITestServer(t)
+	r, _, _, merchantNo, secret := newTxnAPITestServer(t)
 
 	issueReq := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/credit", merchantNo, secret, "nonce-1119-issue", map[string]any{
 		"out_trade_no": "ord_1119_issue",
@@ -949,7 +952,7 @@ func TestTC1119APIListTransactionsFilterByOutUserID(t *testing.T) {
 }
 
 func TestTC1120APIListTransactionsFilterByTimeRange(t *testing.T) {
-	r, _, merchantNo, secret := newTxnAPITestServer(t)
+	r, _, _, merchantNo, secret := newTxnAPITestServer(t)
 
 	firstReq := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/credit", merchantNo, secret, "nonce-1120-1", map[string]any{
 		"out_trade_no": "ord_1120_1",
@@ -1008,7 +1011,7 @@ func TestTC1120APIListTransactionsFilterByTimeRange(t *testing.T) {
 }
 
 func TestTC1121APIListTransactionsInvalidStartTime(t *testing.T) {
-	r, _, merchantNo, secret := newTxnAPITestServer(t)
+	r, _, _, merchantNo, secret := newTxnAPITestServer(t)
 
 	req := signedAPIRequest(t, http.MethodGet, "/api/v1/transactions?start_time=bad-time", merchantNo, secret, "nonce-1121", nil)
 	resp := httptest.NewRecorder()
@@ -1023,7 +1026,7 @@ func TestTC1121APIListTransactionsInvalidStartTime(t *testing.T) {
 }
 
 func TestTC1122APIMerchantMeReturnsConfigAndRequestID(t *testing.T) {
-	r, repo, merchantNo, secret := newTxnAPITestServer(t)
+	r, repo, _, merchantNo, secret := newTxnAPITestServer(t)
 
 	req := signedAPIRequest(t, http.MethodGet, "/api/v1/merchants/me", merchantNo, secret, "nonce-1122", nil)
 	resp := httptest.NewRecorder()
@@ -1043,7 +1046,7 @@ func TestTC1122APIMerchantMeReturnsConfigAndRequestID(t *testing.T) {
 	if data["status"] != "ACTIVE" {
 		t.Fatalf("unexpected status: %v", data["status"])
 	}
-	if data["secret_version"] != float64(0) {
+	if data["secret_version"] != float64(1) {
 		t.Fatalf("unexpected secret_version: %v", data["secret_version"])
 	}
 	merchant, ok := repo.GetMerchantByNo(merchantNo)
@@ -1062,7 +1065,7 @@ func TestTC1122APIMerchantMeReturnsConfigAndRequestID(t *testing.T) {
 }
 
 func TestTC1127APIGetWebhookConfigDefault(t *testing.T) {
-	r, _, merchantNo, secret := newTxnAPITestServer(t)
+	r, _, _, merchantNo, secret := newTxnAPITestServer(t)
 
 	req := signedAPIRequest(t, http.MethodGet, "/api/v1/webhooks/config", merchantNo, secret, "nonce-1127", nil)
 	resp := httptest.NewRecorder()
@@ -1096,7 +1099,7 @@ func TestTC1127APIGetWebhookConfigDefault(t *testing.T) {
 }
 
 func TestTC1128APIPutWebhookConfigThenGet(t *testing.T) {
-	r, repo, merchantNo, secret := newTxnAPITestServer(t)
+	r, repo, _, merchantNo, secret := newTxnAPITestServer(t)
 
 	putReq := signedAPIRequest(t, http.MethodPut, "/api/v1/webhooks/config", merchantNo, secret, "nonce-1128-put", map[string]any{
 		"url":     "https://merchant.example.com/coin/webhook",
@@ -1171,11 +1174,12 @@ func waitTxnStatus(t *testing.T, r *gin.Engine, merchantNo, secret, txnNo, targe
 	t.Fatalf("txn %s did not reach target status %s in time", txnNo, targetStatus)
 }
 
-func newTxnAPITestServer(t *testing.T) (*gin.Engine, *memoryrepo.Repo, string, string) {
+func newTxnAPITestServer(t *testing.T) (*gin.Engine, *db.Repository, *pgxpool.Pool, string, string) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
-	repo := memoryrepo.New()
+	pool := setupPostgresPool(t)
+	repo := db.NewRepository(pool)
 	ids := idpkg.NewFixedUUIDProvider([]string{
 		"01956f4e-7b3e-7a4d-9f6b-4d9de4f7c001",
 		"01956f4e-9d22-73bc-8e11-3f5e9c7a2001",
@@ -1207,7 +1211,7 @@ func newTxnAPITestServer(t *testing.T) (*gin.Engine, *memoryrepo.Repo, string, s
 	if err != nil {
 		t.Fatalf("create customer failed: %v", err)
 	}
-	repo.CreateAccount(service.Account{
+	if err := repo.CreateAccount(service.Account{
 		AccountNo:     testDebitAccountNo,
 		MerchantNo:    merchant.MerchantNo,
 		CustomerNo:    debitCustomer.CustomerNo,
@@ -1216,8 +1220,10 @@ func newTxnAPITestServer(t *testing.T) (*gin.Engine, *memoryrepo.Repo, string, s
 		AllowCreditIn: true,
 		AllowTransfer: true,
 		Balance:       1_000_000,
-	})
-	repo.CreateAccount(service.Account{
+	}); err != nil {
+		t.Fatalf("create debit account failed: %v", err)
+	}
+	if err := repo.CreateAccount(service.Account{
 		AccountNo:     testCreditAccountNo,
 		MerchantNo:    merchant.MerchantNo,
 		CustomerNo:    creditCustomer.CustomerNo,
@@ -1225,7 +1231,9 @@ func newTxnAPITestServer(t *testing.T) (*gin.Engine, *memoryrepo.Repo, string, s
 		AllowDebitOut: true,
 		AllowCreditIn: true,
 		AllowTransfer: true,
-	})
+	}); err != nil {
+		t.Fatalf("create credit account failed: %v", err)
+	}
 
 	transferSvc := service.NewTransferService(repo, ids)
 	transferRoutingSvc := service.NewTransferRoutingService(repo)
@@ -1239,19 +1247,40 @@ func newTxnAPITestServer(t *testing.T) (*gin.Engine, *memoryrepo.Repo, string, s
 		return base.Add(time.Duration(tick) * time.Millisecond)
 	})
 
-	secret := "sec_api_1100"
+	cipher, err := security.NewAESGCMCipher("tc1100_local_secret_cipher_key")
+	if err != nil {
+		t.Fatalf("init secret cipher failed: %v", err)
+	}
+	secretManager := db.NewMerchantSecretManager(pool, cipher)
+	secret, _, err := secretManager.RotateSecret(context.Background(), merchantNo)
+	if err != nil {
+		t.Fatalf("rotate merchant secret failed: %v", err)
+	}
+	baseNow := base
 	authMw := api.NewAuthMiddleware(api.AuthMiddlewareConfig{
-		SecretProvider: api.StaticMerchantSecretProvider{merchantNo: secret},
-		NowFn:          func() time.Time { return base },
+		SecretProvider: secretManager,
+		NowFn:          func() time.Time { return baseNow },
 		TimeWindow:     5 * time.Minute,
 	})
 
 	r := api.NewRouter()
 	api.RegisterProtectedRoutes(r, api.ProtectedRoutesOptions{
 		AuthMiddleware: authMw,
+		SecretRotator:  secretManager,
 		Business:       businessHandler,
 	})
-	return r, repo, merchantNo, secret
+	return r, repo, pool, merchantNo, secret
+}
+
+func setAccountBookEnabled(t *testing.T, pool *pgxpool.Pool, accountNo string, enabled bool) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `
+		UPDATE account
+		SET book_enabled = $1
+		WHERE account_no = $2
+	`, enabled, strings.TrimSpace(accountNo)); err != nil {
+		t.Fatalf("update account book_enabled failed: %v", err)
+	}
 }
 
 func signedAPIRequest(t *testing.T, method, rawURL, merchantNo, secret, nonce string, payload any) *http.Request {

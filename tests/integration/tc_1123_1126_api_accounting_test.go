@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/xmz-ai/coin/internal/service"
-	"github.com/xmz-ai/coin/tests/support/memoryrepo"
 )
 
 func TestTC1123APICreditBalanceAndChangeLogs(t *testing.T) {
-	r, repo, merchantNo, secret := newTxnAPITestServer(t)
+	r, repo, pool, merchantNo, secret := newTxnAPITestServer(t)
 
 	merchant, ok := repo.GetMerchantByNo(merchantNo)
 	if !ok {
@@ -47,14 +47,14 @@ func TestTC1123APICreditBalanceAndChangeLogs(t *testing.T) {
 	if creditAfter.Balance != creditBefore.Balance+120 {
 		t.Fatalf("unexpected credit balance: before=%d after=%d", creditBefore.Balance, creditAfter.Balance)
 	}
-	assertTxnAccountChanges(t, repo, txnNo, map[string]int64{
+	assertTxnAccountChanges(t, pool, txnNo, map[string]int64{
 		merchant.BudgetAccountNo: -120,
 		testCreditAccountNo:      120,
 	})
 }
 
 func TestTC1124APIDebitBalanceAndChangeLogs(t *testing.T) {
-	r, repo, merchantNo, secret := newTxnAPITestServer(t)
+	r, repo, pool, merchantNo, secret := newTxnAPITestServer(t)
 
 	merchant, ok := repo.GetMerchantByNo(merchantNo)
 	if !ok {
@@ -90,14 +90,14 @@ func TestTC1124APIDebitBalanceAndChangeLogs(t *testing.T) {
 	if recvAfter.Balance != recvBefore.Balance+30 {
 		t.Fatalf("unexpected receivable balance: before=%d after=%d", recvBefore.Balance, recvAfter.Balance)
 	}
-	assertTxnAccountChanges(t, repo, txnNo, map[string]int64{
+	assertTxnAccountChanges(t, pool, txnNo, map[string]int64{
 		testDebitAccountNo:           -30,
 		merchant.ReceivableAccountNo: 30,
 	})
 }
 
 func TestTC1125APITransferBalanceAndChangeLogs(t *testing.T) {
-	r, repo, merchantNo, secret := newTxnAPITestServer(t)
+	r, repo, pool, merchantNo, secret := newTxnAPITestServer(t)
 
 	fromBefore, ok := repo.GetAccount(testDebitAccountNo)
 	if !ok {
@@ -131,14 +131,14 @@ func TestTC1125APITransferBalanceAndChangeLogs(t *testing.T) {
 	if toAfter.Balance != toBefore.Balance+40 {
 		t.Fatalf("unexpected to balance: before=%d after=%d", toBefore.Balance, toAfter.Balance)
 	}
-	assertTxnAccountChanges(t, repo, txnNo, map[string]int64{
+	assertTxnAccountChanges(t, pool, txnNo, map[string]int64{
 		testDebitAccountNo:  -40,
 		testCreditAccountNo: 40,
 	})
 }
 
 func TestTC1126APIRefundBalanceAndChangeLogs(t *testing.T) {
-	r, repo, merchantNo, secret := newTxnAPITestServer(t)
+	r, repo, pool, merchantNo, secret := newTxnAPITestServer(t)
 
 	debitBefore, _ := repo.GetAccount(testDebitAccountNo)
 	creditBefore, _ := repo.GetAccount(testCreditAccountNo)
@@ -183,7 +183,7 @@ func TestTC1126APIRefundBalanceAndChangeLogs(t *testing.T) {
 	if creditAfter.Balance != creditBefore.Balance+60-20 {
 		t.Fatalf("unexpected credit balance: before=%d after=%d", creditBefore.Balance, creditAfter.Balance)
 	}
-	assertTxnAccountChanges(t, repo, refundTxnNo, map[string]int64{
+	assertTxnAccountChanges(t, pool, refundTxnNo, map[string]int64{
 		testCreditAccountNo: -20,
 		testDebitAccountNo:  20,
 	})
@@ -204,10 +204,10 @@ func TestTC1126APIRefundBalanceAndChangeLogs(t *testing.T) {
 	}
 }
 
-func assertTxnAccountChanges(t *testing.T, repo *memoryrepo.Repo, txnNo string, expected map[string]int64) {
+func assertTxnAccountChanges(t *testing.T, pool *pgxpool.Pool, txnNo string, expected map[string]int64) {
 	t.Helper()
 
-	changes := repo.ListAccountChangesByTxnNo(txnNo)
+	changes := queryAccountChangesByTxnNo(t, pool, txnNo)
 	if len(changes) != len(expected) {
 		t.Fatalf("unexpected change count for txn=%s: got=%d expected=%d", txnNo, len(changes), len(expected))
 	}

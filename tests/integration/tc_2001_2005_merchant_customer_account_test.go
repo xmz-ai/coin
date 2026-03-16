@@ -4,13 +4,13 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/xmz-ai/coin/internal/db"
 	idpkg "github.com/xmz-ai/coin/internal/platform/id"
 	"github.com/xmz-ai/coin/internal/service"
-	"github.com/xmz-ai/coin/tests/support/memoryrepo"
 )
 
 func TestTC2001MerchantOnboardingCreatesBudgetAndReceivableAccounts(t *testing.T) {
-	repo := memoryrepo.New()
+	repo := db.NewRepository(setupPostgresPool(t))
 	ids := idpkg.NewFixedUUIDProvider([]string{"01956f4e-7b3e-7a4d-9f6b-4d9de4f7c001"})
 	svc := service.NewMerchantService(repo, ids)
 
@@ -45,7 +45,7 @@ func TestTC2001MerchantOnboardingCreatesBudgetAndReceivableAccounts(t *testing.T
 }
 
 func TestTC2002MerchantNoUniqueConstraint(t *testing.T) {
-	repo := memoryrepo.New()
+	repo := db.NewRepository(setupPostgresPool(t))
 	ids := idpkg.NewFixedUUIDProvider([]string{
 		"01956f4e-7b3e-7a4d-9f6b-4d9de4f7c001",
 		"01956f4e-7b3e-7a4d-9f6b-4d9de4f7c002",
@@ -62,7 +62,7 @@ func TestTC2002MerchantNoUniqueConstraint(t *testing.T) {
 }
 
 func TestTC2003CreateCustomerSuccess(t *testing.T) {
-	repo := memoryrepo.New()
+	repo := db.NewRepository(setupPostgresPool(t))
 	ids := idpkg.NewFixedUUIDProvider([]string{
 		"01956f4e-7b3e-7a4d-9f6b-4d9de4f7c001",
 		"01956f4e-8c11-71aa-b2d2-2b079f7e1001",
@@ -87,7 +87,7 @@ func TestTC2003CreateCustomerSuccess(t *testing.T) {
 }
 
 func TestTC2004CustomerUniqueOnMerchantAndOutUserID(t *testing.T) {
-	repo := memoryrepo.New()
+	repo := db.NewRepository(setupPostgresPool(t))
 	ids := idpkg.NewFixedUUIDProvider([]string{
 		"01956f4e-7b3e-7a4d-9f6b-4d9de4f7c001",
 		"01956f4e-8c11-71aa-b2d2-2b079f7e1001",
@@ -109,7 +109,7 @@ func TestTC2004CustomerUniqueOnMerchantAndOutUserID(t *testing.T) {
 }
 
 func TestTC2005QueryMerchantConfigAndCustomerByOutUserID(t *testing.T) {
-	repo := memoryrepo.New()
+	repo := db.NewRepository(setupPostgresPool(t))
 	ids := idpkg.NewFixedUUIDProvider([]string{
 		"01956f4e-7b3e-7a4d-9f6b-4d9de4f7c001",
 		"01956f4e-8c11-71aa-b2d2-2b079f7e1001",

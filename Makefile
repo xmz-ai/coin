@@ -4,8 +4,7 @@ GO ?= $(shell if [ -x /usr/local/go/bin/go ]; then echo /usr/local/go/bin/go; el
 GOCACHE ?= $(CURDIR)/.cache/go-build
 
 test:
-	mkdir -p "$(GOCACHE)"
-	GOCACHE="$(GOCACHE)" $(GO) test ./...
+	bash ./scripts/test/smoke.sh
 
 smoke:
 	bash ./scripts/test/smoke.sh

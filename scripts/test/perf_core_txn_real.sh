@@ -80,12 +80,19 @@ if [[ "$PERF_USE_DOCKER" == "1" ]]; then
   trap cleanup EXIT
 
   echo "[perf-core-txn-real] waiting for postgres readiness"
-  for i in $(seq 1 60); do
-    if docker exec "$PG_CONTAINER" pg_isready -U "$PG_USER" -d "$PG_DB" >/dev/null 2>&1; then
-      break
+  pg_ready_streak=0
+  for i in $(seq 1 90); do
+    if docker exec "$PG_CONTAINER" pg_isready -U "$PG_USER" -d "$PG_DB" >/dev/null 2>&1 && \
+      docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -tAc "SELECT 1" >/dev/null 2>&1; then
+      pg_ready_streak=$((pg_ready_streak + 1))
+      if [[ "$pg_ready_streak" -ge 3 ]]; then
+        break
+      fi
+    else
+      pg_ready_streak=0
     fi
     sleep 1
-    if [[ "$i" == "60" ]]; then
+    if [[ "$i" == "90" ]]; then
       echo "[perf-core-txn-real] postgres not ready in time"
       exit 1
     fi
@@ -128,11 +135,12 @@ if [[ "$PERF_RESET_DB" == "1" ]]; then
   echo "[perf-core-txn-real] resetting database: $PERF_DB_NAME"
 
   if command -v psql >/dev/null 2>&1; then
-    ADMIN_DSN="$POSTGRES_DSN"
-    ADMIN_DSN="${ADMIN_DSN/\/$PERF_DB_NAME?/\/postgres?}"
-    if [[ "$ADMIN_DSN" == "$POSTGRES_DSN" ]]; then
-      ADMIN_DSN="${ADMIN_DSN/\/$PERF_DB_NAME/\/postgres}"
+    ADMIN_BASE_DSN="${POSTGRES_DSN%%\?*}"
+    ADMIN_DSN_QUERY=""
+    if [[ "$POSTGRES_DSN" == *\?* ]]; then
+      ADMIN_DSN_QUERY="?${POSTGRES_DSN#*\?}"
     fi
+    ADMIN_DSN="${ADMIN_BASE_DSN%/*}/postgres${ADMIN_DSN_QUERY}"
 
     psql "$ADMIN_DSN" -v ON_ERROR_STOP=1 -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$PERF_DB_NAME' AND pid <> pg_backend_pid();" >/dev/null
     psql "$ADMIN_DSN" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"$PERF_DB_NAME\";" >/dev/null

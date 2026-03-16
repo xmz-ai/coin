@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -12,18 +13,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/xmz-ai/coin/internal/db"
 	idpkg "github.com/xmz-ai/coin/internal/platform/id"
+	"github.com/xmz-ai/coin/internal/platform/security"
 	"github.com/xmz-ai/coin/internal/service"
-	"github.com/xmz-ai/coin/tests/support/memoryrepo"
 )
 
 func TestTC8011WebhookWorkerSkipsWhenConfigDisabled(t *testing.T) {
-	repo, merchantNo := setupWebhookWorkerFixture(t)
+	repo, pool, secrets, merchantNo := setupWebhookWorkerFixture(t)
 	if err := repo.UpsertWebhookConfig(merchantNo, "https://merchant.example.com/webhook", false); err != nil {
 		t.Fatalf("upsert webhook config failed: %v", err)
 	}
 
-	worker := service.NewWebhookWorker(repo, repo, 8, 100, []int{1})
+	worker := service.NewWebhookWorker(repo, secrets, 8, 100, []int{1})
 	worker.RunOnce(nil)
 
 	events, err := repo.ClaimDueOutboxEvents(10, time.Now().UTC().Add(24*time.Hour))
@@ -34,15 +37,15 @@ func TestTC8011WebhookWorkerSkipsWhenConfigDisabled(t *testing.T) {
 		t.Fatalf("expected no pending outbox events, got %d", len(events))
 	}
 
-	logs := repo.ListNotifyLogs("01956f4e-9d22-73bc-8e11-3f5e9c7a8111")
+	logs := queryNotifyLogsByTxnNo(t, pool, "01956f4e-9d22-73bc-8e11-3f5e9c7a8111")
 	if len(logs) != 1 || logs[0].Status != service.NotifyStatusSuccess {
 		t.Fatalf("expected one SUCCESS notify log, got %+v", logs)
 	}
 }
 
 func TestTC8012WebhookWorkerDeliverySuccessWithSignature(t *testing.T) {
-	repo, merchantNo := setupWebhookWorkerFixture(t)
-	secret, ok, err := repo.GetActiveSecret(nil, merchantNo)
+	repo, pool, secrets, merchantNo := setupWebhookWorkerFixture(t)
+	secret, ok, err := secrets.GetActiveSecret(context.Background(), merchantNo)
 	if err != nil || !ok {
 		t.Fatalf("get active secret failed: ok=%v err=%v", ok, err)
 	}
@@ -98,7 +101,7 @@ func TestTC8012WebhookWorkerDeliverySuccessWithSignature(t *testing.T) {
 		t.Fatalf("upsert webhook config failed: %v", err)
 	}
 
-	worker := service.NewWebhookWorker(repo, repo, 8, 100, []int{1, 5})
+	worker := service.NewWebhookWorker(repo, secrets, 8, 100, []int{1, 5})
 	worker.RunOnce(nil)
 
 	if atomic.LoadInt32(&hit) != 1 {
@@ -111,14 +114,14 @@ func TestTC8012WebhookWorkerDeliverySuccessWithSignature(t *testing.T) {
 	if len(events) != 0 {
 		t.Fatalf("expected no pending outbox events, got %d", len(events))
 	}
-	logs := repo.ListNotifyLogs("01956f4e-9d22-73bc-8e11-3f5e9c7a8111")
+	logs := queryNotifyLogsByTxnNo(t, pool, "01956f4e-9d22-73bc-8e11-3f5e9c7a8111")
 	if len(logs) != 1 || logs[0].Status != service.NotifyStatusSuccess || logs[0].Retries != 0 {
 		t.Fatalf("unexpected notify logs: %+v", logs)
 	}
 }
 
 func TestTC8013WebhookWorkerRetryAndDead(t *testing.T) {
-	repo, merchantNo := setupWebhookWorkerFixture(t)
+	repo, pool, secrets, merchantNo := setupWebhookWorkerFixture(t)
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -129,22 +132,30 @@ func TestTC8013WebhookWorkerRetryAndDead(t *testing.T) {
 		t.Fatalf("upsert webhook config failed: %v", err)
 	}
 
-	worker := service.NewWebhookWorker(repo, repo, 3, 100, []int{1, 1, 1})
+	worker := service.NewWebhookWorker(repo, secrets, 3, 100, []int{1, 1, 1})
+	events := queryOutboxEventsByTxnNo(t, pool, "01956f4e-9d22-73bc-8e11-3f5e9c7a8111")
+	if len(events) != 1 {
+		t.Fatalf("expected one outbox event before retry rounds, got %+v", events)
+	}
+	eventID := events[0].EventID
 	for i := 0; i < 3; i++ {
 		worker.RunOnce(nil)
-		// force due for next round in memory repo
-		_ = repo.MarkOutboxEventRetry("01956f4e-9d22-73bc-8e11-3f5e9c7a8111:TxnSucceeded", i+1, time.Now().UTC().Add(-time.Second), i+1 >= 3)
+		if i < 2 {
+			if err := repo.MarkOutboxEventRetry(eventID, i+1, time.Now().UTC().Add(-time.Second), false); err != nil {
+				t.Fatalf("force retry due failed: %v", err)
+			}
+		}
 	}
 
-	events, err := repo.ClaimDueOutboxEvents(10, time.Now().UTC().Add(24*time.Hour))
+	pending, err := repo.ClaimDueOutboxEvents(10, time.Now().UTC().Add(24*time.Hour))
 	if err != nil {
 		t.Fatalf("claim events failed: %v", err)
 	}
-	if len(events) != 0 {
-		t.Fatalf("expected no pending outbox events after DEAD, got %d", len(events))
+	if len(pending) != 0 {
+		t.Fatalf("expected no pending outbox events after DEAD, got %d", len(pending))
 	}
 
-	logs := repo.ListNotifyLogs("01956f4e-9d22-73bc-8e11-3f5e9c7a8111")
+	logs := queryNotifyLogsByTxnNo(t, pool, "01956f4e-9d22-73bc-8e11-3f5e9c7a8111")
 	if len(logs) == 0 {
 		t.Fatalf("expected notify logs")
 	}
@@ -155,13 +166,19 @@ func TestTC8013WebhookWorkerRetryAndDead(t *testing.T) {
 }
 
 func TestTC8014WebhookWorkerRetryOnSecretUnavailable(t *testing.T) {
-	repo, merchantNo := setupWebhookWorkerFixture(t)
-	repo.SetMerchantSecret(merchantNo, "")
+	repo, pool, secrets, merchantNo := setupWebhookWorkerFixture(t)
+	if _, err := pool.Exec(context.Background(), `
+		UPDATE merchant_api_credential
+		SET active = false
+		WHERE merchant_no = $1
+	`, merchantNo); err != nil {
+		t.Fatalf("deactivate merchant secret failed: %v", err)
+	}
 	if err := repo.UpsertWebhookConfig(merchantNo, "https://merchant.example.com/webhook", true); err != nil {
 		t.Fatalf("upsert webhook config failed: %v", err)
 	}
 
-	worker := service.NewWebhookWorker(repo, repo, 8, 100, []int{1})
+	worker := service.NewWebhookWorker(repo, secrets, 8, 100, []int{1})
 	worker.RunOnce(nil)
 
 	events, err := repo.ClaimDueOutboxEvents(10, time.Now().UTC().Add(24*time.Hour))
@@ -174,16 +191,17 @@ func TestTC8014WebhookWorkerRetryOnSecretUnavailable(t *testing.T) {
 	if events[0].RetryCount != 1 {
 		t.Fatalf("expected retry_count=1, got %d", events[0].RetryCount)
 	}
-	logs := repo.ListNotifyLogs("01956f4e-9d22-73bc-8e11-3f5e9c7a8111")
+	logs := queryNotifyLogsByTxnNo(t, pool, "01956f4e-9d22-73bc-8e11-3f5e9c7a8111")
 	if len(logs) != 1 || logs[0].Status != service.NotifyStatusFailed {
 		t.Fatalf("expected one FAILED notify log, got %+v", logs)
 	}
 }
 
-func setupWebhookWorkerFixture(t *testing.T) (*memoryrepo.Repo, string) {
+func setupWebhookWorkerFixture(t *testing.T) (*db.Repository, *pgxpool.Pool, *db.MerchantSecretManager, string) {
 	t.Helper()
 
-	repo := memoryrepo.New()
+	pool := setupPostgresPool(t)
+	repo := db.NewRepository(pool)
 	ids := idpkg.NewFixedUUIDProvider([]string{
 		"01956f4e-7b3e-7a4d-9f6b-4d9de4f7d811",
 		"01956f4e-8c11-71aa-b2d2-2b079f7e2811",
@@ -250,5 +268,14 @@ func setupWebhookWorkerFixture(t *testing.T) (*memoryrepo.Repo, string) {
 		t.Fatalf("apply transfer credit stage failed: applied=%v err=%v", applied, err)
 	}
 
-	return repo, merchant.MerchantNo
+	cipher, err := security.NewAESGCMCipher("tc8011_local_secret_cipher_key")
+	if err != nil {
+		t.Fatalf("init cipher failed: %v", err)
+	}
+	secrets := db.NewMerchantSecretManager(pool, cipher)
+	if _, _, err := secrets.RotateSecret(context.Background(), merchant.MerchantNo); err != nil {
+		t.Fatalf("rotate merchant secret failed: %v", err)
+	}
+
+	return repo, pool, secrets, merchant.MerchantNo
 }

@@ -4,13 +4,13 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/xmz-ai/coin/internal/db"
 	idpkg "github.com/xmz-ai/coin/internal/platform/id"
 	"github.com/xmz-ai/coin/internal/service"
-	"github.com/xmz-ai/coin/tests/support/memoryrepo"
 )
 
 func TestTC3001DuplicateOutTradeNoReturnsConflict(t *testing.T) {
-	repo := memoryrepo.New()
+	repo := db.NewRepository(setupPostgresPool(t))
 	ids := idpkg.NewFixedUUIDProvider([]string{
 		"01956f4e-7b3e-7a4d-9f6b-4d9de4f7c001", // merchant
 		"01956f4e-9d22-73bc-8e11-3f5e9c7a2001", // txn1
@@ -35,7 +35,7 @@ func TestTC3001DuplicateOutTradeNoReturnsConflict(t *testing.T) {
 }
 
 func TestTC3002DuplicateRequestHasNoSideEffects(t *testing.T) {
-	repo := memoryrepo.New()
+	repo := db.NewRepository(setupPostgresPool(t))
 	ids := idpkg.NewFixedUUIDProvider([]string{
 		"01956f4e-7b3e-7a4d-9f6b-4d9de4f7c001", // merchant
 		"01956f4e-9d22-73bc-8e11-3f5e9c7a2001", // txn1
@@ -60,7 +60,7 @@ func TestTC3002DuplicateRequestHasNoSideEffects(t *testing.T) {
 }
 
 func TestTC3003AccountNoAndOutUserIDConsistentPasses(t *testing.T) {
-	repo := memoryrepo.New()
+	repo := db.NewRepository(setupPostgresPool(t))
 	ids := idpkg.NewFixedUUIDProvider([]string{
 		"01956f4e-7b3e-7a4d-9f6b-4d9de4f7c001", // merchant
 		"01956f4e-8c11-71aa-b2d2-2b079f7e1001", // customer
@@ -83,7 +83,7 @@ func TestTC3003AccountNoAndOutUserIDConsistentPasses(t *testing.T) {
 }
 
 func TestTC3004AccountNoAndOutUserIDConflictRejected(t *testing.T) {
-	repo := memoryrepo.New()
+	repo := db.NewRepository(setupPostgresPool(t))
 	ids := idpkg.NewFixedUUIDProvider([]string{
 		"01956f4e-7b3e-7a4d-9f6b-4d9de4f7c001", // merchant
 		"01956f4e-8c11-71aa-b2d2-2b079f7e1001", // customer1
@@ -106,7 +106,7 @@ func TestTC3004AccountNoAndOutUserIDConflictRejected(t *testing.T) {
 }
 
 func TestTC3005OutUserIDNotUsedForMerchantSystemAccount(t *testing.T) {
-	repo := memoryrepo.New()
+	repo := db.NewRepository(setupPostgresPool(t))
 	ids := idpkg.NewFixedUUIDProvider([]string{"01956f4e-7b3e-7a4d-9f6b-4d9de4f7c001"})
 	ms := service.NewMerchantService(repo, ids)
 	rs := service.NewAccountResolver(repo)

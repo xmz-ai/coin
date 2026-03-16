@@ -18,6 +18,12 @@ echo "[smoke] run baseline suite (TC-0001/TC-0002/TC-0003 + iter2/iter3 key case
 GOCACHE="$GOCACHE" "$GO_BIN" test -v ./tests/integration -run 'TestTC0001FixtureFactoryCreatesLinkedData|TestTC2001MerchantOnboardingCreatesBudgetAndReceivableAccounts|TestTC2004CustomerUniqueOnMerchantAndOutUserID|TestTC3001DuplicateOutTradeNoReturnsConflict|TestTC3002DuplicateRequestHasNoSideEffects|TestS0SmokeSuiteCoverage' -count=1
 GOCACHE="$GOCACHE" "$GO_BIN" test -v ./tests/unit -run TestTC0002ClockAndUUIDInjection -count=1
 
+if [[ "${COIN_SKIP_PG_SMOKE:-0}" != "1" ]]; then
+  bash "${ROOT_DIR}/scripts/test/postgres.sh"
+else
+  echo "[smoke] skip postgres smoke suite"
+fi
+
 if [[ "${COIN_SKIP_E2E_SMOKE:-0}" != "1" ]]; then
   GOCACHE="$GOCACHE" "$GO_BIN" test -v ./tests/e2e -run TestTC0003SmokeScriptExecutable -count=1
 else
