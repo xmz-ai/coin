@@ -47,7 +47,7 @@ func TestTC8007CompensationTasksForTxnAndNotify(t *testing.T) {
 	repo.SetMerchantSecret(merchantNo, "")
 
 	processor := service.NewTransferAsyncProcessor(repo)
-	txnWorker := service.NewTransferPollingWorker(repo, processor, 100)
+	txnWorker := service.NewTransferRecoveryWorker(repo, processor, 100)
 	notifyWorker := service.NewWebhookWorker(repo, repo, 8, 100, []int{1})
 	compWorker := service.NewCompensationWorker(txnWorker, notifyWorker, repo)
 

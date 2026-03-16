@@ -41,7 +41,7 @@ func main() {
 	transferRoutingService := service.NewTransferRoutingService(repo)
 	processingGuard := service.NewRedisProcessingGuard(redisClient, time.Duration(cfg.ProcessingKeyTTLSeconds)*time.Second)
 	asyncTransferProcessor := service.NewTransferAsyncProcessorWithGuard(repo, processingGuard)
-	transferWorker := service.NewTransferPollingWorker(repo, asyncTransferProcessor, 200)
+	transferWorker := service.NewTransferRecoveryWorker(repo, asyncTransferProcessor, 200)
 	webhookWorker := service.NewWebhookWorker(repo, secretManager, cfg.WebhookMaxRetries, cfg.WebhookWorkerBatchSize, cfg.WebhookRetryBackoffMinute)
 	accountResolver := service.NewAccountResolver(repo)
 	refundService := service.NewRefundService(repo)
@@ -51,7 +51,7 @@ func main() {
 	go transferWorker.Start(ctx, 500*time.Millisecond)
 	go webhookWorker.Start(ctx, time.Duration(cfg.WebhookWorkerIntervalMS)*time.Millisecond)
 
-	txnCompWorker := service.NewTransferPollingWorker(repo, asyncTransferProcessor, 200)
+	txnCompWorker := service.NewTransferRecoveryWorker(repo, asyncTransferProcessor, 200)
 	notifyCompWorker := service.NewWebhookWorker(repo, secretManager, cfg.WebhookMaxRetries, cfg.WebhookWorkerBatchSize, cfg.WebhookRetryBackoffMinute)
 	go txnCompWorker.StartWithReport(ctx, time.Duration(cfg.TxnCompensationIntervalMS)*time.Millisecond, service.NewCompensationReportHook())
 	go notifyCompWorker.StartWithReport(ctx, time.Duration(cfg.NotifyCompensationIntervalMS)*time.Millisecond, service.NewWebhookReportHook())

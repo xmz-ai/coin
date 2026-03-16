@@ -31,7 +31,7 @@ func TestTC8008TransferWorkerProcessesInitTxn(t *testing.T) {
 	}
 
 	processor := service.NewTransferAsyncProcessor(repo)
-	worker := service.NewTransferPollingWorker(repo, processor, 100)
+	worker := service.NewTransferRecoveryWorker(repo, processor, 100)
 	worker.RunOnce()
 
 	got, ok := repo.GetTransferTxn(txn.TxnNo)
@@ -76,7 +76,7 @@ func TestTC8009TransferWorkerContinuesFromPaySuccess(t *testing.T) {
 	}
 
 	processor := service.NewTransferAsyncProcessor(repo)
-	worker := service.NewTransferPollingWorker(repo, processor, 100)
+	worker := service.NewTransferRecoveryWorker(repo, processor, 100)
 	worker.RunOnce()
 
 	got, ok := repo.GetTransferTxn("01956f4e-9d22-73bc-8e11-3f5e9c7a8809")

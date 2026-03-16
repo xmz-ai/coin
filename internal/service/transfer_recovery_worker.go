@@ -6,29 +6,28 @@ import (
 	"time"
 )
 
-type TransferPollingWorker struct {
+type TransferRecoveryWorker struct {
 	repo      Repository
 	processor *TransferAsyncProcessor
 	batchSize int
 }
 
-func NewTransferPollingWorker(repo Repository, processor *TransferAsyncProcessor, batchSize int) *TransferPollingWorker {
+func NewTransferRecoveryWorker(repo Repository, processor *TransferAsyncProcessor, batchSize int) *TransferRecoveryWorker {
 	if batchSize <= 0 {
 		batchSize = 100
 	}
-	return &TransferPollingWorker{
+	return &TransferRecoveryWorker{
 		repo:      repo,
 		processor: processor,
 		batchSize: batchSize,
 	}
 }
 
-func (w *TransferPollingWorker) RunOnce() {
+func (w *TransferRecoveryWorker) RunOnce() {
 	if w == nil || w.repo == nil || w.processor == nil {
 		return
 	}
 
-	// Recovery path: scan unfinished txns and drive them to terminal status.
 	for _, status := range []string{TxnStatusInit, TxnStatusProcessing, TxnStatusPaySuccess} {
 		txns, err := w.repo.ListTransferTxnsByStatus(status, w.batchSize)
 		if err != nil {
@@ -40,7 +39,7 @@ func (w *TransferPollingWorker) RunOnce() {
 	}
 }
 
-func (w *TransferPollingWorker) Start(ctx context.Context, interval time.Duration) {
+func (w *TransferRecoveryWorker) Start(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		interval = time.Second
 	}
@@ -59,7 +58,7 @@ func (w *TransferPollingWorker) Start(ctx context.Context, interval time.Duratio
 	}
 }
 
-func (w *TransferPollingWorker) StartWithReport(ctx context.Context, interval time.Duration, report func(processed int, runErr error)) {
+func (w *TransferRecoveryWorker) StartWithReport(ctx context.Context, interval time.Duration, report func(processed int, runErr error)) {
 	if interval <= 0 {
 		interval = time.Second
 	}
@@ -90,7 +89,7 @@ func (w *TransferPollingWorker) StartWithReport(ctx context.Context, interval ti
 	}
 }
 
-func (w *TransferPollingWorker) runOnceWithResult() (int, error) {
+func (w *TransferRecoveryWorker) runOnceWithResult() (int, error) {
 	processed := 0
 	for _, status := range []string{TxnStatusInit, TxnStatusProcessing, TxnStatusPaySuccess} {
 		txns, err := w.repo.ListTransferTxnsByStatus(status, w.batchSize)
