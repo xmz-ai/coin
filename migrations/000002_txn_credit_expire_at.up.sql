@@ -1,2 +1,2 @@
 ALTER TABLE txn
-ADD COLUMN IF NOT EXISTS credit_expire_at TIMESTAMPTZ;
+ADD COLUMN IF NOT EXISTS credit_expire_at DATE;

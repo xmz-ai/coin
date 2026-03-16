@@ -37,7 +37,7 @@ WHERE account_no = $1
 	}
 	if _, err := pool.Exec(context.Background(), `
 UPDATE txn
-SET credit_expire_at = $1::timestamptz
+SET credit_expire_at = $1::date
 WHERE txn_no = $2::uuid
 `, expireAt, txnNo); err != nil {
 		t.Fatalf("set txn credit_expire_at failed: %v", err)
@@ -90,9 +90,10 @@ WHERE txn_no = $2::uuid
 func TestTC9018PostgresDebitStageBookEnabledConsumesFEFOAndWritesBookLogs(t *testing.T) {
 	repo, pool, _, debitAccountNo, _, txnNo := setupPostgresTransferFixture(t, service.TxnStatusProcessing, 150)
 
-	expiredAt := time.Now().UTC().Add(-1 * time.Hour).Truncate(time.Second)
-	expire1 := time.Now().UTC().Add(1 * time.Hour).Truncate(time.Second)
-	expire2 := time.Now().UTC().Add(2 * time.Hour).Truncate(time.Second)
+	today := time.Now().UTC()
+	expiredAt := time.Date(today.Year(), today.Month(), today.Day()-1, 0, 0, 0, 0, time.UTC)
+	expire1 := time.Date(today.Year(), today.Month(), today.Day()+1, 0, 0, 0, 0, time.UTC)
+	expire2 := time.Date(today.Year(), today.Month(), today.Day()+2, 0, 0, 0, 0, time.UTC)
 
 	if _, err := pool.Exec(context.Background(), `
 UPDATE account
@@ -104,9 +105,9 @@ WHERE account_no = $1
 	if _, err := pool.Exec(context.Background(), `
 INSERT INTO account_book (book_no, account_no, expire_at, balance)
 VALUES
-  ('01956f4e-aaaa-7aaa-8aaa-aaaaaaaaaaa1'::uuid, $1, $2::timestamptz, 100),
-  ('01956f4e-bbbb-7bbb-8bbb-bbbbbbbbbbb2'::uuid, $1, $3::timestamptz, 100),
-  ('01956f4e-cccc-7ccc-8ccc-ccccccccccc3'::uuid, $1, $4::timestamptz, 100)
+  ('01956f4e-aaaa-7aaa-8aaa-aaaaaaaaaaa1'::uuid, $1, $2::date, 100),
+  ('01956f4e-bbbb-7bbb-8bbb-bbbbbbbbbbb2'::uuid, $1, $3::date, 100),
+  ('01956f4e-cccc-7ccc-8ccc-ccccccccccc3'::uuid, $1, $4::date, 100)
 `, debitAccountNo, expiredAt, expire1, expire2); err != nil {
 		t.Fatalf("insert account_book seed rows failed: %v", err)
 	}
@@ -158,7 +159,7 @@ VALUES
 func TestTC9019PostgresAsyncProcessorBookPathWritesAccountBookData(t *testing.T) {
 	repo, pool, _, debitAccountNo, creditAccountNo, txnNo := setupPostgresTransferFixture(t, service.TxnStatusInit, 80)
 
-	expireAt := time.Date(2027, 2, 1, 12, 0, 0, 0, time.UTC)
+	expireAt := time.Date(2027, 2, 1, 0, 0, 0, 0, time.UTC)
 	if _, err := pool.Exec(context.Background(), `
 UPDATE account
 SET book_enabled = true, balance = 0
@@ -168,7 +169,7 @@ WHERE account_no = $1
 	}
 	if _, err := pool.Exec(context.Background(), `
 UPDATE txn
-SET credit_expire_at = $1::timestamptz
+SET credit_expire_at = $1::date
 WHERE txn_no = $2::uuid
 `, expireAt, txnNo); err != nil {
 		t.Fatalf("set txn credit_expire_at failed: %v", err)

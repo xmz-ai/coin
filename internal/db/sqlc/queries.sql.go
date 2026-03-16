@@ -283,7 +283,7 @@ INSERT INTO txn (
   NULLIF($5, ''),
   NULLIF($6, ''),
   NULLIF($7, ''),
-  $8::timestamptz,
+  $8::date,
   $9,
   $10,
   NULLIF($11, '')::uuid,
@@ -301,7 +301,7 @@ type CreateTransferTxnParams struct {
 	TransferScene    interface{}
 	DebitAccountNo   interface{}
 	CreditAccountNo  interface{}
-	CreditExpireAt   pgtype.Timestamptz
+	CreditExpireAt   pgtype.Date
 	Amount           int64
 	Status           string
 	RefundOfTxnNo    interface{}
@@ -776,7 +776,7 @@ type GetTransferTxnStageForUpdateRow struct {
 	Status          string
 	DebitAccountNo  string
 	CreditAccountNo string
-	CreditExpireAt  pgtype.Timestamptz
+	CreditExpireAt  pgtype.Date
 	Amount          int64
 	MerchantNo      string
 	OutTradeNo      string
@@ -862,7 +862,7 @@ VALUES (
   $3::uuid,
   $4,
   $5,
-  $6::timestamptz
+  $6::date
 )
 `
 
@@ -872,7 +872,7 @@ type InsertAccountBookChangeParams struct {
 	BookNo       pgtype.UUID
 	Delta        int64
 	BalanceAfter int64
-	ExpireAt     pgtype.Timestamptz
+	ExpireAt     pgtype.Date
 }
 
 func (q *Queries) InsertAccountBookChange(ctx context.Context, arg InsertAccountBookChangeParams) error {
@@ -1072,7 +1072,7 @@ SELECT
   b.balance
 FROM account_book b
 WHERE b.account_no = $1
-  AND b.expire_at > $2::timestamptz
+  AND b.expire_at > $2::date
   AND b.balance > 0
 ORDER BY b.expire_at ASC
 FOR UPDATE OF b
@@ -1080,13 +1080,13 @@ FOR UPDATE OF b
 
 type ListAvailableAccountBooksForUpdateParams struct {
 	AccountNo string
-	NowUtc    pgtype.Timestamptz
+	NowUtc    pgtype.Date
 }
 
 type ListAvailableAccountBooksForUpdateRow struct {
 	BookNo    pgtype.UUID
 	AccountNo string
-	ExpireAt  pgtype.Timestamptz
+	ExpireAt  pgtype.Date
 	Balance   int64
 }
 
@@ -1555,7 +1555,7 @@ INSERT INTO account_book (book_no, account_no, expire_at, balance)
 VALUES (
   $1::uuid,
   $2,
-  $3::timestamptz,
+  $3::date,
   $4
 )
 ON CONFLICT (account_no, expire_at)
@@ -1566,14 +1566,14 @@ RETURNING book_no, account_no, expire_at, balance
 type UpsertAccountBookBalanceParams struct {
 	BookNo    pgtype.UUID
 	AccountNo string
-	ExpireAt  pgtype.Timestamptz
+	ExpireAt  pgtype.Date
 	Delta     int64
 }
 
 type UpsertAccountBookBalanceRow struct {
 	BookNo    pgtype.UUID
 	AccountNo string
-	ExpireAt  pgtype.Timestamptz
+	ExpireAt  pgtype.Date
 	Balance   int64
 }
 

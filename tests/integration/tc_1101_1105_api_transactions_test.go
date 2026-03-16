@@ -119,6 +119,45 @@ func TestTC1102APICreditBookEnabledRequiresExpireInDays(t *testing.T) {
 	}
 }
 
+func TestTC1102APICreditBookEnabledNormalizesExpireInDaysToUTCDate(t *testing.T) {
+	r, repo, merchantNo, secret := newTxnAPITestServer(t)
+
+	creditAccount, ok := repo.GetAccount(testCreditAccountNo)
+	if !ok {
+		t.Fatalf("credit account not found")
+	}
+	creditAccount.BookEnabled = true
+	repo.CreateAccount(creditAccount)
+
+	req := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/credit", merchantNo, secret, "nonce-1102-book-norm", map[string]any{
+		"out_trade_no":    "ord_1102_book_norm",
+		"user_id":         "u_1101",
+		"amount":          100,
+		"expire_in_days":  1,
+	})
+	resp := httptest.NewRecorder()
+	r.ServeHTTP(resp, req)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%s", resp.Code, resp.Body.String())
+	}
+
+	body := decodeJSONMap(t, resp.Body.Bytes())
+	txnNo, _ := body["data"].(map[string]any)["txn_no"].(string)
+	if txnNo == "" {
+		t.Fatalf("expected txn_no in response")
+	}
+	waitTxnStatus(t, r, merchantNo, secret, txnNo, service.TxnStatusRecvSuccess)
+
+	txn, ok := repo.GetTransferTxn(txnNo)
+	if !ok {
+		t.Fatalf("txn not found")
+	}
+	want := time.Date(2024, 3, 10, 0, 0, 0, 0, time.UTC)
+	if !txn.CreditExpireAt.UTC().Equal(want) {
+		t.Fatalf("unexpected normalized credit_expire_at: got=%s want=%s", txn.CreditExpireAt.UTC(), want)
+	}
+}
+
 func TestTC1103APIGetByOutTradeNo(t *testing.T) {
 	r, _, merchantNo, secret := newTxnAPITestServer(t)
 
@@ -689,6 +728,22 @@ func TestTC1118APITransferBookEnabledAcceptsToExpireAt(t *testing.T) {
 	r.ServeHTTP(resp, req)
 	if resp.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d body=%s", resp.Code, resp.Body.String())
+	}
+
+	body := decodeJSONMap(t, resp.Body.Bytes())
+	txnNo, _ := body["data"].(map[string]any)["txn_no"].(string)
+	if txnNo == "" {
+		t.Fatalf("expected txn_no in response")
+	}
+	waitTxnStatus(t, r, merchantNo, secret, txnNo, service.TxnStatusRecvSuccess)
+
+	txn, ok := repo.GetTransferTxn(txnNo)
+	if !ok {
+		t.Fatalf("txn not found")
+	}
+	want := time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)
+	if !txn.CreditExpireAt.UTC().Equal(want) {
+		t.Fatalf("unexpected normalized credit_expire_at: got=%s want=%s", txn.CreditExpireAt.UTC(), want)
 	}
 }
 

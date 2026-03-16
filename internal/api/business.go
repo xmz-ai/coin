@@ -258,7 +258,8 @@ func (h *BusinessHandler) handleCredit(c *gin.Context) {
 			writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid expire_in_days")
 			return
 		}
-		creditExpireAt = &expireAt
+		normalizedExpireAt := normalizeExpiryDayUTC(expireAt)
+		creditExpireAt = &normalizedExpireAt
 	}
 
 	txn, err := h.transfer.Submit(service.TransferRequest{
@@ -531,7 +532,7 @@ func (h *BusinessHandler) handleTransfer(c *gin.Context) {
 			writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid to_expire_at")
 			return
 		}
-		expireUTC := expireAt.UTC()
+		expireUTC := normalizeExpiryDayUTC(expireAt)
 		creditExpireAt = &expireUTC
 	} else if req.ToExpireAt != "" {
 		if _, err := time.Parse(time.RFC3339, req.ToExpireAt); err != nil {
@@ -874,6 +875,11 @@ func calcExpireAtByDays(now time.Time, expireInDays int64) (time.Time, error) {
 		return time.Time{}, errors.New("invalid expire_in_days")
 	}
 	return now.UTC().Add(time.Duration(expireInDays) * 24 * time.Hour), nil
+}
+
+func normalizeExpiryDayUTC(t time.Time) time.Time {
+	u := t.UTC()
+	return time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
 }
 
 func writeSuccess(c *gin.Context, data any) {

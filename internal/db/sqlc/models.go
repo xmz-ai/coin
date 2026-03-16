@@ -27,7 +27,7 @@ type Account struct {
 type AccountBook struct {
 	BookNo    pgtype.UUID
 	AccountNo string
-	ExpireAt  pgtype.Timestamptz
+	ExpireAt  pgtype.Date
 	Balance   int64
 	CreatedAt pgtype.Timestamptz
 }
@@ -39,7 +39,7 @@ type AccountBookChangeLog struct {
 	BookNo       pgtype.UUID
 	Delta        int64
 	BalanceAfter int64
-	ExpireAt     pgtype.Timestamptz
+	ExpireAt     pgtype.Date
 	CreatedAt    pgtype.Timestamptz
 }
 
@@ -132,7 +132,7 @@ type Txn struct {
 	ErrorMsg         pgtype.Text
 	CreatedAt        pgtype.Timestamptz
 	UpdatedAt        pgtype.Timestamptz
-	CreditExpireAt   pgtype.Timestamptz
+	CreditExpireAt   pgtype.Date
 }
 
 type WebhookConfig struct {
