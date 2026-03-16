@@ -49,6 +49,8 @@ type Repository interface {
 	TryDecreaseTxnRefundable(txnNo string, amount int64) (left int64, ok bool, err error)
 	ApplyTransferDebitStage(txnNo, debitAccountNo string, amount int64) (bool, error)
 	ApplyTransferCreditStage(txnNo, creditAccountNo string, amount int64) (bool, error)
+	ApplyRefundDebitStage(refundTxnNo string, amount int64) (bool, error)
+	ApplyRefundCreditStage(refundTxnNo, creditAccountNo string, amount int64) (bool, error)
 	ApplyRefund(refundTxnNo, originTxnNo string, amount int64) (left int64, ok bool, err error)
 	TxnCount() int
 

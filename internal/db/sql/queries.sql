@@ -166,7 +166,8 @@ SELECT
   t.merchant_no,
   t.out_trade_no,
   COALESCE(t.biz_type, '') AS biz_type,
-  COALESCE(t.transfer_scene, '') AS transfer_scene
+  COALESCE(t.transfer_scene, '') AS transfer_scene,
+  COALESCE(t.refund_of_txn_no::text, '')::text AS refund_of_txn_no
 FROM txn t
 WHERE t.txn_no = sqlc.arg(txn_no)
 FOR UPDATE
@@ -387,7 +388,8 @@ VALUES (
 SELECT
   COALESCE(debit_account_no, '') AS debit_account_no,
   COALESCE(credit_account_no, '') AS credit_account_no,
-  refundable_amount
+  refundable_amount,
+  merchant_no
 FROM txn
 WHERE txn_no = sqlc.arg(origin_txn_no)
 FOR UPDATE

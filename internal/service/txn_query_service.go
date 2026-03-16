@@ -17,6 +17,8 @@ type QueryTxn struct {
 	RefundableAmount int64
 	DebitAccountNo   string
 	CreditAccountNo  string
+	ErrorCode        string
+	ErrorMsg         string
 	CreatedAt        time.Time
 }
 
@@ -179,6 +181,8 @@ func queryTxnFromTransferTxn(txn TransferTxn) QueryTxn {
 		RefundableAmount: txn.RefundableAmount,
 		DebitAccountNo:   txn.DebitAccountNo,
 		CreditAccountNo:  txn.CreditAccountNo,
+		ErrorCode:        txn.ErrorCode,
+		ErrorMsg:         txn.ErrorMsg,
 		CreatedAt:        txn.CreatedAt,
 	}
 }

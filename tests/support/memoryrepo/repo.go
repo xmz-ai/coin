@@ -439,6 +439,99 @@ func (r *Repo) ApplyTransferCreditStage(txnNo, creditAccountNo string, amount in
 	return true, nil
 }
 
+func (r *Repo) ApplyRefundDebitStage(refundTxnNo string, amount int64) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	refund, exists := r.transferTxnByNo[refundTxnNo]
+	if !exists {
+		return false, service.ErrTxnNotFound
+	}
+	if refund.Status != service.TxnStatusProcessing {
+		return false, nil
+	}
+	if refund.BizType != service.BizTypeRefund || refund.RefundOfTxnNo == "" {
+		return false, service.ErrTxnStatusInvalid
+	}
+
+	origin, exists := r.transferTxnByNo[refund.RefundOfTxnNo]
+	if !exists {
+		return false, service.ErrTxnNotFound
+	}
+	if origin.MerchantNo != refund.MerchantNo {
+		return false, service.ErrTxnNotFound
+	}
+	if origin.RefundableAmount < amount {
+		return false, service.ErrRefundAmountExceeded
+	}
+	if err := r.applyAccountDebitLocked(refundTxnNo, origin.CreditAccountNo, amount); err != nil {
+		return false, err
+	}
+
+	origin.RefundableAmount -= amount
+	r.transferTxnByNo[origin.TxnNo] = origin
+	r.transferTxnByK[origin.MerchantNo+":"+origin.OutTradeNo] = origin
+
+	refund.DebitAccountNo = origin.CreditAccountNo
+	refund.CreditAccountNo = origin.DebitAccountNo
+	refund.Status = service.TxnStatusPaySuccess
+	r.transferTxnByNo[refundTxnNo] = refund
+	r.transferTxnByK[refund.MerchantNo+":"+refund.OutTradeNo] = refund
+	return true, nil
+}
+
+func (r *Repo) ApplyRefundCreditStage(refundTxnNo, creditAccountNo string, amount int64) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	refund, exists := r.transferTxnByNo[refundTxnNo]
+	if !exists {
+		return false, service.ErrTxnNotFound
+	}
+	if refund.Status != service.TxnStatusPaySuccess {
+		return false, nil
+	}
+	stageCredit := refund.CreditAccountNo
+	if stageCredit == "" {
+		stageCredit = creditAccountNo
+	}
+	if stageCredit == "" {
+		return false, service.ErrAccountResolveFailed
+	}
+	if refund.CreditAccountNo != "" && creditAccountNo != "" && refund.CreditAccountNo != creditAccountNo {
+		return false, service.ErrAccountResolveFailed
+	}
+	if err := r.applyAccountCreditLocked(refundTxnNo, stageCredit, amount); err != nil {
+		return false, err
+	}
+
+	refund.CreditAccountNo = stageCredit
+	refund.Status = service.TxnStatusRecvSuccess
+	r.transferTxnByNo[refundTxnNo] = refund
+	r.transferTxnByK[refund.MerchantNo+":"+refund.OutTradeNo] = refund
+
+	eventID := refund.TxnNo + ":TxnSucceeded"
+	if _, exists := r.outboxByEventID[eventID]; !exists {
+		r.outboxByEventID[eventID] = outboxRecord{
+			event: service.OutboxEventDelivery{
+				EventID:       eventID,
+				TxnNo:         refund.TxnNo,
+				MerchantNo:    refund.MerchantNo,
+				OutTradeNo:    refund.OutTradeNo,
+				BizType:       refund.BizType,
+				TransferScene: refund.TransferScene,
+				Amount:        refund.Amount,
+				Status:        refund.Status,
+				RetryCount:    0,
+			},
+			status:  "PENDING",
+			retries: 0,
+		}
+		r.outboxEventOrder = append(r.outboxEventOrder, eventID)
+	}
+	return true, nil
+}
+
 func (r *Repo) ApplyRefund(refundTxnNo, originTxnNo string, amount int64) (left int64, ok bool, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -6,7 +6,8 @@ sequenceDiagram
     participant C as Client
     participant API as API(BusinessHandler)
     participant TS as TransferService
-    participant RS as RefundService
+    participant AP as TransferAsyncProcessor
+    participant RW as TransferRecoveryWorker
     participant DB as Postgres(Repository)
     participant WW as WebhookWorker
     participant WH as Merchant Webhook
@@ -17,30 +18,35 @@ sequenceDiagram
     TS->>DB: CreateTransferTxn(biz_type=REFUND, status=INIT)
     DB-->>TS: refund_txn_no
     TS-->>API: refund_txn_no
+    API->>AP: Enqueue(refund_txn_no)
+    API-->>C: 201 {txn_no, status=INIT}
 
-    API->>RS: SubmitRefund(refund_txn_no, origin_txn_no, amount, breakdown)
-    RS->>RS: 校验 breakdown(可选): sum==amount 且 account 在原交易账户集合
-    RS->>DB: ApplyRefund(...)
+    AP->>DB: GetTransferTxn(txn_no)
+    AP->>DB: TransitionTransferTxnStatus(INIT -> PROCESSING)
 
-    Note over DB: 事务内执行
-    DB->>DB: GetOriginTxnForUpdate(origin_txn_no)
-    alt refundable_amount < amount
-        DB-->>RS: ok=false
-        RS-->>API: ErrRefundAmountExceeded
-        API->>DB: UpdateTxnStatus(refund_txn_no -> FAILED, REFUND_FAILED)
-        API-->>C: 409 REFUND_AMOUNT_EXCEEDED
-    else 可退款
-        DB->>DB: DecreaseOriginTxnRefundable(CAS语义)
-        DB->>DB: 反向记账(原 credit 账户扣减，原 debit 账户入账)
-        DB->>DB: 写 account_change_log/account_book_change_log
-        DB->>DB: Update refund txn parties + status=RECV_SUCCESS
-        DB->>DB: Insert outbox_event
-        DB-->>RS: left, ok=true
-        RS-->>API: success(origin_refundable_left)
-        API-->>C: 200 {txn_no, status=RECV_SUCCESS, origin_refundable_left}
+    AP->>DB: ApplyRefundDebitStage(txn_no, amount)
+    Note over DB: 事务内(出款阶段)
+    DB->>DB: 锁 refund txn + 锁 origin txn
+    DB->>DB: 校验 origin 存在/商户一致/可退余额充足
+    DB->>DB: DecreaseOriginTxnRefundable
+    DB->>DB: Update refund parties(反向账户)
+    DB->>DB: 扣 origin.credit 账户
+    DB->>DB: Update refund status -> PAY_SUCCESS
+
+    AP->>DB: ApplyRefundCreditStage(txn_no, credit_account_no, amount)
+    Note over DB: 事务内(入款阶段)
+    DB->>DB: 加 origin.debit 账户
+    DB->>DB: Update refund status -> RECV_SUCCESS
+    DB->>DB: Insert outbox_event
+
+    alt 任一阶段失败
+        AP->>DB: TransitionTransferTxnStatus(current -> FAILED, error_code, error_msg)
     end
 
-    Note over WW: 退款成功后由 outbox worker 轮询投递 webhook
+    Note over RW: 兜底补偿轮询 INIT/PROCESSING/PAY_SUCCESS 并重试 Process
+    RW->>AP: Process(txn_no)
+
+    Note over WW: RECV_SUCCESS 后由 outbox worker 投递 webhook
     WW->>DB: ClaimDueOutboxEvents(batch)
     WW->>DB: GetWebhookConfig + GetActiveSecret
     WW->>WH: POST webhook(带签名)

@@ -609,7 +609,8 @@ const getOriginTxnForUpdate = `-- name: GetOriginTxnForUpdate :one
 SELECT
   COALESCE(debit_account_no, '') AS debit_account_no,
   COALESCE(credit_account_no, '') AS credit_account_no,
-  refundable_amount
+  refundable_amount,
+  merchant_no
 FROM txn
 WHERE txn_no = $1
 FOR UPDATE
@@ -620,12 +621,18 @@ type GetOriginTxnForUpdateRow struct {
 	DebitAccountNo   string
 	CreditAccountNo  string
 	RefundableAmount int64
+	MerchantNo       string
 }
 
 func (q *Queries) GetOriginTxnForUpdate(ctx context.Context, originTxnNo pgtype.UUID) (GetOriginTxnForUpdateRow, error) {
 	row := q.db.QueryRow(ctx, getOriginTxnForUpdate, originTxnNo)
 	var i GetOriginTxnForUpdateRow
-	err := row.Scan(&i.DebitAccountNo, &i.CreditAccountNo, &i.RefundableAmount)
+	err := row.Scan(
+		&i.DebitAccountNo,
+		&i.CreditAccountNo,
+		&i.RefundableAmount,
+		&i.MerchantNo,
+	)
 	return i, err
 }
 
@@ -765,7 +772,8 @@ SELECT
   t.merchant_no,
   t.out_trade_no,
   COALESCE(t.biz_type, '') AS biz_type,
-  COALESCE(t.transfer_scene, '') AS transfer_scene
+  COALESCE(t.transfer_scene, '') AS transfer_scene,
+  COALESCE(t.refund_of_txn_no::text, '')::text AS refund_of_txn_no
 FROM txn t
 WHERE t.txn_no = $1
 FOR UPDATE
@@ -782,6 +790,7 @@ type GetTransferTxnStageForUpdateRow struct {
 	OutTradeNo      string
 	BizType         string
 	TransferScene   string
+	RefundOfTxnNo   string
 }
 
 func (q *Queries) GetTransferTxnStageForUpdate(ctx context.Context, txnNo pgtype.UUID) (GetTransferTxnStageForUpdateRow, error) {
@@ -797,6 +806,7 @@ func (q *Queries) GetTransferTxnStageForUpdate(ctx context.Context, txnNo pgtype
 		&i.OutTradeNo,
 		&i.BizType,
 		&i.TransferScene,
+		&i.RefundOfTxnNo,
 	)
 	return i, err
 }

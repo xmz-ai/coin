@@ -279,7 +279,6 @@ func setupPerfServer(
 	transferSvc := service.NewTransferService(repo, ids)
 	transferRoutingSvc := service.NewTransferRoutingService(repo)
 	accountResolver := service.NewAccountResolver(repo)
-	refundSvc := service.NewRefundService(repo)
 	querySvc := service.NewTxnQueryService(repo)
 
 	merchant, err := merchantSvc.CreateMerchant("", "perf-core-txn")
@@ -371,14 +370,12 @@ func setupPerfServer(
 
 	business := api.NewBusinessHandler(
 		transferSvc,
-		transferSvc,
 		repo,
 		transferRoutingSvc,
 		asyncProcessor,
 		webhookWorker,
 		accountResolver,
 		repo,
-		refundSvc,
 		querySvc,
 		repo,
 		nil,

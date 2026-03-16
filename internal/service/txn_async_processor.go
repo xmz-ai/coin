@@ -71,7 +71,7 @@ func (p *TransferAsyncProcessor) Process(txnNo string) error {
 		if !ok {
 			return ErrTxnNotFound
 		}
-		if txn.BizType != BizTypeTransfer {
+		if txn.BizType != BizTypeTransfer && txn.BizType != BizTypeRefund {
 			return nil
 		}
 
@@ -102,6 +102,17 @@ func (p *TransferAsyncProcessor) Process(txnNo string) error {
 			if !ok {
 				continue
 			}
+			if txn.BizType == BizTypeRefund {
+				applied, err := p.repo.ApplyRefundDebitStage(txn.TxnNo, txn.Amount)
+				if err != nil {
+					_ = p.fail(txnNo, TxnStatusProcessing, p.refundDebitErrorCode(err), err.Error())
+					return err
+				}
+				if !applied {
+					continue
+				}
+				continue
+			}
 			applied, err := p.repo.ApplyTransferDebitStage(txn.TxnNo, txn.DebitAccountNo, txn.Amount)
 			if err != nil {
 				_ = p.fail(txnNo, TxnStatusProcessing, "DEBIT_FAILED", err.Error())
@@ -117,6 +128,17 @@ func (p *TransferAsyncProcessor) Process(txnNo string) error {
 				return err
 			}
 			if !ok {
+				continue
+			}
+			if txn.BizType == BizTypeRefund {
+				applied, err := p.repo.ApplyRefundCreditStage(txn.TxnNo, txn.CreditAccountNo, txn.Amount)
+				if err != nil {
+					_ = p.fail(txnNo, TxnStatusPaySuccess, p.refundCreditErrorCode(err), err.Error())
+					return err
+				}
+				if !applied {
+					continue
+				}
 				continue
 			}
 			applied, err := p.repo.ApplyTransferCreditStage(txn.TxnNo, txn.CreditAccountNo, txn.Amount)
@@ -165,4 +187,24 @@ func (p *TransferAsyncProcessor) tryStage(txnNo, stage string) (bool, error) {
 		return true, nil
 	}
 	return false, nil
+}
+
+func (p *TransferAsyncProcessor) refundDebitErrorCode(err error) string {
+	switch {
+	case errors.Is(err, ErrTxnNotFound):
+		return "REFUND_ORIGIN_NOT_FOUND"
+	case errors.Is(err, ErrRefundAmountExceeded):
+		return "REFUND_AMOUNT_EXCEEDED"
+	default:
+		return "REFUND_DEBIT_FAILED"
+	}
+}
+
+func (p *TransferAsyncProcessor) refundCreditErrorCode(err error) string {
+	switch {
+	case errors.Is(err, ErrTxnNotFound):
+		return "REFUND_ORIGIN_NOT_FOUND"
+	default:
+		return "REFUND_CREDIT_FAILED"
+	}
 }

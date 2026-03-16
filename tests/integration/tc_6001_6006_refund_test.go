@@ -4,133 +4,357 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/xmz-ai/coin/internal/service"
 	"github.com/xmz-ai/coin/tests/support/memoryrepo"
 )
 
 func TestTC6001OriginTxnNotFoundRejected(t *testing.T) {
-	repo := memoryrepo.New()
-	svc := service.NewRefundService(repo)
+	repo, processor, merchantNo, _, _, _ := setupRefundAsyncFixture(t)
 
-	_, err := svc.SubmitRefund(service.RefundRequest{OriginTxnNo: "missing", Amount: 10})
+	refundTxnNo := "txn_6001_refund"
+	if err := repo.CreateTransferTxn(service.TransferTxn{
+		TxnNo:         refundTxnNo,
+		MerchantNo:    merchantNo,
+		OutTradeNo:    "ord_6001_refund",
+		BizType:       service.BizTypeRefund,
+		RefundOfTxnNo: "txn_missing_origin",
+		Amount:        10,
+		Status:        service.TxnStatusInit,
+	}); err != nil {
+		t.Fatalf("create refund txn failed: %v", err)
+	}
+
+	err := processor.Process(refundTxnNo)
 	if !errors.Is(err, service.ErrTxnNotFound) {
 		t.Fatalf("expected ErrTxnNotFound, got %v", err)
+	}
+
+	refund, ok := repo.GetTransferTxn(refundTxnNo)
+	if !ok {
+		t.Fatalf("refund txn not found")
+	}
+	if refund.Status != service.TxnStatusFailed {
+		t.Fatalf("expected FAILED, got %s", refund.Status)
+	}
+	if refund.ErrorCode != "REFUND_ORIGIN_NOT_FOUND" {
+		t.Fatalf("expected REFUND_ORIGIN_NOT_FOUND, got %s", refund.ErrorCode)
 	}
 }
 
 func TestTC6002RefundAmountExceededRejected(t *testing.T) {
-	repo := memoryrepo.New()
-	svc := service.NewRefundService(repo)
-	svc.RegisterOrigin(service.OriginTxn{
-		TxnNo:            "txn_6002",
-		RefundableAmount: 50,
-		AccountImpacts:   []service.AccountImpact{{AccountNo: "acc_a", Delta: 50}},
-	})
+	repo, processor, merchantNo, originTxnNo, _, _ := setupRefundAsyncFixture(t)
 
-	_, err := svc.SubmitRefund(service.RefundRequest{OriginTxnNo: "txn_6002", Amount: 60})
+	refundTxnNo := "txn_6002_refund"
+	if err := repo.CreateTransferTxn(service.TransferTxn{
+		TxnNo:         refundTxnNo,
+		MerchantNo:    merchantNo,
+		OutTradeNo:    "ord_6002_refund",
+		BizType:       service.BizTypeRefund,
+		RefundOfTxnNo: originTxnNo,
+		Amount:        120,
+		Status:        service.TxnStatusInit,
+	}); err != nil {
+		t.Fatalf("create refund txn failed: %v", err)
+	}
+
+	err := processor.Process(refundTxnNo)
 	if !errors.Is(err, service.ErrRefundAmountExceeded) {
 		t.Fatalf("expected ErrRefundAmountExceeded, got %v", err)
 	}
-}
 
-func TestTC6003RefundBreakdownSumMustEqualAmount(t *testing.T) {
-	repo := memoryrepo.New()
-	svc := service.NewRefundService(repo)
-	svc.RegisterOrigin(service.OriginTxn{
-		TxnNo:            "txn_6003",
-		RefundableAmount: 100,
-		AccountImpacts:   []service.AccountImpact{{AccountNo: "acc_a", Delta: 100}},
-	})
+	refund, ok := repo.GetTransferTxn(refundTxnNo)
+	if !ok {
+		t.Fatalf("refund txn not found")
+	}
+	if refund.Status != service.TxnStatusFailed {
+		t.Fatalf("expected FAILED, got %s", refund.Status)
+	}
+	if refund.ErrorCode != "REFUND_AMOUNT_EXCEEDED" {
+		t.Fatalf("expected REFUND_AMOUNT_EXCEEDED, got %s", refund.ErrorCode)
+	}
 
-	_, err := svc.SubmitRefund(service.RefundRequest{
-		OriginTxnNo: "txn_6003",
-		Amount:      30,
-		Breakdown:   []service.RefundPart{{AccountNo: "acc_a", Amount: 20}},
-	})
-	if !errors.Is(err, service.ErrRefundBreakdownInvalid) {
-		t.Fatalf("expected ErrRefundBreakdownInvalid, got %v", err)
+	origin, ok := repo.GetTransferTxn(originTxnNo)
+	if !ok {
+		t.Fatalf("origin txn not found")
+	}
+	if origin.RefundableAmount != 100 {
+		t.Fatalf("expected origin refundable_amount=100, got %d", origin.RefundableAmount)
 	}
 }
 
-func TestTC6004RefundBreakdownAccountsMustBelongToOrigin(t *testing.T) {
-	repo := memoryrepo.New()
-	svc := service.NewRefundService(repo)
-	svc.RegisterOrigin(service.OriginTxn{
-		TxnNo:            "txn_6004",
-		RefundableAmount: 100,
-		AccountImpacts:   []service.AccountImpact{{AccountNo: "acc_a", Delta: 100}},
-	})
+func TestTC6003RefundStagesToRecvSuccess(t *testing.T) {
+	repo, processor, merchantNo, originTxnNo, debitAccountNo, creditAccountNo := setupRefundAsyncFixture(t)
 
-	_, err := svc.SubmitRefund(service.RefundRequest{
-		OriginTxnNo: "txn_6004",
-		Amount:      30,
-		Breakdown:   []service.RefundPart{{AccountNo: "acc_x", Amount: 30}},
-	})
-	if !errors.Is(err, service.ErrRefundAccountNotInOrigin) {
-		t.Fatalf("expected ErrRefundAccountNotInOrigin, got %v", err)
+	refundTxnNo := "txn_6003_refund"
+	if err := repo.CreateTransferTxn(service.TransferTxn{
+		TxnNo:         refundTxnNo,
+		MerchantNo:    merchantNo,
+		OutTradeNo:    "ord_6003_refund",
+		BizType:       service.BizTypeRefund,
+		RefundOfTxnNo: originTxnNo,
+		Amount:        30,
+		Status:        service.TxnStatusInit,
+	}); err != nil {
+		t.Fatalf("create refund txn failed: %v", err)
+	}
+
+	if err := processor.Process(refundTxnNo); err != nil {
+		t.Fatalf("process refund failed: %v", err)
+	}
+
+	refund, ok := repo.GetTransferTxn(refundTxnNo)
+	if !ok {
+		t.Fatalf("refund txn not found")
+	}
+	if refund.Status != service.TxnStatusRecvSuccess {
+		t.Fatalf("expected RECV_SUCCESS, got %s", refund.Status)
+	}
+	if refund.DebitAccountNo != creditAccountNo || refund.CreditAccountNo != debitAccountNo {
+		t.Fatalf("unexpected refund parties: debit=%s credit=%s", refund.DebitAccountNo, refund.CreditAccountNo)
+	}
+
+	origin, ok := repo.GetTransferTxn(originTxnNo)
+	if !ok {
+		t.Fatalf("origin txn not found")
+	}
+	if origin.RefundableAmount != 70 {
+		t.Fatalf("expected origin refundable_amount=70, got %d", origin.RefundableAmount)
+	}
+
+	events, err := repo.ClaimDueOutboxEventsByTxnNo(refundTxnNo, 10, time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("claim refund outbox events failed: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 outbox event, got %+v", events)
+	}
+}
+
+func TestTC6004RefundCrossMerchantOriginRejected(t *testing.T) {
+	repo, processor, merchantNo, _, _, _ := setupRefundAsyncFixture(t)
+
+	otherOriginTxnNo := "txn_6004_other_origin"
+	if err := repo.CreateTransferTxn(service.TransferTxn{
+		TxnNo:            otherOriginTxnNo,
+		MerchantNo:       "merchant_other",
+		OutTradeNo:       "ord_6004_other_origin",
+		BizType:          service.BizTypeTransfer,
+		TransferScene:    service.SceneP2P,
+		DebitAccountNo:   "acc_other_debit",
+		CreditAccountNo:  "acc_other_credit",
+		Amount:           50,
+		RefundableAmount: 50,
+		Status:           service.TxnStatusRecvSuccess,
+	}); err != nil {
+		t.Fatalf("create other origin txn failed: %v", err)
+	}
+
+	refundTxnNo := "txn_6004_refund"
+	if err := repo.CreateTransferTxn(service.TransferTxn{
+		TxnNo:         refundTxnNo,
+		MerchantNo:    merchantNo,
+		OutTradeNo:    "ord_6004_refund",
+		BizType:       service.BizTypeRefund,
+		RefundOfTxnNo: otherOriginTxnNo,
+		Amount:        10,
+		Status:        service.TxnStatusInit,
+	}); err != nil {
+		t.Fatalf("create refund txn failed: %v", err)
+	}
+
+	err := processor.Process(refundTxnNo)
+	if !errors.Is(err, service.ErrTxnNotFound) {
+		t.Fatalf("expected ErrTxnNotFound, got %v", err)
+	}
+
+	refund, ok := repo.GetTransferTxn(refundTxnNo)
+	if !ok {
+		t.Fatalf("refund txn not found")
+	}
+	if refund.Status != service.TxnStatusFailed {
+		t.Fatalf("expected FAILED, got %s", refund.Status)
+	}
+	if refund.ErrorCode != "REFUND_ORIGIN_NOT_FOUND" {
+		t.Fatalf("expected REFUND_ORIGIN_NOT_FOUND, got %s", refund.ErrorCode)
 	}
 }
 
 func TestTC6005ConcurrentRefundDoesNotExceed(t *testing.T) {
-	repo := memoryrepo.New()
-	svc := service.NewRefundService(repo)
-	svc.RegisterOrigin(service.OriginTxn{
-		TxnNo:            "txn_6005",
-		RefundableAmount: 100,
-		AccountImpacts:   []service.AccountImpact{{AccountNo: "acc_a", Delta: 100}},
-	})
+	repo, _, merchantNo, originTxnNo, _, _ := setupRefundAsyncFixture(t)
+
+	refundTxnA := "txn_6005_refund_a"
+	refundTxnB := "txn_6005_refund_b"
+	for _, item := range []service.TransferTxn{
+		{
+			TxnNo:         refundTxnA,
+			MerchantNo:    merchantNo,
+			OutTradeNo:    "ord_6005_refund_a",
+			BizType:       service.BizTypeRefund,
+			RefundOfTxnNo: originTxnNo,
+			Amount:        80,
+			Status:        service.TxnStatusInit,
+		},
+		{
+			TxnNo:         refundTxnB,
+			MerchantNo:    merchantNo,
+			OutTradeNo:    "ord_6005_refund_b",
+			BizType:       service.BizTypeRefund,
+			RefundOfTxnNo: originTxnNo,
+			Amount:        80,
+			Status:        service.TxnStatusInit,
+		},
+	} {
+		if err := repo.CreateTransferTxn(item); err != nil {
+			t.Fatalf("create refund txn failed: %v", err)
+		}
+	}
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, 2)
-	for i := 0; i < 2; i++ {
+	for _, txnNo := range []string{refundTxnA, refundTxnB} {
 		wg.Add(1)
-		go func() {
+		go func(txnNo string) {
 			defer wg.Done()
-			_, err := svc.SubmitRefund(service.RefundRequest{OriginTxnNo: "txn_6005", Amount: 80})
-			errCh <- err
-		}()
+			processor := service.NewTransferAsyncProcessor(repo)
+			errCh <- processor.Process(txnNo)
+		}(txnNo)
 	}
 	wg.Wait()
 	close(errCh)
 
-	success := 0
-	exceeded := 0
+	successByErr := 0
+	exceededByErr := 0
 	for err := range errCh {
 		if err == nil {
-			success++
+			successByErr++
 			continue
 		}
 		if errors.Is(err, service.ErrRefundAmountExceeded) {
-			exceeded++
+			exceededByErr++
 		}
 	}
-	if success != 1 || exceeded != 1 {
-		t.Fatalf("expected one success and one ErrRefundAmountExceeded, got success=%d exceeded=%d", success, exceeded)
+	if successByErr != 1 || exceededByErr != 1 {
+		t.Fatalf("expected one success and one ErrRefundAmountExceeded, got success=%d exceeded=%d", successByErr, exceededByErr)
+	}
+
+	successByStatus := 0
+	exceededByStatus := 0
+	for _, txnNo := range []string{refundTxnA, refundTxnB} {
+		txn, ok := repo.GetTransferTxn(txnNo)
+		if !ok {
+			t.Fatalf("refund txn not found: %s", txnNo)
+		}
+		if txn.Status == service.TxnStatusRecvSuccess {
+			successByStatus++
+		}
+		if txn.Status == service.TxnStatusFailed && txn.ErrorCode == "REFUND_AMOUNT_EXCEEDED" {
+			exceededByStatus++
+		}
+	}
+	if successByStatus != 1 || exceededByStatus != 1 {
+		t.Fatalf("expected status success=1 exceeded=1, got success=%d exceeded=%d", successByStatus, exceededByStatus)
+	}
+
+	origin, ok := repo.GetTransferTxn(originTxnNo)
+	if !ok {
+		t.Fatalf("origin txn not found")
+	}
+	if origin.RefundableAmount != 20 {
+		t.Fatalf("expected origin refundable_amount=20, got %d", origin.RefundableAmount)
 	}
 }
 
 func TestTC6006RefundReverseAccounting(t *testing.T) {
+	repo, processor, merchantNo, originTxnNo, debitAccountNo, creditAccountNo := setupRefundAsyncFixture(t)
+
+	refundTxnNo := "txn_6006_refund"
+	if err := repo.CreateTransferTxn(service.TransferTxn{
+		TxnNo:         refundTxnNo,
+		MerchantNo:    merchantNo,
+		OutTradeNo:    "ord_6006_refund",
+		BizType:       service.BizTypeRefund,
+		RefundOfTxnNo: originTxnNo,
+		Amount:        30,
+		Status:        service.TxnStatusInit,
+	}); err != nil {
+		t.Fatalf("create refund txn failed: %v", err)
+	}
+
+	if err := processor.Process(refundTxnNo); err != nil {
+		t.Fatalf("process refund failed: %v", err)
+	}
+
+	debit, _ := repo.GetAccount(debitAccountNo)
+	credit, _ := repo.GetAccount(creditAccountNo)
+	if debit.Balance != 1030 {
+		t.Fatalf("expected debit balance 1030, got %d", debit.Balance)
+	}
+	if credit.Balance != 170 {
+		t.Fatalf("expected credit balance 170, got %d", credit.Balance)
+	}
+
+	changes := repo.ListAccountChangesByTxnNo(refundTxnNo)
+	if len(changes) != 2 {
+		t.Fatalf("expected 2 account changes, got %+v", changes)
+	}
+	deltas := map[string]int64{}
+	for _, item := range changes {
+		deltas[item.AccountNo] += item.Delta
+	}
+	if deltas[creditAccountNo] != -30 || deltas[debitAccountNo] != 30 {
+		t.Fatalf("unexpected refund deltas: %+v", deltas)
+	}
+}
+
+func setupRefundAsyncFixture(t *testing.T) (*memoryrepo.Repo, *service.TransferAsyncProcessor, string, string, string, string) {
+	t.Helper()
+
 	repo := memoryrepo.New()
-	repo.CreateAccount(service.Account{AccountNo: "acc_a", Balance: 100, AllowDebitOut: true, AllowCreditIn: true, AllowTransfer: true})
-	svc := service.NewRefundService(repo)
-	svc.RegisterOrigin(service.OriginTxn{
-		TxnNo:            "txn_6006",
+	merchantNo := "merchant_6000"
+	debitAccountNo := "acc_6000_debit"
+	creditAccountNo := "acc_6000_credit"
+
+	if err := repo.CreateAccount(service.Account{
+		AccountNo:     debitAccountNo,
+		MerchantNo:    merchantNo,
+		AccountType:   "CUSTOMER",
+		AllowDebitOut: true,
+		AllowCreditIn: true,
+		AllowTransfer: true,
+		Balance:       1000,
+	}); err != nil {
+		t.Fatalf("create debit account failed: %v", err)
+	}
+	if err := repo.CreateAccount(service.Account{
+		AccountNo:     creditAccountNo,
+		MerchantNo:    merchantNo,
+		AccountType:   "CUSTOMER",
+		AllowDebitOut: true,
+		AllowCreditIn: true,
+		AllowTransfer: true,
+		Balance:       200,
+	}); err != nil {
+		t.Fatalf("create credit account failed: %v", err)
+	}
+
+	originTxnNo := "txn_6000_origin"
+	if err := repo.CreateTransferTxn(service.TransferTxn{
+		TxnNo:            originTxnNo,
+		MerchantNo:       merchantNo,
+		OutTradeNo:       "ord_6000_origin",
+		BizType:          service.BizTypeTransfer,
+		TransferScene:    service.SceneP2P,
+		DebitAccountNo:   debitAccountNo,
+		CreditAccountNo:  creditAccountNo,
+		Amount:           100,
 		RefundableAmount: 100,
-		AccountImpacts:   []service.AccountImpact{{AccountNo: "acc_a", Delta: 100}},
-	})
-
-	_, err := svc.SubmitRefund(service.RefundRequest{
-		OriginTxnNo: "txn_6006",
-		Amount:      30,
-		Breakdown:   []service.RefundPart{{AccountNo: "acc_a", Amount: 30}},
-	})
-	if err != nil {
-		t.Fatalf("refund failed: %v", err)
+		Status:           service.TxnStatusRecvSuccess,
+	}); err != nil {
+		t.Fatalf("create origin txn failed: %v", err)
 	}
 
-	a, _ := repo.GetAccount("acc_a")
-	if a.Balance != 70 {
-		t.Fatalf("expected reversed balance 70, got %d", a.Balance)
-	}
+	processor := service.NewTransferAsyncProcessor(repo)
+	return repo, processor, merchantNo, originTxnNo, debitAccountNo, creditAccountNo
 }
