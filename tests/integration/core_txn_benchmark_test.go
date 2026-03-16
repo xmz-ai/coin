@@ -94,7 +94,6 @@ func newCoreTxnBenchmarkServer(b *testing.B) (*gin.Engine, string, string) {
 	repo, merchantNo, transferSvc, _ := newCoreTxnBenchmarkServices(b)
 	transferRoutingSvc := service.NewTransferRoutingService(repo)
 	accountResolver := service.NewAccountResolver(repo)
-	refundSvc := service.NewRefundService(repo)
 	querySvc := service.NewTxnQueryService(repo)
 
 	base := time.Unix(1_710_000_000, 0).UTC()
@@ -107,14 +106,12 @@ func newCoreTxnBenchmarkServer(b *testing.B) (*gin.Engine, string, string) {
 
 	business := api.NewBusinessHandler(
 		transferSvc,
-		transferSvc,
 		repo,
 		transferRoutingSvc,
 		noopAsyncDispatcher{},
 		noopAsyncDispatcher{},
 		accountResolver,
 		repo,
-		refundSvc,
 		querySvc,
 		repo,
 		func() time.Time { return base },

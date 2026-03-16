@@ -152,15 +152,9 @@ func TestTC9013PostgresRefundWritesReverseLogsAndBalances(t *testing.T) {
 		t.Fatalf("create refund txn failed: %v", err)
 	}
 
-	refundSvc := service.NewRefundService(repo)
-	_, err = refundSvc.SubmitRefund(service.RefundRequest{
-		MerchantNo:  merchant.MerchantNo,
-		RefundTxnNo: refundTxnNo,
-		OriginTxnNo: originTxnNo,
-		Amount:      50,
-	})
-	if err != nil {
-		t.Fatalf("submit refund failed: %v", err)
+	processor := service.NewTransferAsyncProcessor(repo)
+	if err := processor.Process(refundTxnNo); err != nil {
+		t.Fatalf("process refund failed: %v", err)
 	}
 
 	debit, _ := repo.GetAccount(debitAccountNo)
@@ -241,7 +235,6 @@ func TestTC9020PostgresConcurrentRefundCASNoOverRefund(t *testing.T) {
 		}
 	}
 
-	refundSvc := service.NewRefundService(repo)
 	type result struct{ err error }
 	ch := make(chan result, 2)
 	var wg sync.WaitGroup
@@ -249,12 +242,8 @@ func TestTC9020PostgresConcurrentRefundCASNoOverRefund(t *testing.T) {
 		wg.Add(1)
 		go func(refundTxnNo string) {
 			defer wg.Done()
-			_, err := refundSvc.SubmitRefund(service.RefundRequest{
-				MerchantNo:  merchant.MerchantNo,
-				RefundTxnNo: refundTxnNo,
-				OriginTxnNo: originTxnNo,
-				Amount:      80,
-			})
+			processor := service.NewTransferAsyncProcessor(repo)
+			err := processor.Process(refundTxnNo)
 			ch <- result{err: err}
 		}(refundTxnNo)
 	}

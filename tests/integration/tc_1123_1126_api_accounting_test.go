@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/xmz-ai/coin/internal/service"
 	"github.com/xmz-ai/coin/tests/support/memoryrepo"
 )
 
@@ -163,10 +164,11 @@ func TestTC1126APIRefundBalanceAndChangeLogs(t *testing.T) {
 	})
 	refundResp := httptest.NewRecorder()
 	r.ServeHTTP(refundResp, refundReq)
-	if refundResp.Code != http.StatusOK {
-		t.Fatalf("refund expected 200, got %d body=%s", refundResp.Code, refundResp.Body.String())
+	if refundResp.Code != http.StatusCreated {
+		t.Fatalf("refund expected 201, got %d body=%s", refundResp.Code, refundResp.Body.String())
 	}
 	refundTxnNo := decodeJSONMap(t, refundResp.Body.Bytes())["data"].(map[string]any)["txn_no"].(string)
+	waitTxnStatus(t, r, merchantNo, secret, refundTxnNo, service.TxnStatusRecvSuccess)
 
 	debitAfter, _ := repo.GetAccount(testDebitAccountNo)
 	creditAfter, _ := repo.GetAccount(testCreditAccountNo)

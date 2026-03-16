@@ -416,14 +416,19 @@ func TestTC1109APIRefundSuccess(t *testing.T) {
 	})
 	refundResp := httptest.NewRecorder()
 	r.ServeHTTP(refundResp, refundReq)
-	if refundResp.Code != http.StatusOK {
-		t.Fatalf("refund expected 200, got %d body=%s", refundResp.Code, refundResp.Body.String())
+	if refundResp.Code != http.StatusCreated {
+		t.Fatalf("refund expected 201, got %d body=%s", refundResp.Code, refundResp.Body.String())
 	}
 
 	body := decodeJSONMap(t, refundResp.Body.Bytes())
 	if body["code"] != "SUCCESS" {
 		t.Fatalf("expected SUCCESS, got %v", body["code"])
 	}
+	refundTxnNo, _ := body["data"].(map[string]any)["txn_no"].(string)
+	if refundTxnNo == "" {
+		t.Fatalf("expected refund txn_no")
+	}
+	waitTxnStatus(t, r, merchantNo, secret, refundTxnNo, service.TxnStatusRecvSuccess)
 }
 
 func TestTC1110APIRefundAmountExceeded(t *testing.T) {
@@ -451,12 +456,29 @@ func TestTC1110APIRefundAmountExceeded(t *testing.T) {
 	})
 	refundResp := httptest.NewRecorder()
 	r.ServeHTTP(refundResp, refundReq)
-	if refundResp.Code != http.StatusConflict {
-		t.Fatalf("refund exceeded expected 409, got %d body=%s", refundResp.Code, refundResp.Body.String())
+	if refundResp.Code != http.StatusCreated {
+		t.Fatalf("refund submit expected 201, got %d body=%s", refundResp.Code, refundResp.Body.String())
 	}
-	body := decodeJSONMap(t, refundResp.Body.Bytes())
-	if body["code"] != "REFUND_AMOUNT_EXCEEDED" {
-		t.Fatalf("expected REFUND_AMOUNT_EXCEEDED, got %v", body["code"])
+	refundBody := decodeJSONMap(t, refundResp.Body.Bytes())
+	refundTxnNo, _ := refundBody["data"].(map[string]any)["txn_no"].(string)
+	if refundTxnNo == "" {
+		t.Fatalf("expected refund txn_no")
+	}
+	waitTxnStatus(t, r, merchantNo, secret, refundTxnNo, service.TxnStatusFailed)
+
+	queryReq := signedAPIRequest(t, http.MethodGet, "/api/v1/transactions/"+refundTxnNo, merchantNo, secret, "nonce-1110-query", nil)
+	queryResp := httptest.NewRecorder()
+	r.ServeHTTP(queryResp, queryReq)
+	if queryResp.Code != http.StatusOK {
+		t.Fatalf("query expected 200, got %d body=%s", queryResp.Code, queryResp.Body.String())
+	}
+	body := decodeJSONMap(t, queryResp.Body.Bytes())
+	data := body["data"].(map[string]any)
+	if data["status"] != service.TxnStatusFailed {
+		t.Fatalf("expected FAILED status, got %v", data["status"])
+	}
+	if data["error_code"] != "REFUND_AMOUNT_EXCEEDED" {
+		t.Fatalf("expected REFUND_AMOUNT_EXCEEDED, got %v", data["error_code"])
 	}
 }
 
@@ -534,14 +556,41 @@ func TestTC1112APIRefundConcurrentNoOverRefund(t *testing.T) {
 	wg.Wait()
 	close(ch)
 
+	submitted := make([]string, 0, 2)
+	for item := range ch {
+		if item.code != http.StatusCreated || item.body["code"] != "SUCCESS" {
+			t.Fatalf("expected submit 201 SUCCESS, got code=%d body=%+v", item.code, item.body)
+		}
+		txnNo, _ := item.body["data"].(map[string]any)["txn_no"].(string)
+		if txnNo == "" {
+			t.Fatalf("expected refund txn_no in submit response")
+		}
+		submitted = append(submitted, txnNo)
+	}
+
 	success := 0
 	exceeded := 0
-	for item := range ch {
-		if item.code == http.StatusOK && item.body["code"] == "SUCCESS" {
-			success++
-		}
-		if item.code == http.StatusConflict && item.body["code"] == "REFUND_AMOUNT_EXCEEDED" {
-			exceeded++
+	for i, txnNo := range submitted {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			queryReq := signedAPIRequest(t, http.MethodGet, "/api/v1/transactions/"+txnNo, merchantNo, secret, "nonce-1112-query-"+strconv.Itoa(i), nil)
+			queryResp := httptest.NewRecorder()
+			r.ServeHTTP(queryResp, queryReq)
+			if queryResp.Code != http.StatusOK {
+				time.Sleep(5 * time.Millisecond)
+				continue
+			}
+			data := decodeJSONMap(t, queryResp.Body.Bytes())["data"].(map[string]any)
+			status, _ := data["status"].(string)
+			if status == service.TxnStatusRecvSuccess {
+				success++
+				break
+			}
+			if status == service.TxnStatusFailed && data["error_code"] == "REFUND_AMOUNT_EXCEEDED" {
+				exceeded++
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
 		}
 	}
 	if success != 1 || exceeded != 1 {
@@ -583,12 +632,28 @@ func TestTC1113APIRefundCrossMerchantOriginRejected(t *testing.T) {
 	})
 	refundResp := httptest.NewRecorder()
 	r.ServeHTTP(refundResp, refundReq)
-	if refundResp.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d body=%s", refundResp.Code, refundResp.Body.String())
+	if refundResp.Code != http.StatusCreated {
+		t.Fatalf("refund submit expected 201, got %d body=%s", refundResp.Code, refundResp.Body.String())
 	}
-	body := decodeJSONMap(t, refundResp.Body.Bytes())
-	if body["code"] != "TXN_NOT_FOUND" {
-		t.Fatalf("expected TXN_NOT_FOUND, got %v", body["code"])
+	refundBody := decodeJSONMap(t, refundResp.Body.Bytes())
+	refundTxnNo, _ := refundBody["data"].(map[string]any)["txn_no"].(string)
+	if refundTxnNo == "" {
+		t.Fatalf("expected refund txn_no")
+	}
+	waitTxnStatus(t, r, merchantNo, secret, refundTxnNo, service.TxnStatusFailed)
+
+	queryReq := signedAPIRequest(t, http.MethodGet, "/api/v1/transactions/"+refundTxnNo, merchantNo, secret, "nonce-1113-query", nil)
+	queryResp := httptest.NewRecorder()
+	r.ServeHTTP(queryResp, queryReq)
+	if queryResp.Code != http.StatusOK {
+		t.Fatalf("query expected 200, got %d body=%s", queryResp.Code, queryResp.Body.String())
+	}
+	data := decodeJSONMap(t, queryResp.Body.Bytes())["data"].(map[string]any)
+	if data["status"] != service.TxnStatusFailed {
+		t.Fatalf("expected FAILED status, got %v", data["status"])
+	}
+	if data["error_code"] != "REFUND_ORIGIN_NOT_FOUND" {
+		t.Fatalf("expected REFUND_ORIGIN_NOT_FOUND, got %v", data["error_code"])
 	}
 }
 
@@ -1002,7 +1067,7 @@ func waitTxnStatus(t *testing.T, r *gin.Engine, merchantNo, secret, txnNo, targe
 		if status == targetStatus {
 			return
 		}
-		if status == service.TxnStatusFailed {
+		if targetStatus != service.TxnStatusFailed && status == service.TxnStatusFailed {
 			t.Fatalf("txn %s async processing failed: %+v", txnNo, data)
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -1071,11 +1136,10 @@ func newTxnAPITestServer(t *testing.T) (*gin.Engine, *memoryrepo.Repo, string, s
 	transferRoutingSvc := service.NewTransferRoutingService(repo)
 	asyncTransferSvc := service.NewTransferAsyncProcessor(repo)
 	accountResolver := service.NewAccountResolver(repo)
-	refundSvc := service.NewRefundService(repo)
 	querySvc := service.NewTxnQueryService(repo)
 	base := time.Unix(1_710_000_000, 0).UTC()
 	tick := 0
-	businessHandler := api.NewBusinessHandler(transferSvc, transferSvc, repo, transferRoutingSvc, asyncTransferSvc, nil, accountResolver, repo, refundSvc, querySvc, repo, func() time.Time {
+	businessHandler := api.NewBusinessHandler(transferSvc, repo, transferRoutingSvc, asyncTransferSvc, nil, accountResolver, repo, querySvc, repo, func() time.Time {
 		tick++
 		return base.Add(time.Duration(tick) * time.Millisecond)
 	})

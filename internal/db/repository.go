@@ -620,6 +620,156 @@ func (r *Repository) ApplyTransferCreditStage(txnNo, creditAccountNo string, amo
 	return true, nil
 }
 
+func (r *Repository) ApplyRefundDebitStage(refundTxnNo string, amount int64) (bool, error) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	refundTxnUUID, err := parseUUID(refundTxnNo)
+	if err != nil {
+		return false, service.ErrTxnNotFound
+	}
+
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	qtx := r.queries.WithTx(tx)
+	refund, err := qtx.GetTransferTxnStageForUpdate(ctx, refundTxnUUID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, service.ErrTxnNotFound
+	}
+	if err != nil {
+		return false, err
+	}
+	if refund.Status != service.TxnStatusProcessing {
+		if err := tx.Commit(ctx); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	if refund.BizType != service.BizTypeRefund || strings.TrimSpace(refund.RefundOfTxnNo) == "" {
+		return false, service.ErrTxnStatusInvalid
+	}
+
+	originTxnUUID, err := parseUUID(refund.RefundOfTxnNo)
+	if err != nil {
+		return false, service.ErrTxnNotFound
+	}
+	origin, err := qtx.GetOriginTxnForUpdate(ctx, originTxnUUID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, service.ErrTxnNotFound
+	}
+	if err != nil {
+		return false, err
+	}
+	if origin.MerchantNo != refund.MerchantNo {
+		return false, service.ErrTxnNotFound
+	}
+	if origin.RefundableAmount < amount {
+		return false, service.ErrRefundAmountExceeded
+	}
+	if err := qtx.DecreaseOriginTxnRefundable(ctx, dbsqlc.DecreaseOriginTxnRefundableParams{
+		Amount:      amount,
+		OriginTxnNo: originTxnUUID,
+	}); err != nil {
+		return false, err
+	}
+
+	refundDebit := origin.CreditAccountNo
+	refundCredit := origin.DebitAccountNo
+	if err := qtx.UpdateTransferTxnParties(ctx, dbsqlc.UpdateTransferTxnPartiesParams{
+		DebitAccountNo:  textValue(refundDebit),
+		CreditAccountNo: textValue(refundCredit),
+		TxnNo:           refundTxnUUID,
+	}); err != nil {
+		return false, err
+	}
+	if err := applyAccountDebitTx(ctx, qtx, refundTxnUUID, refundDebit, amount); err != nil {
+		return false, err
+	}
+	if err := qtx.UpdateTransferTxnStatus(ctx, dbsqlc.UpdateTransferTxnStatusParams{
+		Status:    service.TxnStatusPaySuccess,
+		ErrorCode: nil,
+		ErrorMsg:  nil,
+		TxnNo:     refundTxnUUID,
+	}); err != nil {
+		return false, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (r *Repository) ApplyRefundCreditStage(refundTxnNo, creditAccountNo string, amount int64) (bool, error) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	refundTxnUUID, err := parseUUID(refundTxnNo)
+	if err != nil {
+		return false, service.ErrTxnNotFound
+	}
+
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	qtx := r.queries.WithTx(tx)
+	refund, err := qtx.GetTransferTxnStageForUpdate(ctx, refundTxnUUID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, service.ErrTxnNotFound
+	}
+	if err != nil {
+		return false, err
+	}
+	if refund.Status != service.TxnStatusPaySuccess {
+		if err := tx.Commit(ctx); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+
+	stageCreditAccountNo := strings.TrimSpace(refund.CreditAccountNo)
+	if stageCreditAccountNo == "" {
+		stageCreditAccountNo = strings.TrimSpace(creditAccountNo)
+	}
+	if stageCreditAccountNo == "" {
+		return false, service.ErrAccountResolveFailed
+	}
+	if strings.TrimSpace(creditAccountNo) != "" && strings.TrimSpace(refund.CreditAccountNo) != "" && strings.TrimSpace(creditAccountNo) != strings.TrimSpace(refund.CreditAccountNo) {
+		return false, service.ErrAccountResolveFailed
+	}
+
+	if err := applyAccountCreditTx(ctx, qtx, refundTxnUUID, stageCreditAccountNo, amount, nil); err != nil {
+		return false, err
+	}
+	if err := qtx.UpdateTransferTxnStatus(ctx, dbsqlc.UpdateTransferTxnStatusParams{
+		Status:    service.TxnStatusRecvSuccess,
+		ErrorCode: nil,
+		ErrorMsg:  nil,
+		TxnNo:     refundTxnUUID,
+	}); err != nil {
+		return false, err
+	}
+	refundTxnRow, err := qtx.GetTransferTxnByNo(ctx, refundTxnUUID)
+	if err != nil {
+		return false, err
+	}
+	if err := insertOutboxEventTx(ctx, tx, refundTxnUUID, refundTxnRow.MerchantNo, refundTxnRow.OutTradeNo); err != nil {
+		return false, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (r *Repository) ApplyRefund(refundTxnNo, originTxnNo string, amount int64) (left int64, ok bool, err error) {
 	ctx, cancel := r.withTimeout()
 	defer cancel()

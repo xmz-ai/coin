@@ -15,10 +15,6 @@ type TransferSubmitter interface {
 	Submit(req service.TransferRequest) (service.TransferTxn, error)
 }
 
-type TxnStatusUpdater interface {
-	UpdateTxnStatus(txnNo, status, errorCode, errorMsg string) error
-}
-
 type MerchantFinder interface {
 	GetMerchantByNo(merchantNo string) (service.Merchant, bool)
 }
@@ -43,10 +39,6 @@ type AccountFinder interface {
 	GetAccount(accountNo string) (service.Account, bool)
 }
 
-type RefundProcessor interface {
-	SubmitRefund(req service.RefundRequest) (service.RefundResult, error)
-}
-
 type TxnQueryStore interface {
 	AddTxn(txn service.QueryTxn)
 	GetByTxnNo(txnNo string) (service.QueryTxn, bool)
@@ -60,30 +52,26 @@ type WebhookConfigStore interface {
 }
 
 type BusinessHandler struct {
-	transfer         TransferSubmitter
-	txnStatusUpdater TxnStatusUpdater
-	merchants        MerchantFinder
-	transferRouter   TransferRouter
-	asyncTransfer    TransferAsyncDispatcher
-	asyncWebhook     WebhookAsyncDispatcher
-	accountResolver  CustomerAccountResolver
-	accounts         AccountFinder
-	refund           RefundProcessor
-	query            TxnQueryStore
-	webhooks         WebhookConfigStore
-	nowFn            func() time.Time
+	transfer        TransferSubmitter
+	merchants       MerchantFinder
+	transferRouter  TransferRouter
+	asyncTransfer   TransferAsyncDispatcher
+	asyncWebhook    WebhookAsyncDispatcher
+	accountResolver CustomerAccountResolver
+	accounts        AccountFinder
+	query           TxnQueryStore
+	webhooks        WebhookConfigStore
+	nowFn           func() time.Time
 }
 
 func NewBusinessHandler(
 	transfer TransferSubmitter,
-	txnStatusUpdater TxnStatusUpdater,
 	merchants MerchantFinder,
 	transferRouter TransferRouter,
 	asyncTransfer TransferAsyncDispatcher,
 	asyncWebhook WebhookAsyncDispatcher,
 	accountResolver CustomerAccountResolver,
 	accounts AccountFinder,
-	refund RefundProcessor,
 	query TxnQueryStore,
 	webhooks WebhookConfigStore,
 	nowFn func() time.Time,
@@ -92,18 +80,16 @@ func NewBusinessHandler(
 		nowFn = func() time.Time { return time.Now().UTC() }
 	}
 	return &BusinessHandler{
-		transfer:         transfer,
-		txnStatusUpdater: txnStatusUpdater,
-		merchants:        merchants,
-		transferRouter:   transferRouter,
-		asyncTransfer:    asyncTransfer,
-		asyncWebhook:     asyncWebhook,
-		accountResolver:  accountResolver,
-		accounts:         accounts,
-		refund:           refund,
-		query:            query,
-		webhooks:         webhooks,
-		nowFn:            nowFn,
+		transfer:        transfer,
+		merchants:       merchants,
+		transferRouter:  transferRouter,
+		asyncTransfer:   asyncTransfer,
+		asyncWebhook:    asyncWebhook,
+		accountResolver: accountResolver,
+		accounts:        accounts,
+		query:           query,
+		webhooks:        webhooks,
+		nowFn:           nowFn,
 	}
 }
 
@@ -573,7 +559,7 @@ func (h *BusinessHandler) handleTransfer(c *gin.Context) {
 }
 
 func (h *BusinessHandler) handleRefund(c *gin.Context) {
-	if h == nil || h.transfer == nil || h.txnStatusUpdater == nil || h.refund == nil || h.query == nil {
+	if h == nil || h.transfer == nil || h.asyncTransfer == nil || h.merchants == nil {
 		writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "business handler not configured")
 		return
 	}
@@ -581,6 +567,10 @@ func (h *BusinessHandler) handleRefund(c *gin.Context) {
 	merchantNo, ok := MerchantNoFromContext(c)
 	if !ok {
 		writeError(c, http.StatusUnauthorized, "INVALID_SIGNATURE", "merchant context missing")
+		return
+	}
+	if _, ok := h.merchants.GetMerchantByNo(merchantNo); !ok {
+		writeError(c, http.StatusNotFound, "MERCHANT_NOT_FOUND", "merchant not found")
 		return
 	}
 
@@ -602,17 +592,18 @@ func (h *BusinessHandler) handleRefund(c *gin.Context) {
 		return
 	}
 
-	breakdown := make([]service.RefundPart, 0, len(req.Breakdown))
+	sum := int64(0)
 	for _, item := range req.Breakdown {
 		accountNo := strings.TrimSpace(item.AccountNo)
 		if accountNo == "" || item.Amount <= 0 {
 			writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid refund_breakdown")
 			return
 		}
-		breakdown = append(breakdown, service.RefundPart{
-			AccountNo: accountNo,
-			Amount:    item.Amount,
-		})
+		sum += item.Amount
+	}
+	if len(req.Breakdown) > 0 && sum != req.Amount {
+		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "refund_breakdown amount mismatch")
+		return
 	}
 
 	txn, err := h.transfer.Submit(service.TransferRequest{
@@ -633,24 +624,14 @@ func (h *BusinessHandler) handleRefund(c *gin.Context) {
 		writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "submit refund failed")
 		return
 	}
-
-	result, err := h.refund.SubmitRefund(service.RefundRequest{
-		MerchantNo:  merchantNo,
-		RefundTxnNo: txn.TxnNo,
-		OriginTxnNo: req.RefundOfTxnNo,
-		Amount:      req.Amount,
-		Breakdown:   breakdown,
-	})
-	if err != nil {
-		_ = h.txnStatusUpdater.UpdateTxnStatus(txn.TxnNo, service.TxnStatusFailed, "REFUND_FAILED", err.Error())
-		writeRefundError(c, err)
-		return
+	if h.asyncWebhook != nil {
+		h.asyncWebhook.Enqueue(txn.TxnNo)
 	}
+	h.asyncTransfer.Enqueue(txn.TxnNo)
 
-	writeSuccess(c, gin.H{
-		"txn_no":                 txn.TxnNo,
-		"status":                 service.TxnStatusRecvSuccess,
-		"origin_refundable_left": result.OriginRefundableLeft,
+	writeCreated(c, gin.H{
+		"txn_no": txn.TxnNo,
+		"status": service.TxnStatusInit,
 	})
 }
 
@@ -865,6 +846,8 @@ func toTxnResponse(item service.QueryTxn) gin.H {
 		"refundable_amount": item.RefundableAmount,
 		"debit_account_no":  item.DebitAccountNo,
 		"credit_account_no": item.CreditAccountNo,
+		"error_code":        item.ErrorCode,
+		"error_msg":         item.ErrorMsg,
 		"created_at":        item.CreatedAt.UTC().Format(time.RFC3339Nano),
 	}
 }
