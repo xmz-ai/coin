@@ -127,7 +127,7 @@ INSERT INTO txn (
   NULLIF(sqlc.arg(transfer_scene), ''),
   NULLIF(sqlc.arg(debit_account_no), ''),
   NULLIF(sqlc.arg(credit_account_no), ''),
-  sqlc.narg(credit_expire_at)::timestamptz,
+  sqlc.narg(credit_expire_at)::date,
   sqlc.arg(amount),
   sqlc.arg(status),
   NULLIF(sqlc.arg(refund_of_txn_no), '')::uuid,
@@ -350,7 +350,7 @@ SELECT
   b.balance
 FROM account_book b
 WHERE b.account_no = sqlc.arg(account_no)
-  AND b.expire_at > sqlc.arg(now_utc)::timestamptz
+  AND b.expire_at > sqlc.arg(now_utc)::date
   AND b.balance > 0
 ORDER BY b.expire_at ASC
 FOR UPDATE OF b;
@@ -360,7 +360,7 @@ INSERT INTO account_book (book_no, account_no, expire_at, balance)
 VALUES (
   sqlc.arg(book_no)::uuid,
   sqlc.arg(account_no),
-  sqlc.arg(expire_at)::timestamptz,
+  sqlc.arg(expire_at)::date,
   sqlc.arg(delta)
 )
 ON CONFLICT (account_no, expire_at)
@@ -380,7 +380,7 @@ VALUES (
   sqlc.arg(book_no)::uuid,
   sqlc.arg(delta),
   sqlc.arg(balance_after),
-  sqlc.arg(expire_at)::timestamptz
+  sqlc.arg(expire_at)::date
 );
 
 -- name: GetOriginTxnForUpdate :one

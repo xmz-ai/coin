@@ -293,7 +293,7 @@ func (r *Repository) CreateTransferTxn(txn service.TransferTxn) error {
 		TransferScene:    nullIfEmpty(txn.TransferScene),
 		DebitAccountNo:   nullIfEmpty(txn.DebitAccountNo),
 		CreditAccountNo:  nullIfEmpty(txn.CreditAccountNo),
-		CreditExpireAt:   nullableTimestamp(&txn.CreditExpireAt, !txn.CreditExpireAt.IsZero()),
+		CreditExpireAt:   nullableDate(&txn.CreditExpireAt, !txn.CreditExpireAt.IsZero()),
 		Amount:           txn.Amount,
 		Status:           txn.Status,
 		RefundOfTxnNo:    nullIfEmpty(txn.RefundOfTxnNo),
@@ -596,7 +596,7 @@ func (r *Repository) ApplyTransferCreditStage(txnNo, creditAccountNo string, amo
 	if creditAccountNo != "" && stage.CreditAccountNo != "" && creditAccountNo != stage.CreditAccountNo {
 		return false, service.ErrAccountResolveFailed
 	}
-	if err := applyAccountCreditTx(ctx, qtx, txnUUID, stageCreditAccountNo, amount, pgTimestampPtr(stage.CreditExpireAt)); err != nil {
+	if err := applyAccountCreditTx(ctx, qtx, txnUUID, stageCreditAccountNo, amount, pgDatePtr(stage.CreditExpireAt)); err != nil {
 		return false, err
 	}
 	if err := qtx.UpdateTransferTxnStatus(ctx, dbsqlc.UpdateTransferTxnStatusParams{
@@ -911,7 +911,7 @@ func applyAccountDebitTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype.
 	if debit.BookEnabled {
 		books, err := q.ListAvailableAccountBooksForUpdate(ctx, dbsqlc.ListAvailableAccountBooksForUpdateParams{
 			AccountNo: debit.AccountNo,
-			NowUtc:    pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
+			NowUtc:    toPGDate(time.Now().UTC()),
 		})
 		if err != nil {
 			return err
@@ -919,7 +919,7 @@ func applyAccountDebitTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype.
 
 		type bookChange struct {
 			BookNo       pgtype.UUID
-			ExpireAt     pgtype.Timestamptz
+			ExpireAt     pgtype.Date
 			Delta        int64
 			BalanceAfter int64
 		}
@@ -1044,7 +1044,7 @@ func applyAccountCreditTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype
 		book, err := q.UpsertAccountBookBalance(ctx, dbsqlc.UpsertAccountBookBalanceParams{
 			BookNo:    bookUUID,
 			AccountNo: credit.AccountNo,
-			ExpireAt:  pgtype.Timestamptz{Time: expireAt, Valid: true},
+			ExpireAt:  toPGDate(expireAt),
 			Delta:     amount,
 		})
 		if err != nil {
@@ -1147,7 +1147,6 @@ func transferTxnFromByNoRow(row dbsqlc.GetTransferTxnByNoRow) service.TransferTx
 		CreatedAt:        pgTimestampToTime(row.CreatedAt),
 	}
 }
-
 func transferTxnFromByOutTradeRow(row dbsqlc.GetTransferTxnByOutTradeNoRow) service.TransferTxn {
 	return service.TransferTxn{
 		TxnNo:            row.TxnNo,
@@ -1166,7 +1165,6 @@ func transferTxnFromByOutTradeRow(row dbsqlc.GetTransferTxnByOutTradeNoRow) serv
 		CreatedAt:        pgTimestampToTime(row.CreatedAt),
 	}
 }
-
 func transferTxnFromListRow(row dbsqlc.ListTransferTxnsRow) service.TransferTxn {
 	return service.TransferTxn{
 		TxnNo:            row.TxnNo,
@@ -1185,7 +1183,6 @@ func transferTxnFromListRow(row dbsqlc.ListTransferTxnsRow) service.TransferTxn 
 		CreatedAt:        pgTimestampToTime(row.CreatedAt),
 	}
 }
-
 func transferTxnFromListByStatusRow(row dbsqlc.ListTransferTxnsByStatusRow) service.TransferTxn {
 	return service.TransferTxn{
 		TxnNo:            row.TxnNo,
@@ -1245,12 +1242,40 @@ func nullableTimestamp(t *time.Time, valid bool) pgtype.Timestamptz {
 	return pgtype.Timestamptz{Time: t.UTC(), Valid: true}
 }
 
+func nullableDate(t *time.Time, valid bool) pgtype.Date {
+	if !valid || t == nil {
+		return pgtype.Date{}
+	}
+	return toPGDate(t.UTC())
+}
+
+func toPGDate(t time.Time) pgtype.Date {
+	u := t.UTC()
+	d := time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
+	return pgtype.Date{Time: d, Valid: true}
+}
+
+func pgDatePtr(d pgtype.Date) *time.Time {
+	if !d.Valid {
+		return nil
+	}
+	v := d.Time.UTC()
+	return &v
+}
+
 func pgTimestampPtr(ts pgtype.Timestamptz) *time.Time {
 	if !ts.Valid {
 		return nil
 	}
 	v := ts.Time.UTC()
 	return &v
+}
+
+func pgDateToTime(d pgtype.Date) time.Time {
+	if !d.Valid {
+		return time.Time{}
+	}
+	return d.Time.UTC()
 }
 
 func pgTimestampToTime(ts pgtype.Timestamptz) time.Time {
