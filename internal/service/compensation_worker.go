@@ -12,12 +12,12 @@ type CompensationReporter interface {
 }
 
 type CompensationWorker struct {
-	txnWorker *TransferPollingWorker
+	txnWorker *TransferRecoveryWorker
 	notify    *WebhookWorker
 	reporter  CompensationReporter
 }
 
-func NewCompensationWorker(txnWorker *TransferPollingWorker, notify *WebhookWorker, reporter CompensationReporter) *CompensationWorker {
+func NewCompensationWorker(txnWorker *TransferRecoveryWorker, notify *WebhookWorker, reporter CompensationReporter) *CompensationWorker {
 	return &CompensationWorker{
 		txnWorker: txnWorker,
 		notify:    notify,
