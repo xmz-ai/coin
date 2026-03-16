@@ -372,6 +372,19 @@ func TestTC1108APITransferSuccess(t *testing.T) {
 	if resp.Code != http.StatusCreated {
 		t.Fatalf("transfer expected 201, got %d body=%s", resp.Code, resp.Body.String())
 	}
+	submitBody := decodeJSONMap(t, resp.Body.Bytes())
+	if submitBody["code"] != "SUCCESS" {
+		t.Fatalf("expected SUCCESS, got %v", submitBody["code"])
+	}
+	submitData := submitBody["data"].(map[string]any)
+	txnNo, _ := submitData["txn_no"].(string)
+	if txnNo == "" {
+		t.Fatalf("expected txn_no")
+	}
+	if submitData["status"] != service.TxnStatusInit {
+		t.Fatalf("expected status INIT, got %v", submitData["status"])
+	}
+	waitTxnStatus(t, r, merchantNo, secret, txnNo, service.TxnStatusRecvSuccess)
 
 	queryReq := signedAPIRequest(t, http.MethodGet, "/api/v1/transactions/by-out-trade-no/ord_1108", merchantNo, secret, "nonce-1108-2", nil)
 	queryResp := httptest.NewRecorder()
@@ -387,7 +400,7 @@ func TestTC1108APITransferSuccess(t *testing.T) {
 }
 
 func TestTC1109APIRefundSuccess(t *testing.T) {
-	r, _, merchantNo, secret := newTxnAPITestServer(t)
+	r, repo, merchantNo, secret := newTxnAPITestServer(t)
 
 	originReq := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/transfer", merchantNo, secret, "nonce-1109-origin", map[string]any{
 		"out_trade_no":    "ord_1109_origin",
@@ -424,15 +437,35 @@ func TestTC1109APIRefundSuccess(t *testing.T) {
 	if body["code"] != "SUCCESS" {
 		t.Fatalf("expected SUCCESS, got %v", body["code"])
 	}
-	refundTxnNo, _ := body["data"].(map[string]any)["txn_no"].(string)
+	refundData := body["data"].(map[string]any)
+	refundTxnNo, _ := refundData["txn_no"].(string)
 	if refundTxnNo == "" {
 		t.Fatalf("expected refund txn_no")
 	}
+	if refundData["status"] != service.TxnStatusInit {
+		t.Fatalf("expected refund submit status INIT, got %v", refundData["status"])
+	}
 	waitTxnStatus(t, r, merchantNo, secret, refundTxnNo, service.TxnStatusRecvSuccess)
+
+	originTxn, ok := repo.GetTransferTxn(originTxnNo)
+	if !ok {
+		t.Fatalf("origin txn not found")
+	}
+	if originTxn.RefundableAmount != 40 {
+		t.Fatalf("expected origin refundable_amount=40, got %d", originTxn.RefundableAmount)
+	}
+
+	events, err := repo.ClaimDueOutboxEventsByTxnNo(refundTxnNo, 10, time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("claim refund outbox events failed: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 refund outbox event, got %+v", events)
+	}
 }
 
 func TestTC1110APIRefundAmountExceeded(t *testing.T) {
-	r, _, merchantNo, secret := newTxnAPITestServer(t)
+	r, repo, merchantNo, secret := newTxnAPITestServer(t)
 
 	originReq := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/transfer", merchantNo, secret, "nonce-1110-origin", map[string]any{
 		"out_trade_no":    "ord_1110_origin",
@@ -460,9 +493,13 @@ func TestTC1110APIRefundAmountExceeded(t *testing.T) {
 		t.Fatalf("refund submit expected 201, got %d body=%s", refundResp.Code, refundResp.Body.String())
 	}
 	refundBody := decodeJSONMap(t, refundResp.Body.Bytes())
-	refundTxnNo, _ := refundBody["data"].(map[string]any)["txn_no"].(string)
+	refundData := refundBody["data"].(map[string]any)
+	refundTxnNo, _ := refundData["txn_no"].(string)
 	if refundTxnNo == "" {
 		t.Fatalf("expected refund txn_no")
+	}
+	if refundData["status"] != service.TxnStatusInit {
+		t.Fatalf("expected refund submit status INIT, got %v", refundData["status"])
 	}
 	waitTxnStatus(t, r, merchantNo, secret, refundTxnNo, service.TxnStatusFailed)
 
@@ -479,6 +516,21 @@ func TestTC1110APIRefundAmountExceeded(t *testing.T) {
 	}
 	if data["error_code"] != "REFUND_AMOUNT_EXCEEDED" {
 		t.Fatalf("expected REFUND_AMOUNT_EXCEEDED, got %v", data["error_code"])
+	}
+
+	originTxn, ok := repo.GetTransferTxn(originTxnNo)
+	if !ok {
+		t.Fatalf("origin txn not found")
+	}
+	if originTxn.RefundableAmount != 30 {
+		t.Fatalf("expected origin refundable_amount=30, got %d", originTxn.RefundableAmount)
+	}
+	events, err := repo.ClaimDueOutboxEventsByTxnNo(refundTxnNo, 10, time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("claim refund outbox events failed: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected 0 refund outbox event on failed refund, got %+v", events)
 	}
 }
 
@@ -516,7 +568,7 @@ func TestTC1111APIRefundBreakdownInvalid(t *testing.T) {
 }
 
 func TestTC1112APIRefundConcurrentNoOverRefund(t *testing.T) {
-	r, _, merchantNo, secret := newTxnAPITestServer(t)
+	r, repo, merchantNo, secret := newTxnAPITestServer(t)
 
 	originReq := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/transfer", merchantNo, secret, "nonce-1112-origin", map[string]any{
 		"out_trade_no":    "ord_1112_origin",
@@ -596,6 +648,38 @@ func TestTC1112APIRefundConcurrentNoOverRefund(t *testing.T) {
 	if success != 1 || exceeded != 1 {
 		t.Fatalf("expected success=1 exceeded=1, got success=%d exceeded=%d", success, exceeded)
 	}
+
+	originTxn, ok := repo.GetTransferTxn(originTxnNo)
+	if !ok {
+		t.Fatalf("origin txn not found")
+	}
+	if originTxn.RefundableAmount != 20 {
+		t.Fatalf("expected origin refundable_amount=20, got %d", originTxn.RefundableAmount)
+	}
+
+	failedTxnNo := ""
+	for _, txnNo := range submitted {
+		queryReq := signedAPIRequest(t, http.MethodGet, "/api/v1/transactions/"+txnNo, merchantNo, secret, "nonce-1112-final-"+txnNo, nil)
+		queryResp := httptest.NewRecorder()
+		r.ServeHTTP(queryResp, queryReq)
+		if queryResp.Code != http.StatusOK {
+			t.Fatalf("query expected 200, got %d body=%s", queryResp.Code, queryResp.Body.String())
+		}
+		data := decodeJSONMap(t, queryResp.Body.Bytes())["data"].(map[string]any)
+		if data["status"] == service.TxnStatusFailed {
+			failedTxnNo = txnNo
+		}
+	}
+	if failedTxnNo == "" {
+		t.Fatalf("expected one failed refund txn")
+	}
+	events, err := repo.ClaimDueOutboxEventsByTxnNo(failedTxnNo, 10, time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("claim refund outbox events failed: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected 0 refund outbox event on failed refund, got %+v", events)
+	}
 }
 
 func TestTC1113APIRefundCrossMerchantOriginRejected(t *testing.T) {
@@ -636,9 +720,13 @@ func TestTC1113APIRefundCrossMerchantOriginRejected(t *testing.T) {
 		t.Fatalf("refund submit expected 201, got %d body=%s", refundResp.Code, refundResp.Body.String())
 	}
 	refundBody := decodeJSONMap(t, refundResp.Body.Bytes())
-	refundTxnNo, _ := refundBody["data"].(map[string]any)["txn_no"].(string)
+	refundData := refundBody["data"].(map[string]any)
+	refundTxnNo, _ := refundData["txn_no"].(string)
 	if refundTxnNo == "" {
 		t.Fatalf("expected refund txn_no")
+	}
+	if refundData["status"] != service.TxnStatusInit {
+		t.Fatalf("expected refund submit status INIT, got %v", refundData["status"])
 	}
 	waitTxnStatus(t, r, merchantNo, secret, refundTxnNo, service.TxnStatusFailed)
 
@@ -654,6 +742,13 @@ func TestTC1113APIRefundCrossMerchantOriginRejected(t *testing.T) {
 	}
 	if data["error_code"] != "REFUND_ORIGIN_NOT_FOUND" {
 		t.Fatalf("expected REFUND_ORIGIN_NOT_FOUND, got %v", data["error_code"])
+	}
+	events, err := repo.ClaimDueOutboxEventsByTxnNo(refundTxnNo, 10, time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("claim refund outbox events failed: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected 0 refund outbox event on failed refund, got %+v", events)
 	}
 }
 
