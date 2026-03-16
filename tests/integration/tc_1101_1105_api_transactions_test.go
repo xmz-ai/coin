@@ -1020,7 +1020,7 @@ func newTxnAPITestServer(t *testing.T) (*gin.Engine, *memoryrepo.Repo, string, s
 	querySvc := service.NewTxnQueryService(repo)
 	base := time.Unix(1_710_000_000, 0).UTC()
 	tick := 0
-	businessHandler := api.NewBusinessHandler(transferSvc, transferSvc, repo, transferRoutingSvc, asyncTransferSvc, accountResolver, repo, refundSvc, querySvc, repo, func() time.Time {
+	businessHandler := api.NewBusinessHandler(transferSvc, transferSvc, repo, transferRoutingSvc, asyncTransferSvc, nil, accountResolver, repo, refundSvc, querySvc, repo, func() time.Time {
 		tick++
 		return base.Add(time.Duration(tick) * time.Millisecond)
 	})

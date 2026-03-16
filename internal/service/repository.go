@@ -55,6 +55,7 @@ type Repository interface {
 	UpsertWebhookConfig(merchantNo, url string, enabled bool) error
 	GetWebhookConfig(merchantNo string) (WebhookConfig, bool, error)
 	ClaimDueOutboxEvents(limit int, now time.Time) ([]OutboxEventDelivery, error)
+	ClaimDueOutboxEventsByTxnNo(txnNo string, limit int, now time.Time) ([]OutboxEventDelivery, error)
 	MarkOutboxEventSuccess(eventID string) error
 	MarkOutboxEventRetry(eventID string, retryCount int, nextRetryAt time.Time, dead bool) error
 	InsertNotifyLog(txnNo, status string, retries int) error

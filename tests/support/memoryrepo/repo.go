@@ -535,6 +535,36 @@ func (r *Repo) ClaimDueOutboxEvents(limit int, now time.Time) ([]service.OutboxE
 	return items, nil
 }
 
+func (r *Repo) ClaimDueOutboxEventsByTxnNo(txnNo string, limit int, now time.Time) ([]service.OutboxEventDelivery, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if limit <= 0 {
+		limit = 100
+	}
+	items := make([]service.OutboxEventDelivery, 0, limit)
+	for _, id := range r.outboxEventOrder {
+		rec, ok := r.outboxByEventID[id]
+		if !ok {
+			continue
+		}
+		if rec.event.TxnNo != txnNo {
+			continue
+		}
+		if rec.status != "PENDING" {
+			continue
+		}
+		if !rec.nextAt.IsZero() && rec.nextAt.After(now.UTC()) {
+			continue
+		}
+		items = append(items, rec.event)
+		if len(items) >= limit {
+			break
+		}
+	}
+	return items, nil
+}
+
 func (r *Repo) MarkOutboxEventSuccess(eventID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -375,6 +375,7 @@ func setupPerfServer(
 		repo,
 		transferRoutingSvc,
 		asyncProcessor,
+		webhookWorker,
 		accountResolver,
 		repo,
 		refundSvc,
