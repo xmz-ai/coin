@@ -17,6 +17,7 @@ GOCACHE="${GOCACHE:-${ROOT_DIR}/.cache/go-build}"
 mkdir -p "$GOCACHE"
 
 PERF_USE_DOCKER="${PERF_USE_DOCKER:-1}"
+PERF_RESET_DB="${PERF_RESET_DB:-1}"
 
 PG_CONTAINER="${COIN_PERF_PG_CONTAINER:-coin-perf-pg}"
 REDIS_CONTAINER="${COIN_PERF_REDIS_CONTAINER:-coin-perf-redis}"
@@ -109,14 +110,54 @@ fi
 export LOCAL_KMS_KEY_V1="${LOCAL_KMS_KEY_V1:-perf_local_kms_key}"
 export GIN_MODE="${GIN_MODE:-release}"
 
+if [[ "$PERF_RESET_DB" == "1" ]]; then
+  if [[ -z "${POSTGRES_DSN:-}" ]]; then
+    echo "[perf-core-txn-real] POSTGRES_DSN is required when PERF_RESET_DB=1"
+    exit 1
+  fi
+
+  PERF_DB_NAME=""
+  if [[ "$POSTGRES_DSN" =~ /([^/?]+)(\?|$) ]]; then
+    PERF_DB_NAME="${BASH_REMATCH[1]}"
+  fi
+  if [[ -z "$PERF_DB_NAME" ]]; then
+    echo "[perf-core-txn-real] cannot parse db name from POSTGRES_DSN"
+    exit 1
+  fi
+
+  echo "[perf-core-txn-real] resetting database: $PERF_DB_NAME"
+
+  if command -v psql >/dev/null 2>&1; then
+    ADMIN_DSN="$POSTGRES_DSN"
+    ADMIN_DSN="${ADMIN_DSN/\/$PERF_DB_NAME?/\/postgres?}"
+    if [[ "$ADMIN_DSN" == "$POSTGRES_DSN" ]]; then
+      ADMIN_DSN="${ADMIN_DSN/\/$PERF_DB_NAME/\/postgres}"
+    fi
+
+    psql "$ADMIN_DSN" -v ON_ERROR_STOP=1 -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$PERF_DB_NAME' AND pid <> pg_backend_pid();" >/dev/null
+    psql "$ADMIN_DSN" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"$PERF_DB_NAME\";" >/dev/null
+    psql "$ADMIN_DSN" -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$PERF_DB_NAME\";" >/dev/null
+  elif command -v docker >/dev/null 2>&1; then
+    PG_ADMIN_CONTAINER="${COIN_PERF_PG_ADMIN_CONTAINER:-$PG_CONTAINER}"
+    docker exec "$PG_ADMIN_CONTAINER" psql -U "$PG_USER" -d postgres -v ON_ERROR_STOP=1 -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$PERF_DB_NAME' AND pid <> pg_backend_pid();" >/dev/null
+    docker exec "$PG_ADMIN_CONTAINER" psql -U "$PG_USER" -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"$PERF_DB_NAME\";" >/dev/null
+    docker exec "$PG_ADMIN_CONTAINER" psql -U "$PG_USER" -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$PERF_DB_NAME\";" >/dev/null
+  else
+    echo "[perf-core-txn-real] neither psql nor docker is available for PERF_RESET_DB=1"
+    exit 1
+  fi
+fi
+
 export PERF_DURATION_SECONDS="${PERF_DURATION_SECONDS:-30}"
 export PERF_CONCURRENCY="${PERF_CONCURRENCY:-50}"
 export PERF_WARMUP="${PERF_WARMUP:-200}"
 export PERF_REQUEST_TIMEOUT_MS="${PERF_REQUEST_TIMEOUT_MS:-3000}"
 export PERF_MAX_BODY_BYTES="${PERF_MAX_BODY_BYTES:-1048576}"
+export PERF_WEBHOOK_POLL_INTERVAL_MS="${PERF_WEBHOOK_POLL_INTERVAL_MS:-10}"
+export PERF_WEBHOOK_WAIT_TIMEOUT_MS="${PERF_WEBHOOK_WAIT_TIMEOUT_MS:-2000}"
 
-printf '[perf-core-txn-real] go=%s duration=%ss concurrency=%s warmup=%s timeout_ms=%s\n' \
-  "$GO_BIN" "$PERF_DURATION_SECONDS" "$PERF_CONCURRENCY" "$PERF_WARMUP" "$PERF_REQUEST_TIMEOUT_MS"
+printf '[perf-core-txn-real] go=%s duration=%ss concurrency=%s warmup=%s timeout_ms=%s webhook_poll_ms=%s webhook_wait_timeout_ms=%s reset_db=%s\n' \
+  "$GO_BIN" "$PERF_DURATION_SECONDS" "$PERF_CONCURRENCY" "$PERF_WARMUP" "$PERF_REQUEST_TIMEOUT_MS" "$PERF_WEBHOOK_POLL_INTERVAL_MS" "$PERF_WEBHOOK_WAIT_TIMEOUT_MS" "$PERF_RESET_DB"
 
 GOCACHE="$GOCACHE" "$GO_BIN" run ./cmd/perf-core-txn
 
