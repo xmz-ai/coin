@@ -52,10 +52,14 @@ type perfConfig struct {
 }
 
 type resultRow struct {
-	StatusCode int
-	Code       string
-	Latency    time.Duration
-	Err        string
+	StatusCode    int
+	Code          string
+	SubmitLatency time.Duration
+	E2ELatency    time.Duration
+	SubmitOK      bool
+	E2EOK         bool
+	TransportErr  string
+	E2EErr        string
 }
 
 type latencyStats struct {
@@ -69,16 +73,22 @@ type latencyStats struct {
 }
 
 type metrics struct {
+	Mode               string
 	Elapsed            time.Duration
 	Total              int
-	Success            int
+	SubmitSuccess      int
+	E2ESuccess         int
 	HTTP5xx            int
 	HTTP409            int
 	HTTP4xxOther       int
 	TransportErr       int
-	QPS                float64
-	Latency            latencyStats
+	RequestQPS         float64
+	SubmitQPS          float64
+	E2EQPS             float64
+	SubmitLatency      latencyStats
+	E2ELatency         latencyStats
 	ErrorCodeHistogram map[string]int
+	Errors             map[string]int
 }
 
 type webhookSink struct {
@@ -149,7 +159,7 @@ func loadPerfConfig() (perfConfig, error) {
 	requestTimeoutMs := getenvInt("PERF_REQUEST_TIMEOUT_MS", 3000)
 	maxBodyBytes := getenvInt("PERF_MAX_BODY_BYTES", 1<<20)
 	webhookPollMs := getenvInt("PERF_WEBHOOK_POLL_INTERVAL_MS", 10)
-	webhookWaitTimeoutMs := getenvInt("PERF_WEBHOOK_WAIT_TIMEOUT_MS", 2000)
+	webhookWaitTimeoutMs := getenvInt("PERF_WEBHOOK_WAIT_TIMEOUT_MS", 60000)
 
 	if durationSec <= 0 {
 		return perfConfig{}, fmt.Errorf("PERF_DURATION_SECONDS must be > 0")
@@ -240,8 +250,12 @@ func run(cfg perfConfig) error {
 		}
 	}
 
-	m := runLoad(httpClient, server.URL, merchantNo, secret, fromAccountNo, cfg.Duration, cfg.Concurrency, cfg.MaxBodyBytes, webhookSink, cfg.WebhookWaitTimeout)
-	printMetrics(m)
+	metrics := runLoad(httpClient, server.URL, merchantNo, secret, fromAccountNo, cfg.Duration, cfg.Concurrency, cfg.MaxBodyBytes, webhookSink, cfg.WebhookWaitTimeout, "e2e", true)
+	report := buildMetricsMarkdown(metrics)
+	fmt.Println(report)
+	if err := os.WriteFile("perf.md", []byte(report+"\n"), 0o644); err != nil {
+		return fmt.Errorf("write perf.md failed: %w", err)
+	}
 	return nil
 }
 
@@ -388,9 +402,10 @@ func runWarmup(
 ) error {
 	for i := 0; i < warmup; i++ {
 		nonce := "warmup-" + strconv.Itoa(i)
-		row := fireTransferOnce(client, baseURL, merchantNo, secret, fromAccountNo, nonce, maxBodyBytes, sink, webhookWaitTimeout)
-		if row.StatusCode != http.StatusCreated || row.Code != "SUCCESS" || row.Err != "" {
-			return fmt.Errorf("status=%d code=%s err=%s", row.StatusCode, row.Code, row.Err)
+		row := fireTransferOnce(client, baseURL, merchantNo, secret, fromAccountNo, nonce, maxBodyBytes, sink, webhookWaitTimeout, true)
+		if !row.SubmitOK || !row.E2EOK || row.TransportErr != "" || row.E2EErr != "" {
+			return fmt.Errorf("status=%d code=%s submit_ok=%t e2e_ok=%t transport_err=%s e2e_err=%s",
+				row.StatusCode, row.Code, row.SubmitOK, row.E2EOK, row.TransportErr, row.E2EErr)
 		}
 	}
 	return nil
@@ -404,6 +419,8 @@ func runLoad(
 	maxBodyBytes int64,
 	sink *webhookSink,
 	webhookWaitTimeout time.Duration,
+	mode string,
+	requireWebhook bool,
 ) metrics {
 	var idCounter uint64
 	start := time.Now()
@@ -421,8 +438,8 @@ func runLoad(
 					return
 				}
 				id := atomic.AddUint64(&idCounter, 1)
-				nonce := "load-" + strconv.Itoa(workerID) + "-" + strconv.FormatUint(id, 10)
-				results <- fireTransferOnce(client, baseURL, merchantNo, secret, fromAccountNo, nonce, maxBodyBytes, sink, webhookWaitTimeout)
+				nonce := mode + "-" + strconv.Itoa(workerID) + "-" + strconv.FormatUint(id, 10)
+				results <- fireTransferOnce(client, baseURL, merchantNo, secret, fromAccountNo, nonce, maxBodyBytes, sink, webhookWaitTimeout, requireWebhook)
 			}
 		}(w)
 	}
@@ -436,7 +453,7 @@ func runLoad(
 	for r := range results {
 		rows = append(rows, r)
 	}
-	return aggregate(rows, time.Since(start))
+	return aggregate(rows, time.Since(start), mode)
 }
 
 func fireTransferOnce(
@@ -445,16 +462,20 @@ func fireTransferOnce(
 	maxBodyBytes int64,
 	sink *webhookSink,
 	webhookWaitTimeout time.Duration,
+	requireWebhook bool,
 ) resultRow {
 	path := "/api/v1/transactions/transfer"
 	outTradeNo := "ord_perf_" + nonce
 
 	var done <-chan struct{}
-	if sink != nil {
+	if requireWebhook {
+		if sink == nil {
+			return resultRow{TransportErr: "webhook sink not configured"}
+		}
 		done = sink.expect(outTradeNo)
 	}
 	cancelWait := func() {
-		if sink != nil && done != nil {
+		if requireWebhook && sink != nil && done != nil {
 			sink.cancel(outTradeNo, done)
 		}
 	}
@@ -470,11 +491,11 @@ func fireTransferOnce(
 	rawBody, err := json.Marshal(payload)
 	if err != nil {
 		cancelWait()
-		return resultRow{Err: err.Error()}
+		return resultRow{TransportErr: err.Error()}
 	}
 	if int64(len(rawBody)) > maxBodyBytes {
 		cancelWait()
-		return resultRow{Err: "request body too large"}
+		return resultRow{TransportErr: "request body too large"}
 	}
 
 	ts := strconv.FormatInt(time.Now().UTC().UnixMilli(), 10)
@@ -483,7 +504,7 @@ func fireTransferOnce(
 	req, err := http.NewRequest(http.MethodPost, baseURL+path, bytes.NewReader(rawBody))
 	if err != nil {
 		cancelWait()
-		return resultRow{Err: err.Error()}
+		return resultRow{TransportErr: err.Error()}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Merchant-No", merchantNo)
@@ -491,43 +512,48 @@ func fireTransferOnce(
 	req.Header.Set("X-Nonce", nonce)
 	req.Header.Set("X-Signature", signature)
 
-	start := time.Now()
+	submitStart := time.Now()
 	resp, err := client.Do(req)
+	submitLatency := time.Since(submitStart)
 	if err != nil {
 		cancelWait()
-		return resultRow{Latency: time.Since(start), Err: err.Error()}
+		return resultRow{SubmitLatency: submitLatency, TransportErr: err.Error()}
 	}
 	defer resp.Body.Close()
-	latency := time.Since(start)
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 	if err != nil {
 		cancelWait()
-		return resultRow{StatusCode: resp.StatusCode, Latency: latency, Err: "read response: " + err.Error()}
+		return resultRow{StatusCode: resp.StatusCode, SubmitLatency: submitLatency, TransportErr: "read response: " + err.Error()}
 	}
 
 	var parsed map[string]any
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		cancelWait()
-		return resultRow{StatusCode: resp.StatusCode, Latency: latency, Err: "decode response: " + err.Error()}
+		return resultRow{StatusCode: resp.StatusCode, SubmitLatency: submitLatency, TransportErr: "decode response: " + err.Error()}
 	}
 	code, _ := parsed["code"].(string)
-	if resp.StatusCode != http.StatusCreated || code != "SUCCESS" {
+	row := resultRow{StatusCode: resp.StatusCode, Code: code, SubmitLatency: submitLatency}
+	row.SubmitOK = resp.StatusCode == http.StatusCreated && code == "SUCCESS"
+	if !row.SubmitOK {
 		cancelWait()
-		return resultRow{StatusCode: resp.StatusCode, Code: code, Latency: latency}
+		return row
 	}
-	if sink == nil || done == nil {
-		return resultRow{StatusCode: resp.StatusCode, Code: code, Latency: latency, Err: "webhook sink not configured"}
+	if !requireWebhook {
+		return row
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), webhookWaitTimeout)
 	defer cancel()
 	select {
 	case <-done:
-		return resultRow{StatusCode: resp.StatusCode, Code: code, Latency: latency}
+		row.E2EOK = true
+		row.E2ELatency = time.Since(submitStart)
+		return row
 	case <-ctx.Done():
 		cancelWait()
-		return resultRow{StatusCode: resp.StatusCode, Code: code, Latency: latency, Err: "webhook timeout"}
+		row.E2EErr = "webhook timeout"
+		return row
 	}
 }
 
@@ -546,25 +572,30 @@ func signRequest(method, path, merchantNo, ts, nonce string, body []byte, secret
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func aggregate(rows []resultRow, elapsed time.Duration) metrics {
+func aggregate(rows []resultRow, elapsed time.Duration, mode string) metrics {
 	m := metrics{
+		Mode:               mode,
 		Elapsed:            elapsed,
 		Total:              len(rows),
 		ErrorCodeHistogram: map[string]int{},
+		Errors:             map[string]int{},
 	}
-	latencies := make([]time.Duration, 0, len(rows))
+	submitLatencies := make([]time.Duration, 0, len(rows))
+	e2eLatencies := make([]time.Duration, 0, len(rows))
 
 	for _, r := range rows {
-		if r.Err != "" {
+		submitLatencies = append(submitLatencies, r.SubmitLatency)
+		if strings.TrimSpace(r.Code) != "" {
+			m.ErrorCodeHistogram[r.Code]++
+		}
+
+		if r.TransportErr != "" {
 			m.TransportErr++
+			m.Errors[r.TransportErr]++
 			continue
 		}
-		latencies = append(latencies, r.Latency)
-		m.ErrorCodeHistogram[r.Code]++
 
 		switch {
-		case r.StatusCode >= 200 && r.StatusCode < 300:
-			m.Success++
 		case r.StatusCode == http.StatusConflict:
 			m.HTTP409++
 		case r.StatusCode >= 500:
@@ -572,12 +603,34 @@ func aggregate(rows []resultRow, elapsed time.Duration) metrics {
 		case r.StatusCode >= 400:
 			m.HTTP4xxOther++
 		}
+
+		if r.SubmitOK {
+			m.SubmitSuccess++
+		}
+
+		if mode == "submit" {
+			continue
+		}
+		if r.E2EOK {
+			m.E2ESuccess++
+			e2eLatencies = append(e2eLatencies, r.E2ELatency)
+		} else if r.E2EErr != "" {
+			m.Errors[r.E2EErr]++
+		}
 	}
 
 	if elapsed > 0 {
-		m.QPS = float64(m.Total) / elapsed.Seconds()
+		seconds := elapsed.Seconds()
+		m.RequestQPS = float64(m.Total) / seconds
+		m.SubmitQPS = float64(m.SubmitSuccess) / seconds
+		m.E2EQPS = float64(m.E2ESuccess) / seconds
 	}
-	m.Latency = calcLatency(latencies)
+	m.SubmitLatency = calcLatency(submitLatencies)
+	if mode == "submit" {
+		m.E2ELatency = latencyStats{}
+	} else {
+		m.E2ELatency = calcLatency(e2eLatencies)
+	}
 	return m
 }
 
@@ -617,28 +670,82 @@ func percentile(vals []time.Duration, p int) time.Duration {
 	return vals[idx]
 }
 
-func printMetrics(m metrics) {
-	fmt.Println("[perf] ===== core txn real load report =====")
-	fmt.Printf("[perf] elapsed=%s\n", m.Elapsed)
-	fmt.Printf("[perf] total=%d success=%d 409=%d 5xx=%d 4xx_other=%d transport_err=%d\n",
-		m.Total, m.Success, m.HTTP409, m.HTTP5xx, m.HTTP4xxOther, m.TransportErr)
-	fmt.Printf("[perf] qps=%.2f\n", m.QPS)
-	fmt.Printf("[perf] latency count=%d min=%s p50=%s p95=%s p99=%s max=%s avg=%s\n",
-		m.Latency.Count, m.Latency.Min, m.Latency.P50, m.Latency.P95, m.Latency.P99, m.Latency.Max, m.Latency.Avg)
-
-	if len(m.ErrorCodeHistogram) == 0 {
-		return
+func buildMetricsMarkdown(m metrics) string {
+	ratio := func(n, d int) string {
+		if d <= 0 {
+			return "0.00%"
+		}
+		return fmt.Sprintf("%.2f%%", float64(n)*100/float64(d))
 	}
 
-	keys := make([]string, 0, len(m.ErrorCodeHistogram))
-	for k := range m.ErrorCodeHistogram {
-		keys = append(keys, k)
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("## Core Txn Report (%s)\n\n", strings.ToUpper(m.Mode)))
+	b.WriteString("| Metric | Value |\n")
+	b.WriteString("| --- | --- |\n")
+	b.WriteString(fmt.Sprintf("| elapsed | %s |\n", m.Elapsed))
+	b.WriteString(fmt.Sprintf("| total_requests | %d |\n", m.Total))
+	b.WriteString(fmt.Sprintf("| request_qps | %.2f |\n", m.RequestQPS))
+	b.WriteString(fmt.Sprintf("| submit_success | %d (%s) |\n", m.SubmitSuccess, ratio(m.SubmitSuccess, m.Total)))
+	b.WriteString(fmt.Sprintf("| submit_qps | %.2f |\n", m.SubmitQPS))
+	b.WriteString(fmt.Sprintf("| e2e_success | %d (%s) |\n", m.E2ESuccess, ratio(m.E2ESuccess, m.Total)))
+	b.WriteString(fmt.Sprintf("| e2e_qps | %.2f |\n", m.E2EQPS))
+	b.WriteString(fmt.Sprintf("| http_409 | %d |\n", m.HTTP409))
+	b.WriteString(fmt.Sprintf("| http_5xx | %d |\n", m.HTTP5xx))
+	b.WriteString(fmt.Sprintf("| http_4xx_other | %d |\n", m.HTTP4xxOther))
+	b.WriteString(fmt.Sprintf("| transport_err | %d |\n", m.TransportErr))
+
+	b.WriteString("\n| Latency Scope | Count | Min | P50 | P95 | P99 | Max | Avg |\n")
+	b.WriteString("| --- | ---: | --- | --- | --- | --- | --- | --- |\n")
+	b.WriteString(fmt.Sprintf("| submit | %d | %s | %s | %s | %s | %s | %s |\n",
+		m.SubmitLatency.Count,
+		m.SubmitLatency.Min,
+		m.SubmitLatency.P50,
+		m.SubmitLatency.P95,
+		m.SubmitLatency.P99,
+		m.SubmitLatency.Max,
+		m.SubmitLatency.Avg,
+	))
+	if m.Mode == "submit" {
+		b.WriteString("| e2e | N/A | N/A | N/A | N/A | N/A | N/A | N/A |\n")
+	} else {
+		b.WriteString(fmt.Sprintf("| e2e | %d | %s | %s | %s | %s | %s | %s |\n",
+			m.E2ELatency.Count,
+			m.E2ELatency.Min,
+			m.E2ELatency.P50,
+			m.E2ELatency.P95,
+			m.E2ELatency.P99,
+			m.E2ELatency.Max,
+			m.E2ELatency.Avg,
+		))
 	}
-	sort.Strings(keys)
-	fmt.Println("[perf] code_histogram:")
-	for _, k := range keys {
-		fmt.Printf("[perf]   %s=%d\n", k, m.ErrorCodeHistogram[k])
+
+	if len(m.ErrorCodeHistogram) > 0 {
+		keys := make([]string, 0, len(m.ErrorCodeHistogram))
+		for k := range m.ErrorCodeHistogram {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		b.WriteString("\n| Response Code | Count |\n")
+		b.WriteString("| --- | ---: |\n")
+		for _, k := range keys {
+			b.WriteString(fmt.Sprintf("| %s | %d |\n", k, m.ErrorCodeHistogram[k]))
+		}
 	}
+
+	if len(m.Errors) > 0 {
+		errKeys := make([]string, 0, len(m.Errors))
+		for k := range m.Errors {
+			errKeys = append(errKeys, k)
+		}
+		sort.Strings(errKeys)
+		b.WriteString("\n| Error | Count |\n")
+		b.WriteString("| --- | ---: |\n")
+		for _, k := range errKeys {
+			b.WriteString(fmt.Sprintf("| %s | %d |\n", k, m.Errors[k]))
+		}
+	}
+
+	return b.String()
 }
 
 func ensureMigrations(pool *pgxpool.Pool) error {
