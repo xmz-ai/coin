@@ -6,20 +6,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/xmz-ai/coin/internal/db"
 	"github.com/xmz-ai/coin/internal/service"
-	"github.com/xmz-ai/coin/tests/support/memoryrepo"
 )
 
 func TestTC6001OriginTxnNotFoundRejected(t *testing.T) {
-	repo, processor, merchantNo, _, _, _ := setupRefundAsyncFixture(t)
+	repo, _, processor, merchantNo, _, _, _ := setupRefundAsyncFixture(t)
 
-	refundTxnNo := "txn_6001_refund"
+	refundTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a6001"
 	if err := repo.CreateTransferTxn(service.TransferTxn{
 		TxnNo:         refundTxnNo,
 		MerchantNo:    merchantNo,
 		OutTradeNo:    "ord_6001_refund",
 		BizType:       service.BizTypeRefund,
-		RefundOfTxnNo: "txn_missing_origin",
+		RefundOfTxnNo: "01956f4e-9d22-73bc-8e11-3f5e9c7a6fff",
 		Amount:        10,
 		Status:        service.TxnStatusInit,
 	}); err != nil {
@@ -51,9 +52,9 @@ func TestTC6001OriginTxnNotFoundRejected(t *testing.T) {
 }
 
 func TestTC6002RefundAmountExceededRejected(t *testing.T) {
-	repo, processor, merchantNo, originTxnNo, _, _ := setupRefundAsyncFixture(t)
+	repo, _, processor, merchantNo, originTxnNo, _, _ := setupRefundAsyncFixture(t)
 
-	refundTxnNo := "txn_6002_refund"
+	refundTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a6002"
 	if err := repo.CreateTransferTxn(service.TransferTxn{
 		TxnNo:         refundTxnNo,
 		MerchantNo:    merchantNo,
@@ -99,9 +100,9 @@ func TestTC6002RefundAmountExceededRejected(t *testing.T) {
 }
 
 func TestTC6003RefundStagesToRecvSuccess(t *testing.T) {
-	repo, processor, merchantNo, originTxnNo, debitAccountNo, creditAccountNo := setupRefundAsyncFixture(t)
+	repo, _, processor, merchantNo, originTxnNo, debitAccountNo, creditAccountNo := setupRefundAsyncFixture(t)
 
-	refundTxnNo := "txn_6003_refund"
+	refundTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a6003"
 	if err := repo.CreateTransferTxn(service.TransferTxn{
 		TxnNo:         refundTxnNo,
 		MerchantNo:    merchantNo,
@@ -147,17 +148,17 @@ func TestTC6003RefundStagesToRecvSuccess(t *testing.T) {
 }
 
 func TestTC6004RefundCrossMerchantOriginRejected(t *testing.T) {
-	repo, processor, merchantNo, _, _, _ := setupRefundAsyncFixture(t)
+	repo, _, processor, merchantNo, _, _, _ := setupRefundAsyncFixture(t)
 
-	otherOriginTxnNo := "txn_6004_other_origin"
+	otherOriginTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a6400"
 	if err := repo.CreateTransferTxn(service.TransferTxn{
 		TxnNo:            otherOriginTxnNo,
-		MerchantNo:       "merchant_other",
+		MerchantNo:       "1000000000006999",
 		OutTradeNo:       "ord_6004_other_origin",
 		BizType:          service.BizTypeTransfer,
 		TransferScene:    service.SceneP2P,
-		DebitAccountNo:   "acc_other_debit",
-		CreditAccountNo:  "acc_other_credit",
+		DebitAccountNo:   "6217701201600000691",
+		CreditAccountNo:  "6217701201600000692",
 		Amount:           50,
 		RefundableAmount: 50,
 		Status:           service.TxnStatusRecvSuccess,
@@ -165,7 +166,7 @@ func TestTC6004RefundCrossMerchantOriginRejected(t *testing.T) {
 		t.Fatalf("create other origin txn failed: %v", err)
 	}
 
-	refundTxnNo := "txn_6004_refund"
+	refundTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a6004"
 	if err := repo.CreateTransferTxn(service.TransferTxn{
 		TxnNo:         refundTxnNo,
 		MerchantNo:    merchantNo,
@@ -203,10 +204,10 @@ func TestTC6004RefundCrossMerchantOriginRejected(t *testing.T) {
 }
 
 func TestTC6005ConcurrentRefundDoesNotExceed(t *testing.T) {
-	repo, _, merchantNo, originTxnNo, _, _ := setupRefundAsyncFixture(t)
+	repo, _, _, merchantNo, originTxnNo, _, _ := setupRefundAsyncFixture(t)
 
-	refundTxnA := "txn_6005_refund_a"
-	refundTxnB := "txn_6005_refund_b"
+	refundTxnA := "01956f4e-9d22-73bc-8e11-3f5e9c7a6501"
+	refundTxnB := "01956f4e-9d22-73bc-8e11-3f5e9c7a6502"
 	for _, item := range []service.TransferTxn{
 		{
 			TxnNo:         refundTxnA,
@@ -288,9 +289,9 @@ func TestTC6005ConcurrentRefundDoesNotExceed(t *testing.T) {
 }
 
 func TestTC6006RefundReverseAccounting(t *testing.T) {
-	repo, processor, merchantNo, originTxnNo, debitAccountNo, creditAccountNo := setupRefundAsyncFixture(t)
+	repo, pool, processor, merchantNo, originTxnNo, debitAccountNo, creditAccountNo := setupRefundAsyncFixture(t)
 
-	refundTxnNo := "txn_6006_refund"
+	refundTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a6006"
 	if err := repo.CreateTransferTxn(service.TransferTxn{
 		TxnNo:         refundTxnNo,
 		MerchantNo:    merchantNo,
@@ -316,7 +317,7 @@ func TestTC6006RefundReverseAccounting(t *testing.T) {
 		t.Fatalf("expected credit balance 170, got %d", credit.Balance)
 	}
 
-	changes := repo.ListAccountChangesByTxnNo(refundTxnNo)
+	changes := queryAccountChangesByTxnNo(t, pool, refundTxnNo)
 	if len(changes) != 2 {
 		t.Fatalf("expected 2 account changes, got %+v", changes)
 	}
@@ -329,13 +330,14 @@ func TestTC6006RefundReverseAccounting(t *testing.T) {
 	}
 }
 
-func setupRefundAsyncFixture(t *testing.T) (*memoryrepo.Repo, *service.TransferAsyncProcessor, string, string, string, string) {
+func setupRefundAsyncFixture(t *testing.T) (*db.Repository, *pgxpool.Pool, *service.TransferAsyncProcessor, string, string, string, string) {
 	t.Helper()
 
-	repo := memoryrepo.New()
-	merchantNo := "merchant_6000"
-	debitAccountNo := "acc_6000_debit"
-	creditAccountNo := "acc_6000_credit"
+	pool := setupPostgresPool(t)
+	repo := db.NewRepository(pool)
+	merchantNo := "1000000000006000"
+	debitAccountNo := "6217701201600000001"
+	creditAccountNo := "6217701201600000002"
 
 	if err := repo.CreateAccount(service.Account{
 		AccountNo:     debitAccountNo,
@@ -360,7 +362,7 @@ func setupRefundAsyncFixture(t *testing.T) (*memoryrepo.Repo, *service.TransferA
 		t.Fatalf("create credit account failed: %v", err)
 	}
 
-	originTxnNo := "txn_6000_origin"
+	originTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a6000"
 	if err := repo.CreateTransferTxn(service.TransferTxn{
 		TxnNo:            originTxnNo,
 		MerchantNo:       merchantNo,
@@ -377,5 +379,5 @@ func setupRefundAsyncFixture(t *testing.T) (*memoryrepo.Repo, *service.TransferA
 	}
 
 	processor := service.NewTransferAsyncProcessor(repo)
-	return repo, processor, merchantNo, originTxnNo, debitAccountNo, creditAccountNo
+	return repo, pool, processor, merchantNo, originTxnNo, debitAccountNo, creditAccountNo
 }

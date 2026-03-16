@@ -5,24 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/xmz-ai/coin/internal/service"
 )
-
-type pgBookRow struct {
-	BookNo    string
-	ExpireAt  time.Time
-	Balance   int64
-	AccountNo string
-}
-
-type pgBookChange struct {
-	AccountNo    string
-	BookNo       string
-	Delta        int64
-	BalanceAfter int64
-	ExpireAt     time.Time
-}
 
 func TestTC9017PostgresCreditStageBookEnabledWritesBookAndLogs(t *testing.T) {
 	repo, pool, _, _, creditAccountNo, txnNo := setupPostgresTransferFixture(t, service.TxnStatusPaySuccess, 120)
@@ -209,60 +193,3 @@ WHERE txn_no = $2::uuid
 	}
 }
 
-func queryAccountBooksByAccount(t *testing.T, pool *pgxpool.Pool, accountNo string) []pgBookRow {
-	t.Helper()
-
-	rows, err := pool.Query(context.Background(), `
-SELECT book_no::text, account_no, expire_at, balance
-FROM account_book
-WHERE account_no = $1
-ORDER BY expire_at ASC, book_no ASC
-`, accountNo)
-	if err != nil {
-		t.Fatalf("query account_book failed: %v", err)
-	}
-	defer rows.Close()
-
-	out := make([]pgBookRow, 0)
-	for rows.Next() {
-		var item pgBookRow
-		if err := rows.Scan(&item.BookNo, &item.AccountNo, &item.ExpireAt, &item.Balance); err != nil {
-			t.Fatalf("scan account_book failed: %v", err)
-		}
-		item.ExpireAt = item.ExpireAt.UTC()
-		out = append(out, item)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate account_book failed: %v", err)
-	}
-	return out
-}
-
-func queryBookChangesByTxnNo(t *testing.T, pool *pgxpool.Pool, txnNo string) []pgBookChange {
-	t.Helper()
-
-	rows, err := pool.Query(context.Background(), `
-SELECT account_no, book_no::text, delta, balance_after, expire_at
-FROM account_book_change_log
-WHERE txn_no = $1::uuid
-ORDER BY change_id ASC
-`, txnNo)
-	if err != nil {
-		t.Fatalf("query account_book_change_log failed: %v", err)
-	}
-	defer rows.Close()
-
-	out := make([]pgBookChange, 0)
-	for rows.Next() {
-		var item pgBookChange
-		if err := rows.Scan(&item.AccountNo, &item.BookNo, &item.Delta, &item.BalanceAfter, &item.ExpireAt); err != nil {
-			t.Fatalf("scan account_book_change_log failed: %v", err)
-		}
-		item.ExpireAt = item.ExpireAt.UTC()
-		out = append(out, item)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate account_book_change_log failed: %v", err)
-	}
-	return out
-}

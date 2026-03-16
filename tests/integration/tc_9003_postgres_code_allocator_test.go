@@ -1,17 +1,11 @@
 package integration
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"os"
-	"strconv"
-	"strings"
 	"sync"
 	"testing"
-	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/xmz-ai/coin/internal/db"
 	idpkg "github.com/xmz-ai/coin/internal/platform/id"
 	"github.com/xmz-ai/coin/internal/service"
@@ -178,94 +172,3 @@ func TestTC9005PostgresAccountNoConflictDoesNotOverwrite(t *testing.T) {
 	}
 }
 
-func setupPostgresPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-
-	dsn := os.Getenv("COIN_TEST_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("COIN_TEST_POSTGRES_DSN not set")
-	}
-
-	adminPool, err := db.NewPool(context.Background(), dsn)
-	if err != nil {
-		t.Fatalf("connect postgres failed: %v", err)
-	}
-	t.Cleanup(adminPool.Close)
-
-	schemaName := testSchemaName(t.Name())
-	if _, err := adminPool.Exec(context.Background(), "CREATE SCHEMA "+schemaName); err != nil {
-		t.Fatalf("create test schema failed: %v", err)
-	}
-	t.Logf("postgres test schema: %s", schemaName)
-
-	pool, err := newPoolWithSearchPath(context.Background(), dsn, schemaName)
-	if err != nil {
-		_, _ = adminPool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+schemaName+" CASCADE")
-		t.Fatalf("connect postgres with search_path failed: %v", err)
-	}
-	keepSchema := os.Getenv("COIN_TEST_PG_KEEP_SCHEMA") == "1"
-	t.Cleanup(func() {
-		pool.Close()
-		if keepSchema {
-			t.Logf("keeping test schema %s because COIN_TEST_PG_KEEP_SCHEMA=1", schemaName)
-			return
-		}
-		if _, err := adminPool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+schemaName+" CASCADE"); err != nil {
-			t.Errorf("drop test schema failed: %v", err)
-		}
-	})
-
-	upSQL := loadMigrationSQL(t)
-	if _, err := pool.Exec(context.Background(), upSQL); err != nil {
-		t.Fatalf("apply up migration failed: %v", err)
-	}
-	return pool
-}
-
-func newPoolWithSearchPath(ctx context.Context, dsn, schemaName string) (*pgxpool.Pool, error) {
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		return nil, err
-	}
-	if cfg.ConnConfig.RuntimeParams == nil {
-		cfg.ConnConfig.RuntimeParams = map[string]string{}
-	}
-	cfg.ConnConfig.RuntimeParams["search_path"] = schemaName + ",public"
-	cfg.MaxConns = 10
-
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	if err := pool.Ping(pingCtx); err != nil {
-		pool.Close()
-		return nil, err
-	}
-	return pool, nil
-}
-
-func testSchemaName(testName string) string {
-	base := strings.ToLower(testName)
-	base = strings.ReplaceAll(base, "/", "_")
-
-	var b strings.Builder
-	for _, r := range base {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
-			b.WriteRune(r)
-		} else {
-			b.WriteRune('_')
-		}
-	}
-
-	safe := b.String()
-	if safe == "" {
-		safe = "it"
-	}
-	if len(safe) > 30 {
-		safe = safe[:30]
-	}
-	return "it_" + safe + "_" + strconv.FormatInt(time.Now().UnixNano(), 10)
-}

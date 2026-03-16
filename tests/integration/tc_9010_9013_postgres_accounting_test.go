@@ -1,23 +1,12 @@
 package integration
 
 import (
-	"context"
-	"fmt"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/xmz-ai/coin/internal/db"
-	idpkg "github.com/xmz-ai/coin/internal/platform/id"
 	"github.com/xmz-ai/coin/internal/service"
 )
-
-type pgAccountChange struct {
-	AccountNo    string
-	Delta        int64
-	BalanceAfter int64
-}
 
 func TestTC9010PostgresDebitStageWritesBalanceAndLog(t *testing.T) {
 	repo, pool, _, debitAccountNo, _, txnNo := setupPostgresTransferFixture(t, service.TxnStatusProcessing, 120)
@@ -318,103 +307,3 @@ func TestTC9020PostgresConcurrentRefundCASNoOverRefund(t *testing.T) {
 	}
 }
 
-func setupPostgresTransferFixture(t *testing.T, txnStatus string, amount int64) (*db.Repository, *pgxpool.Pool, service.Merchant, string, string, string) {
-	t.Helper()
-
-	pool := setupPostgresPool(t)
-	repoImpl := db.NewRepository(pool)
-	ids := idpkg.NewFixedUUIDProvider([]string{
-		"01956f4e-7b3e-7a4d-9f6b-4d9de4f7d001",
-		"01956f4e-8c11-71aa-b2d2-2b079f7e2001",
-		"01956f4e-8c11-71aa-b2d2-2b079f7e2002",
-	})
-
-	merchantSvc := service.NewMerchantService(repoImpl, ids)
-	customerSvc := service.NewCustomerService(repoImpl, ids)
-
-	merchant, err := merchantSvc.CreateMerchant("", "pg-accounting")
-	if err != nil {
-		t.Fatalf("create merchant failed: %v", err)
-	}
-	debitCustomer, err := customerSvc.CreateCustomer(merchant.MerchantNo, "u_9010_debit")
-	if err != nil {
-		t.Fatalf("create debit customer failed: %v", err)
-	}
-	creditCustomer, err := customerSvc.CreateCustomer(merchant.MerchantNo, "u_9010_credit")
-	if err != nil {
-		t.Fatalf("create credit customer failed: %v", err)
-	}
-
-	debitAccountNo := "6217701201901001001"
-	creditAccountNo := "6217701201901001002"
-	if err := repoImpl.CreateAccount(service.Account{
-		AccountNo:     debitAccountNo,
-		MerchantNo:    merchant.MerchantNo,
-		CustomerNo:    debitCustomer.CustomerNo,
-		AccountType:   "CUSTOMER",
-		AllowDebitOut: true,
-		AllowCreditIn: true,
-		AllowTransfer: true,
-		Balance:       1000,
-	}); err != nil {
-		t.Fatalf("create debit account failed: %v", err)
-	}
-	if err := repoImpl.CreateAccount(service.Account{
-		AccountNo:     creditAccountNo,
-		MerchantNo:    merchant.MerchantNo,
-		CustomerNo:    creditCustomer.CustomerNo,
-		AccountType:   "CUSTOMER",
-		AllowDebitOut: true,
-		AllowCreditIn: true,
-		AllowTransfer: true,
-		Balance:       200,
-	}); err != nil {
-		t.Fatalf("create credit account failed: %v", err)
-	}
-
-	txnNo := fmt.Sprintf("01956f4e-9d22-73bc-8e11-3f5e9c7a91%02d", amount%100)
-	if err := repoImpl.CreateTransferTxn(service.TransferTxn{
-		TxnNo:            txnNo,
-		MerchantNo:       merchant.MerchantNo,
-		OutTradeNo:       fmt.Sprintf("ord_901x_%d_%s", amount, txnStatus),
-		BizType:          "TRANSFER",
-		TransferScene:    service.SceneP2P,
-		DebitAccountNo:   debitAccountNo,
-		CreditAccountNo:  creditAccountNo,
-		Amount:           amount,
-		RefundableAmount: amount,
-		Status:           txnStatus,
-	}); err != nil {
-		t.Fatalf("create txn failed: %v", err)
-	}
-
-	return repoImpl, pool, merchant, debitAccountNo, creditAccountNo, txnNo
-}
-
-func queryAccountChangesByTxnNo(t *testing.T, pool *pgxpool.Pool, txnNo string) []pgAccountChange {
-	t.Helper()
-
-	rows, err := pool.Query(context.Background(), `
-SELECT account_no, delta, balance_after
-FROM account_change_log
-WHERE txn_no = $1::uuid
-ORDER BY change_id ASC
-`, txnNo)
-	if err != nil {
-		t.Fatalf("query change log failed: %v", err)
-	}
-	defer rows.Close()
-
-	out := make([]pgAccountChange, 0)
-	for rows.Next() {
-		var item pgAccountChange
-		if err := rows.Scan(&item.AccountNo, &item.Delta, &item.BalanceAfter); err != nil {
-			t.Fatalf("scan change log failed: %v", err)
-		}
-		out = append(out, item)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate change log failed: %v", err)
-	}
-	return out
-}

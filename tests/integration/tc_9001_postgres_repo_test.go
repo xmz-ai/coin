@@ -2,11 +2,6 @@ package integration
 
 import (
 	"errors"
-	"os"
-	"path/filepath"
-	"runtime"
-	"sort"
-	"strings"
 	"testing"
 
 	"github.com/xmz-ai/coin/internal/db"
@@ -83,30 +78,3 @@ func TestTC9001PostgresRepositoryCoreFlow(t *testing.T) {
 	}
 }
 
-func loadMigrationSQL(t *testing.T) string {
-	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatalf("runtime.Caller failed")
-	}
-	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
-	upPaths, err := filepath.Glob(filepath.Join(repoRoot, "migrations", "*.up.sql"))
-	if err != nil {
-		t.Fatalf("glob up migrations failed: %v", err)
-	}
-	if len(upPaths) == 0 {
-		t.Fatalf("no up migrations found")
-	}
-	sort.Strings(upPaths)
-
-	var sql strings.Builder
-	for _, p := range upPaths {
-		upBytes, readErr := os.ReadFile(p)
-		if readErr != nil {
-			t.Fatalf("read up migration failed: %v", readErr)
-		}
-		sql.Write(upBytes)
-		sql.WriteByte('\n')
-	}
-	return sql.String()
-}
