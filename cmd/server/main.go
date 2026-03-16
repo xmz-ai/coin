@@ -46,7 +46,7 @@ func main() {
 	accountResolver := service.NewAccountResolver(repo)
 	refundService := service.NewRefundService(repo)
 	queryService := service.NewTxnQueryService(repo)
-	businessHandler := api.NewBusinessHandler(transferService, transferService, repo, transferRoutingService, asyncTransferProcessor, accountResolver, repo, refundService, queryService, repo, nil)
+	businessHandler := api.NewBusinessHandler(transferService, transferService, repo, transferRoutingService, asyncTransferProcessor, webhookWorker, accountResolver, repo, refundService, queryService, repo, nil)
 	// Fallback recovery worker; main path is in-process async Enqueue on API submit.
 	go transferWorker.Start(ctx, 500*time.Millisecond)
 	go webhookWorker.Start(ctx, time.Duration(cfg.WebhookWorkerIntervalMS)*time.Millisecond)

@@ -18,6 +18,11 @@ type WebhookSecretProvider interface {
 	GetActiveSecret(ctx context.Context, merchantNo string) (secret string, ok bool, err error)
 }
 
+const (
+	webhookAsyncWorkers   = 4
+	webhookAsyncQueueSize = 512
+)
+
 type WebhookWorker struct {
 	repo       Repository
 	secrets    WebhookSecretProvider
@@ -26,6 +31,7 @@ type WebhookWorker struct {
 	batchSize  int
 	backoff    []time.Duration
 	nowFn      func() time.Time
+	queue      chan string
 }
 
 func NewWebhookWorker(repo Repository, secrets WebhookSecretProvider, maxRetries, batchSize int, backoffMinutes []int) *WebhookWorker {
@@ -35,7 +41,7 @@ func NewWebhookWorker(repo Repository, secrets WebhookSecretProvider, maxRetries
 	if batchSize <= 0 {
 		batchSize = 100
 	}
-	return &WebhookWorker{
+	w := &WebhookWorker{
 		repo:       repo,
 		secrets:    secrets,
 		client:     &http.Client{Timeout: 3 * time.Second},
@@ -45,7 +51,16 @@ func NewWebhookWorker(repo Repository, secrets WebhookSecretProvider, maxRetries
 		nowFn: func() time.Time {
 			return time.Now().UTC()
 		},
+		queue: make(chan string, webhookAsyncQueueSize),
 	}
+	for i := 0; i < webhookAsyncWorkers; i++ {
+		go func() {
+			for txnNo := range w.queue {
+				w.DeliverTxn(context.Background(), txnNo)
+			}
+		}()
+	}
+	return w
 }
 
 func (w *WebhookWorker) Start(ctx context.Context, interval time.Duration) {
@@ -110,6 +125,42 @@ func (w *WebhookWorker) runOnceWithReport(ctx context.Context) (int, error) {
 		w.handleEvent(ctx, e)
 	}
 	return len(events), nil
+}
+
+func (w *WebhookWorker) Enqueue(txnNo string) {
+	if w == nil {
+		return
+	}
+	txnNo = strings.TrimSpace(txnNo)
+	if txnNo == "" {
+		return
+	}
+	select {
+	case w.queue <- txnNo:
+	default:
+		w.DeliverTxn(context.Background(), txnNo)
+	}
+}
+
+func (w *WebhookWorker) DeliverTxn(ctx context.Context, txnNo string) {
+	if w == nil || w.repo == nil || w.secrets == nil {
+		return
+	}
+	txnNo = strings.TrimSpace(txnNo)
+	if txnNo == "" {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	events, err := w.repo.ClaimDueOutboxEventsByTxnNo(txnNo, w.batchSize, w.nowFn())
+	if err != nil {
+		return
+	}
+	for _, e := range events {
+		w.handleEvent(ctx, e)
+	}
 }
 
 func (w *WebhookWorker) RunOnce(ctx context.Context) {

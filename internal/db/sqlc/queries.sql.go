@@ -91,6 +91,75 @@ func (q *Queries) ClaimDueOutboxEvents(ctx context.Context, arg ClaimDueOutboxEv
 	return items, nil
 }
 
+const claimDueOutboxEventsByTxnNo = `-- name: ClaimDueOutboxEventsByTxnNo :many
+SELECT
+  e.event_id::text AS event_id,
+  e.txn_no::text AS txn_no,
+  e.merchant_no,
+  COALESCE(e.out_trade_no, '') AS out_trade_no,
+  COALESCE(t.biz_type, '') AS biz_type,
+  COALESCE(t.transfer_scene, '') AS transfer_scene,
+  t.amount,
+  COALESCE(t.status, '') AS status,
+  e.retry_count
+FROM outbox_event e
+JOIN txn t ON t.txn_no = e.txn_no
+WHERE e.status = 'PENDING'
+  AND e.txn_no = $1::uuid
+  AND (e.next_retry_at IS NULL OR e.next_retry_at <= $2::timestamptz)
+ORDER BY e.created_at ASC, e.event_id ASC
+LIMIT $3
+FOR UPDATE SKIP LOCKED
+`
+
+type ClaimDueOutboxEventsByTxnNoParams struct {
+	TxnNo     pgtype.UUID
+	NowAt     pgtype.Timestamptz
+	PageLimit int32
+}
+
+type ClaimDueOutboxEventsByTxnNoRow struct {
+	EventID       string
+	TxnNo         string
+	MerchantNo    string
+	OutTradeNo    string
+	BizType       string
+	TransferScene string
+	Amount        int64
+	Status        string
+	RetryCount    int32
+}
+
+func (q *Queries) ClaimDueOutboxEventsByTxnNo(ctx context.Context, arg ClaimDueOutboxEventsByTxnNoParams) ([]ClaimDueOutboxEventsByTxnNoRow, error) {
+	rows, err := q.db.Query(ctx, claimDueOutboxEventsByTxnNo, arg.TxnNo, arg.NowAt, arg.PageLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ClaimDueOutboxEventsByTxnNoRow
+	for rows.Next() {
+		var i ClaimDueOutboxEventsByTxnNoRow
+		if err := rows.Scan(
+			&i.EventID,
+			&i.TxnNo,
+			&i.MerchantNo,
+			&i.OutTradeNo,
+			&i.BizType,
+			&i.TransferScene,
+			&i.Amount,
+			&i.Status,
+			&i.RetryCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const createAccount = `-- name: CreateAccount :exec
 INSERT INTO account (
   account_no, merchant_no, customer_no, account_type,

@@ -470,6 +470,26 @@ ORDER BY e.created_at ASC, e.event_id ASC
 LIMIT sqlc.arg(page_limit)
 FOR UPDATE SKIP LOCKED;
 
+-- name: ClaimDueOutboxEventsByTxnNo :many
+SELECT
+  e.event_id::text AS event_id,
+  e.txn_no::text AS txn_no,
+  e.merchant_no,
+  COALESCE(e.out_trade_no, '') AS out_trade_no,
+  COALESCE(t.biz_type, '') AS biz_type,
+  COALESCE(t.transfer_scene, '') AS transfer_scene,
+  t.amount,
+  COALESCE(t.status, '') AS status,
+  e.retry_count
+FROM outbox_event e
+JOIN txn t ON t.txn_no = e.txn_no
+WHERE e.status = 'PENDING'
+  AND e.txn_no = sqlc.arg(txn_no)::uuid
+  AND (e.next_retry_at IS NULL OR e.next_retry_at <= sqlc.arg(now_at)::timestamptz)
+ORDER BY e.created_at ASC, e.event_id ASC
+LIMIT sqlc.arg(page_limit)
+FOR UPDATE SKIP LOCKED;
+
 -- name: MarkOutboxEventSuccess :exec
 UPDATE outbox_event
 SET status = 'SUCCESS',

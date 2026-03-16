@@ -741,7 +741,46 @@ func (r *Repository) ClaimDueOutboxEvents(limit int, now time.Time) ([]service.O
 	if err != nil {
 		return nil, err
 	}
+	items := make([]service.OutboxEventDelivery, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, service.OutboxEventDelivery{
+			EventID:       row.EventID,
+			TxnNo:         row.TxnNo,
+			MerchantNo:    row.MerchantNo,
+			OutTradeNo:    row.OutTradeNo,
+			BizType:       row.BizType,
+			TransferScene: row.TransferScene,
+			Amount:        row.Amount,
+			Status:        row.Status,
+			RetryCount:    int(row.RetryCount),
+		})
+	}
+	return items, nil
+}
 
+func (r *Repository) ClaimDueOutboxEventsByTxnNo(txnNo string, limit int, now time.Time) ([]service.OutboxEventDelivery, error) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	txnUUID, err := parseUUID(txnNo)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	rows, err := r.queries.ClaimDueOutboxEventsByTxnNo(ctx, dbsqlc.ClaimDueOutboxEventsByTxnNoParams{
+		TxnNo:     txnUUID,
+		NowAt:     pgtype.Timestamptz{Time: now.UTC(), Valid: true},
+		PageLimit: int32(limit),
+	})
+	if err != nil {
+		return nil, err
+	}
 	items := make([]service.OutboxEventDelivery, 0, len(rows))
 	for _, row := range rows {
 		items = append(items, service.OutboxEventDelivery{
