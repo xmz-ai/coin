@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/xmz-ai/coin/internal/service"
 	"github.com/xmz-ai/coin/tests/support/memoryrepo"
@@ -167,7 +168,11 @@ func TestTC1126APIRefundBalanceAndChangeLogs(t *testing.T) {
 	if refundResp.Code != http.StatusCreated {
 		t.Fatalf("refund expected 201, got %d body=%s", refundResp.Code, refundResp.Body.String())
 	}
-	refundTxnNo := decodeJSONMap(t, refundResp.Body.Bytes())["data"].(map[string]any)["txn_no"].(string)
+	refundData := decodeJSONMap(t, refundResp.Body.Bytes())["data"].(map[string]any)
+	refundTxnNo := refundData["txn_no"].(string)
+	if refundData["status"] != service.TxnStatusInit {
+		t.Fatalf("expected refund submit status INIT, got %v", refundData["status"])
+	}
 	waitTxnStatus(t, r, merchantNo, secret, refundTxnNo, service.TxnStatusRecvSuccess)
 
 	debitAfter, _ := repo.GetAccount(testDebitAccountNo)
@@ -182,6 +187,21 @@ func TestTC1126APIRefundBalanceAndChangeLogs(t *testing.T) {
 		testCreditAccountNo: -20,
 		testDebitAccountNo:  20,
 	})
+
+	originTxn, ok := repo.GetTransferTxn(originTxnNo)
+	if !ok {
+		t.Fatalf("origin txn not found")
+	}
+	if originTxn.RefundableAmount != 40 {
+		t.Fatalf("expected origin refundable_amount=40, got %d", originTxn.RefundableAmount)
+	}
+	events, err := repo.ClaimDueOutboxEventsByTxnNo(refundTxnNo, 10, time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("claim refund outbox events failed: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 refund outbox event, got %+v", events)
+	}
 }
 
 func assertTxnAccountChanges(t *testing.T, repo *memoryrepo.Repo, txnNo string, expected map[string]int64) {

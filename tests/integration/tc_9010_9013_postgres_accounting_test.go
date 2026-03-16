@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/xmz-ai/coin/internal/db"
@@ -108,6 +109,13 @@ func TestTC9012PostgresAsyncProcessorWritesTwoLogsAndBalances(t *testing.T) {
 	if check[debitAccountNo] != -150 || check[creditAccountNo] != 150 {
 		t.Fatalf("unexpected change deltas: %+v", check)
 	}
+	events, err := repo.ClaimDueOutboxEventsByTxnNo(txnNo, 10, time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("claim outbox events failed: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 outbox event, got %+v", events)
+	}
 }
 
 func TestTC9013PostgresRefundWritesReverseLogsAndBalances(t *testing.T) {
@@ -156,6 +164,17 @@ func TestTC9013PostgresRefundWritesReverseLogsAndBalances(t *testing.T) {
 	if err := processor.Process(refundTxnNo); err != nil {
 		t.Fatalf("process refund failed: %v", err)
 	}
+	refund, ok := repo.GetTransferTxn(refundTxnNo)
+	if !ok || refund.Status != service.TxnStatusRecvSuccess {
+		t.Fatalf("unexpected refund txn status: %+v ok=%v", refund, ok)
+	}
+	origin, ok := repo.GetTransferTxn(originTxnNo)
+	if !ok {
+		t.Fatalf("origin txn not found")
+	}
+	if origin.RefundableAmount != 150 {
+		t.Fatalf("expected origin refundable_amount=150, got %d", origin.RefundableAmount)
+	}
 
 	debit, _ := repo.GetAccount(debitAccountNo)
 	credit, _ := repo.GetAccount(creditAccountNo)
@@ -176,6 +195,13 @@ func TestTC9013PostgresRefundWritesReverseLogsAndBalances(t *testing.T) {
 	}
 	if check[creditAccountNo] != -50 || check[debitAccountNo] != 50 {
 		t.Fatalf("unexpected refund deltas: %+v", check)
+	}
+	events, err := repo.ClaimDueOutboxEventsByTxnNo(refundTxnNo, 10, time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("claim refund outbox events failed: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 refund outbox event, got %+v", events)
 	}
 }
 
@@ -271,6 +297,24 @@ func TestTC9020PostgresConcurrentRefundCASNoOverRefund(t *testing.T) {
 	}
 	if origin.RefundableAmount != 20 {
 		t.Fatalf("expected origin refundable_amount=20, got %d", origin.RefundableAmount)
+	}
+
+	successByStatus := 0
+	exceededByStatus := 0
+	for _, refundTxnNo := range []string{refundTxnA, refundTxnB} {
+		refundTxn, ok := repo.GetTransferTxn(refundTxnNo)
+		if !ok {
+			t.Fatalf("refund txn not found: %s", refundTxnNo)
+		}
+		if refundTxn.Status == service.TxnStatusRecvSuccess {
+			successByStatus++
+		}
+		if refundTxn.Status == service.TxnStatusFailed && refundTxn.ErrorCode == "REFUND_AMOUNT_EXCEEDED" {
+			exceededByStatus++
+		}
+	}
+	if successByStatus != 1 || exceededByStatus != 1 {
+		t.Fatalf("expected refund status success=1 exceeded=1, got success=%d exceeded=%d", successByStatus, exceededByStatus)
 	}
 }
 

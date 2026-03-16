@@ -41,6 +41,13 @@ func TestTC6001OriginTxnNotFoundRejected(t *testing.T) {
 	if refund.ErrorCode != "REFUND_ORIGIN_NOT_FOUND" {
 		t.Fatalf("expected REFUND_ORIGIN_NOT_FOUND, got %s", refund.ErrorCode)
 	}
+	events, err := repo.ClaimDueOutboxEventsByTxnNo(refundTxnNo, 10, time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("claim refund outbox events failed: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected 0 refund outbox event on failed refund, got %+v", events)
+	}
 }
 
 func TestTC6002RefundAmountExceededRejected(t *testing.T) {
@@ -81,6 +88,13 @@ func TestTC6002RefundAmountExceededRejected(t *testing.T) {
 	}
 	if origin.RefundableAmount != 100 {
 		t.Fatalf("expected origin refundable_amount=100, got %d", origin.RefundableAmount)
+	}
+	events, err := repo.ClaimDueOutboxEventsByTxnNo(refundTxnNo, 10, time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("claim refund outbox events failed: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected 0 refund outbox event on failed refund, got %+v", events)
 	}
 }
 
@@ -178,6 +192,13 @@ func TestTC6004RefundCrossMerchantOriginRejected(t *testing.T) {
 	}
 	if refund.ErrorCode != "REFUND_ORIGIN_NOT_FOUND" {
 		t.Fatalf("expected REFUND_ORIGIN_NOT_FOUND, got %s", refund.ErrorCode)
+	}
+	events, err := repo.ClaimDueOutboxEventsByTxnNo(refundTxnNo, 10, time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("claim refund outbox events failed: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected 0 refund outbox event on failed refund, got %+v", events)
 	}
 }
 
