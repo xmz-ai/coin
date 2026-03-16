@@ -70,9 +70,6 @@ func (s *TransferRoutingService) Resolve(req TransferRoutingRequest) (TransferRo
 		if err := da.CanTransfer(); err != nil {
 			return TransferRoutingResult{}, err
 		}
-		if err := ca.CanTransfer(); err != nil {
-			return TransferRoutingResult{}, err
-		}
 	}
 
 	return TransferRoutingResult{DebitAccountNo: debit, CreditAccountNo: credit}, nil

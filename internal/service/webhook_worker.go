@@ -209,7 +209,7 @@ func (w *WebhookWorker) handleEvent(ctx context.Context, event OutboxEventDelive
 func (w *WebhookWorker) deliver(ctx context.Context, url string, event OutboxEventDelivery, secret string) bool {
 	payload := map[string]any{
 		"event_id":       event.EventID,
-		"event_type":     "TxnSucceeded",
+		"event_type":     webhookEventType(event),
 		"occurred_at":    w.nowFn().UTC().Format(time.RFC3339Nano),
 		"merchant_no":    event.MerchantNo,
 		"txn_no":         event.TxnNo,
@@ -305,6 +305,16 @@ func normalizeWebhookBackoff(minutes []int) []time.Duration {
 		out = []time.Duration{time.Minute}
 	}
 	return out
+}
+
+func webhookEventType(event OutboxEventDelivery) string {
+	if event.Status == TxnStatusFailed {
+		return "TxnFailed"
+	}
+	if event.BizType == BizTypeRefund && event.Status == TxnStatusRecvSuccess {
+		return "TxnRefunded"
+	}
+	return "TxnSucceeded"
 }
 
 func NewWebhookReportHook() func(claimed int, runErr error) {
