@@ -2,6 +2,7 @@
 
 ## Project Structure & Module Organization
 - `cmd/server/main.go`: service entrypoint and wiring.
+- `cmd/perf-core-txn/main.go`: real-chain core transaction load test runner.
 - `internal/api`: Gin routes, auth middleware, HTTP handlers.
 - `internal/service`: application services (transfer, refund, async processor, query).
 - `internal/domain`: core entities, state machine, and domain errors.
@@ -15,6 +16,8 @@
 - `make smoke`: run baseline smoke cases from `scripts/test/smoke.sh`.
 - `make test-pg`: run PostgreSQL integration suite via Dockerized Postgres.
 - `make sqlc`: regenerate typed DB access code from SQL (`sqlc.yaml`).
+- `scripts/test/perf_core_txn.sh`: run memory-path benchmark (`go test -bench`).
+- `scripts/test/perf_core_txn_real.sh`: run real-chain load test (Gin + PostgreSQL + Redis).
 - Example targeted run: `go test -v ./tests/integration -run 'TestTC1101' -count=1`.
 
 ## Coding Style & Naming Conventions
