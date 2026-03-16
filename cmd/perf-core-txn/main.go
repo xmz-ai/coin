@@ -52,14 +52,18 @@ type perfConfig struct {
 }
 
 type resultRow struct {
-	StatusCode    int
-	Code          string
-	SubmitLatency time.Duration
-	E2ELatency    time.Duration
-	SubmitOK      bool
-	E2EOK         bool
-	TransportErr  string
-	E2EErr        string
+	StatusCode        int
+	Code              string
+	SubmitLatency     time.Duration
+	E2ELatency        time.Duration
+	SubmitStartedAt   time.Time
+	E2ECompletedAt    time.Time
+	WebhookDone       <-chan struct{}
+	CancelWebhookWait func()
+	SubmitOK          bool
+	E2EOK             bool
+	TransportErr      string
+	E2EErr            string
 }
 
 type latencyStats struct {
@@ -74,6 +78,7 @@ type latencyStats struct {
 
 type metrics struct {
 	Mode               string
+	SubmitElapsed      time.Duration
 	Elapsed            time.Duration
 	Total              int
 	SubmitSuccess      int
@@ -403,6 +408,7 @@ func runWarmup(
 	for i := 0; i < warmup; i++ {
 		nonce := "warmup-" + strconv.Itoa(i)
 		row := fireTransferOnce(client, baseURL, merchantNo, secret, fromAccountNo, nonce, maxBodyBytes, sink, webhookWaitTimeout, true)
+		awaitWebhookResult(&row, webhookWaitTimeout)
 		if !row.SubmitOK || !row.E2EOK || row.TransportErr != "" || row.E2EErr != "" {
 			return fmt.Errorf("status=%d code=%s submit_ok=%t e2e_ok=%t transport_err=%s e2e_err=%s",
 				row.StatusCode, row.Code, row.SubmitOK, row.E2EOK, row.TransportErr, row.E2EErr)
@@ -450,10 +456,23 @@ func runLoad(
 	}()
 
 	rows := make([]resultRow, 0, 1024)
+	pending := make([]int, 0, 1024)
 	for r := range results {
+		idx := len(rows)
 		rows = append(rows, r)
+		if requireWebhook && r.SubmitOK && r.WebhookDone != nil {
+			pending = append(pending, idx)
+		}
 	}
-	return aggregate(rows, time.Since(start), mode)
+
+	submitElapsed := time.Since(start)
+	if requireWebhook {
+		for _, idx := range pending {
+			awaitWebhookResult(&rows[idx], webhookWaitTimeout)
+		}
+	}
+
+	return aggregate(rows, submitElapsed, time.Since(start), mode)
 }
 
 func fireTransferOnce(
@@ -533,7 +552,7 @@ func fireTransferOnce(
 		return resultRow{StatusCode: resp.StatusCode, SubmitLatency: submitLatency, TransportErr: "decode response: " + err.Error()}
 	}
 	code, _ := parsed["code"].(string)
-	row := resultRow{StatusCode: resp.StatusCode, Code: code, SubmitLatency: submitLatency}
+	row := resultRow{StatusCode: resp.StatusCode, Code: code, SubmitLatency: submitLatency, SubmitStartedAt: submitStart}
 	row.SubmitOK = resp.StatusCode == http.StatusCreated && code == "SUCCESS"
 	if !row.SubmitOK {
 		cancelWait()
@@ -542,18 +561,40 @@ func fireTransferOnce(
 	if !requireWebhook {
 		return row
 	}
+	row.WebhookDone = done
+	row.CancelWebhookWait = cancelWait
+	return row
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), webhookWaitTimeout)
-	defer cancel()
-	select {
-	case <-done:
-		row.E2EOK = true
-		row.E2ELatency = time.Since(submitStart)
-		return row
-	case <-ctx.Done():
-		cancelWait()
+func awaitWebhookResult(row *resultRow, webhookWaitTimeout time.Duration) {
+	if row == nil || !row.SubmitOK || row.WebhookDone == nil {
+		return
+	}
+	remaining := webhookWaitTimeout - time.Since(row.SubmitStartedAt)
+	if remaining <= 0 {
+		if row.CancelWebhookWait != nil {
+			row.CancelWebhookWait()
+		}
 		row.E2EErr = "webhook timeout"
-		return row
+		return
+	}
+	timer := time.NewTimer(remaining)
+	select {
+	case <-row.WebhookDone:
+		row.E2ECompletedAt = time.Now()
+		row.E2ELatency = row.E2ECompletedAt.Sub(row.SubmitStartedAt)
+		row.E2EOK = true
+	case <-timer.C:
+		if row.CancelWebhookWait != nil {
+			row.CancelWebhookWait()
+		}
+		row.E2EErr = "webhook timeout"
+	}
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
 	}
 }
 
@@ -572,9 +613,10 @@ func signRequest(method, path, merchantNo, ts, nonce string, body []byte, secret
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func aggregate(rows []resultRow, elapsed time.Duration, mode string) metrics {
+func aggregate(rows []resultRow, submitElapsed, elapsed time.Duration, mode string) metrics {
 	m := metrics{
 		Mode:               mode,
+		SubmitElapsed:      submitElapsed,
 		Elapsed:            elapsed,
 		Total:              len(rows),
 		ErrorCodeHistogram: map[string]int{},
@@ -619,11 +661,13 @@ func aggregate(rows []resultRow, elapsed time.Duration, mode string) metrics {
 		}
 	}
 
-	if elapsed > 0 {
-		seconds := elapsed.Seconds()
+	if submitElapsed > 0 {
+		seconds := submitElapsed.Seconds()
 		m.RequestQPS = float64(m.Total) / seconds
 		m.SubmitQPS = float64(m.SubmitSuccess) / seconds
-		m.E2EQPS = float64(m.E2ESuccess) / seconds
+	}
+	if elapsed > 0 {
+		m.E2EQPS = float64(m.E2ESuccess) / elapsed.Seconds()
 	}
 	m.SubmitLatency = calcLatency(submitLatencies)
 	if mode == "submit" {
@@ -682,7 +726,8 @@ func buildMetricsMarkdown(m metrics) string {
 	b.WriteString(fmt.Sprintf("## Core Txn Report (%s)\n\n", strings.ToUpper(m.Mode)))
 	b.WriteString("| Metric | Value |\n")
 	b.WriteString("| --- | --- |\n")
-	b.WriteString(fmt.Sprintf("| elapsed | %s |\n", m.Elapsed))
+	b.WriteString(fmt.Sprintf("| submit_elapsed | %s |\n", m.SubmitElapsed))
+	b.WriteString(fmt.Sprintf("| e2e_elapsed | %s |\n", m.Elapsed))
 	b.WriteString(fmt.Sprintf("| total_requests | %d |\n", m.Total))
 	b.WriteString(fmt.Sprintf("| request_qps | %.2f |\n", m.RequestQPS))
 	b.WriteString(fmt.Sprintf("| submit_success | %d (%s) |\n", m.SubmitSuccess, ratio(m.SubmitSuccess, m.Total)))
