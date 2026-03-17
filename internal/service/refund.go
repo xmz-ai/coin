@@ -7,7 +7,6 @@ type RefundRequest struct {
 	RefundTxnNo string
 	OriginTxnNo string
 	Amount      int64
-	Breakdown   []RefundPart
 }
 
 type RefundResult struct {
@@ -52,26 +51,6 @@ func (s *RefundService) submitByRepository(req RefundRequest) (RefundResult, err
 		return RefundResult{}, ErrTxnNotFound
 	}
 
-	if len(req.Breakdown) > 0 {
-		sum := int64(0)
-		allowed := map[string]struct{}{}
-		if origin.DebitAccountNo != "" {
-			allowed[origin.DebitAccountNo] = struct{}{}
-		}
-		if origin.CreditAccountNo != "" {
-			allowed[origin.CreditAccountNo] = struct{}{}
-		}
-		for _, p := range req.Breakdown {
-			sum += p.Amount
-			if _, ok := allowed[p.AccountNo]; !ok {
-				return RefundResult{}, ErrRefundAccountNotInOrigin
-			}
-		}
-		if sum != req.Amount {
-			return RefundResult{}, ErrRefundBreakdownInvalid
-		}
-	}
-
 	left, ok, err := s.repo.ApplyRefund(req.RefundTxnNo, req.OriginTxnNo, req.Amount)
 	if err != nil {
 		return RefundResult{}, err
@@ -91,38 +70,12 @@ func (s *RefundService) submitByOriginCache(req RefundRequest) (RefundResult, er
 		return RefundResult{}, ErrTxnNotFound
 	}
 
-	if len(req.Breakdown) > 0 {
-		sum := int64(0)
-		allowed := map[string]struct{}{}
-		for _, p := range origin.AccountImpacts {
-			allowed[p.AccountNo] = struct{}{}
-		}
-		for _, p := range req.Breakdown {
-			sum += p.Amount
-			if _, ok := allowed[p.AccountNo]; !ok {
-				return RefundResult{}, ErrRefundAccountNotInOrigin
-			}
-		}
-		if sum != req.Amount {
-			return RefundResult{}, ErrRefundBreakdownInvalid
-		}
-	}
-
 	if origin.RefundableAmount < req.Amount {
 		return RefundResult{}, ErrRefundAmountExceeded
 	}
 
 	origin.RefundableAmount -= req.Amount
 	s.origins[req.OriginTxnNo] = origin
-
-	for _, p := range req.Breakdown {
-		a, ok := s.repo.GetAccount(p.AccountNo)
-		if !ok {
-			continue
-		}
-		a.Balance -= p.Amount
-		_ = s.repo.CreateAccount(a)
-	}
 
 	s.seq++
 	return RefundResult{

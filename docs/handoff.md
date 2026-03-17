@@ -92,13 +92,10 @@
 7. 仅 `book_enabled=true` 账户使用 `account_book`（父账户+子账本模式；V1 仅过期维度）
 8. 账本扣减顺序 FEFO；有效边界 `expire_at > now_utc`
 9. 账本流水表名固定：`account_book_change_log`
-10. 退款 `refund_breakdown`（若传）强约束：
-   - `sum(refund_breakdown.amount) == amount`
-   - `account_no` 必须属于原交易涉及账户集合
-11. 列表分页固定 seek：`created_at DESC, txn_no DESC`，`page_token=(created_at, txn_no)`
-12. Webhook 签名复用 `merchant_secret`
-13. 密钥轮转：新密钥生效后旧密钥立即失效
-14. 主键与外码：内部 UUIDv7，外部数字码（见 `docs/CODE_RULES.md`）
+10. 列表分页固定 seek：`created_at DESC, txn_no DESC`，`page_token=(created_at, txn_no)`
+11. Webhook 签名复用 `merchant_secret`
+12. 密钥轮转：新密钥生效后旧密钥立即失效
+13. 主键与外码：内部 UUIDv7，外部数字码（见 `docs/CODE_RULES.md`）
 
 ---
 
