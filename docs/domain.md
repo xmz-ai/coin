@@ -702,7 +702,7 @@ outbox 事件投递失败或超时。
 - `amount`
 - `biz_type=TRANSFER`
 - `transfer_scene=P2P`
-- `to_expire_at`（当目标账户 `book_enabled=true` 时必填）
+- `to_expire_in_days`（当目标账户 `book_enabled=true` 时必填，`>0`）
 
 **Output**
 - `txn_no`

@@ -78,7 +78,7 @@
 - 约束：透支语义严格执行；账户定位冲突（同侧同时传 `account_no` 与 `out_user_id` 且解析不一致）返回 `ACCOUNT_RESOLVE_CONFLICT`。
 
 ### F-11 转账（P2P）
-- 输入：`out_trade_no/amount/to_expire_at(条件必填)` + 双边账户定位参数。
+- 输入：`out_trade_no/amount/to_expire_in_days(条件必填)` + 双边账户定位参数。
 - 账户定位：`from_account_no` 或 `from_out_user_id` 二选一；`to_account_no` 或 `to_out_user_id` 二选一。
 - 输出：`txn_no/status`。
 - 约束：转出账户必须 `allow_transfer=true`，借贷同事务；P2P 不走商户默认账户兜底。

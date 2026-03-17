@@ -16,7 +16,6 @@
 - `make smoke`: run baseline smoke cases from `scripts/test/smoke.sh`.
 - `make test-pg`: run PostgreSQL integration suite via Dockerized Postgres.
 - `make sqlc`: regenerate typed DB access code from SQL (`sqlc.yaml`).
-- `scripts/test/perf_core_txn.sh`: run memory-path benchmark (`go test -bench`).
 - `scripts/test/perf_core_txn_real.sh`: run real-chain load test (Gin + PostgreSQL + Redis).
 - Example targeted run: `go test -v ./tests/integration -run 'TestTC1101' -count=1`.
 

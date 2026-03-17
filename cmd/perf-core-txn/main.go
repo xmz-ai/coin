@@ -32,7 +32,9 @@ import (
 	"github.com/xmz-ai/coin/internal/service"
 )
 
-const toOutUserID = "u_perf_to"
+const (
+	toBookTransferOutUser = "u_perf_to_book"
+)
 
 type perfConfig struct {
 	PostgresDSN          string
@@ -54,6 +56,7 @@ type perfConfig struct {
 type resultRow struct {
 	StatusCode        int
 	Code              string
+	TxnNo             string
 	SubmitLatency     time.Duration
 	E2ELatency        time.Duration
 	SubmitStartedAt   time.Time
@@ -94,6 +97,18 @@ type metrics struct {
 	E2ELatency         latencyStats
 	ErrorCodeHistogram map[string]int
 	Errors             map[string]int
+}
+
+type scenarioFireFn func(nonce string) resultRow
+
+type perfRuntime struct {
+	Server                *httptest.Server
+	WebhookServer         *httptest.Server
+	WebhookSink           *webhookSink
+	MerchantNo            string
+	Secret                string
+	TransferFromAccountNo string
+	TransferBookToAccount string
 }
 
 type webhookSink struct {
@@ -192,13 +207,13 @@ func loadPerfConfig() (perfConfig, error) {
 		RedisDB:              base.RedisDB,
 		Passphrase:           base.MerchantSecretPassphrase,
 		ProcessingTTLSeconds: max(base.ProcessingKeyTTLSeconds, 1),
-		Duration:            time.Duration(durationSec) * time.Second,
-		Concurrency:         concurrency,
-		WarmupRequests:      max(warmup, 0),
-		RequestTimeout:      time.Duration(requestTimeoutMs) * time.Millisecond,
-		MaxBodyBytes:        int64(maxBodyBytes),
-		WebhookPollInterval: time.Duration(webhookPollMs) * time.Millisecond,
-		WebhookWaitTimeout:  time.Duration(webhookWaitTimeoutMs) * time.Millisecond,
+		Duration:             time.Duration(durationSec) * time.Second,
+		Concurrency:          concurrency,
+		WarmupRequests:       max(warmup, 0),
+		RequestTimeout:       time.Duration(requestTimeoutMs) * time.Millisecond,
+		MaxBodyBytes:         int64(maxBodyBytes),
+		WebhookPollInterval:  time.Duration(webhookPollMs) * time.Millisecond,
+		WebhookWaitTimeout:   time.Duration(webhookWaitTimeoutMs) * time.Millisecond,
 	}, nil
 }
 
@@ -228,7 +243,7 @@ func run(cfg perfConfig) error {
 	secretManager := db.NewMerchantSecretManager(pool, cipher)
 	repo := db.NewRepository(pool)
 
-	server, webhookServer, webhookSink, merchantNo, secret, fromAccountNo, err := setupPerfServer(
+	runtimeEnv, err := setupPerfServer(
 		ctx,
 		repo,
 		redisClient,
@@ -240,28 +255,144 @@ func run(cfg perfConfig) error {
 	if err != nil {
 		return err
 	}
-	defer server.Close()
-	defer webhookServer.Close()
+	defer runtimeEnv.Server.Close()
+	defer runtimeEnv.WebhookServer.Close()
 
-	fmt.Printf("[perf] merchant_no=%s from_account_no=%s\n", merchantNo, fromAccountNo)
+	initialFromBalance, initialBookBalance, err := snapshotBalances(repo, runtimeEnv.TransferFromAccountNo, runtimeEnv.TransferBookToAccount)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("[perf] merchant_no=%s from_account_no=%s book_to_account_no=%s\n",
+		runtimeEnv.MerchantNo, runtimeEnv.TransferFromAccountNo, runtimeEnv.TransferBookToAccount)
 	fmt.Printf("[perf] duration=%s concurrency=%d warmup=%d timeout=%s\n",
 		cfg.Duration, cfg.Concurrency, cfg.WarmupRequests, cfg.RequestTimeout)
 	fmt.Printf("[perf] mode=webhook-e2e webhook_poll=%s webhook_wait_timeout=%s\n", cfg.WebhookPollInterval, cfg.WebhookWaitTimeout)
 
 	httpClient := &http.Client{Timeout: cfg.RequestTimeout}
+	const bookTransferExpireInDays = int64(30)
+	fireBookTransfer := func(nonce string) resultRow {
+		outTradeNo := "ord_perf_book_transfer_" + nonce
+		payload := map[string]any{
+			"out_trade_no":      outTradeNo,
+			"transfer_scene":    "P2P",
+			"from_account_no":   runtimeEnv.TransferFromAccountNo,
+			"to_account_no":     runtimeEnv.TransferBookToAccount,
+			"to_expire_in_days": bookTransferExpireInDays,
+			"amount":            1,
+		}
+		return fireAPIPostOnce(httpClient, runtimeEnv.Server.URL, runtimeEnv.MerchantNo, runtimeEnv.Secret, nonce, "/api/v1/transactions/transfer", outTradeNo, payload, cfg.MaxBodyBytes, runtimeEnv.WebhookSink, true)
+	}
+	fireBookRefund := func(nonce, originTxnNo string) resultRow {
+		outTradeNo := "ord_perf_book_refund_" + nonce
+		payload := map[string]any{
+			"out_trade_no":     outTradeNo,
+			"refund_of_txn_no": originTxnNo,
+			"amount":           1,
+		}
+		return fireAPIPostOnce(httpClient, runtimeEnv.Server.URL, runtimeEnv.MerchantNo, runtimeEnv.Secret, nonce, "/api/v1/transactions/refund", outTradeNo, payload, cfg.MaxBodyBytes, runtimeEnv.WebhookSink, true)
+	}
+
 	if cfg.WarmupRequests > 0 {
-		if err := runWarmup(httpClient, server.URL, merchantNo, secret, fromAccountNo, cfg.WarmupRequests, cfg.MaxBodyBytes, webhookSink, cfg.WebhookWaitTimeout); err != nil {
-			return fmt.Errorf("warmup failed: %w", err)
+		warmupOrigins := make([]string, 0, cfg.WarmupRequests)
+		for i := 0; i < cfg.WarmupRequests; i++ {
+			nonce := "warmup-book-transfer-" + strconv.Itoa(i)
+			row := fireBookTransfer(nonce)
+			awaitWebhookResult(&row, cfg.WebhookWaitTimeout)
+			if !row.SubmitOK || !row.E2EOK || row.TransportErr != "" || row.E2EErr != "" || strings.TrimSpace(row.TxnNo) == "" {
+				return fmt.Errorf("book transfer warmup failed: status=%d code=%s submit_ok=%t e2e_ok=%t txn_no=%s transport_err=%s e2e_err=%s",
+					row.StatusCode, row.Code, row.SubmitOK, row.E2EOK, row.TxnNo, row.TransportErr, row.E2EErr)
+			}
+			warmupOrigins = append(warmupOrigins, row.TxnNo)
+		}
+		for i, originTxnNo := range warmupOrigins {
+			nonce := "warmup-book-refund-" + strconv.Itoa(i)
+			row := fireBookRefund(nonce, originTxnNo)
+			awaitWebhookResult(&row, cfg.WebhookWaitTimeout)
+			if !row.SubmitOK || !row.E2EOK || row.TransportErr != "" || row.E2EErr != "" {
+				return fmt.Errorf("book refund warmup failed: status=%d code=%s submit_ok=%t e2e_ok=%t origin_txn_no=%s transport_err=%s e2e_err=%s",
+					row.StatusCode, row.Code, row.SubmitOK, row.E2EOK, originTxnNo, row.TransportErr, row.E2EErr)
+			}
 		}
 	}
 
-	metrics := runLoad(httpClient, server.URL, merchantNo, secret, fromAccountNo, cfg.Duration, cfg.Concurrency, cfg.MaxBodyBytes, webhookSink, cfg.WebhookWaitTimeout, "e2e", true)
-	report := buildMetricsMarkdown(metrics)
-	fmt.Println(report)
-	if err := os.WriteFile("perf.md", []byte(report+"\n"), 0o644); err != nil {
+	fmt.Printf("[perf] scenario=book_transfer start\n")
+	bookTransferRows, bookTransferMetrics := runLoadDuration(
+		cfg.Duration,
+		cfg.Concurrency,
+		cfg.WebhookWaitTimeout,
+		"book_transfer",
+		true,
+		fireBookTransfer,
+	)
+	bookOriginTxnNos := collectSucceededTxnNos(bookTransferRows)
+	if len(bookOriginTxnNos) == 0 {
+		return fmt.Errorf("book_transfer completed but no successful txn_no produced")
+	}
+	fmt.Printf("[perf] scenario=book_transfer done successful_origins=%d\n", len(bookOriginTxnNos))
+
+	fmt.Printf("[perf] scenario=book_refund start input_origins=%d\n", len(bookOriginTxnNos))
+	bookRefundMetrics := runLoadByOriginTxnNos(
+		bookOriginTxnNos,
+		cfg.Concurrency,
+		cfg.WebhookWaitTimeout,
+		"book_refund",
+		true,
+		fireBookRefund,
+	)
+	fmt.Printf("[perf] scenario=book_refund done\n")
+
+	finalFromBalance, finalBookBalance, err := snapshotBalances(repo, runtimeEnv.TransferFromAccountNo, runtimeEnv.TransferBookToAccount)
+	if err != nil {
+		return err
+	}
+	if finalFromBalance != initialFromBalance || finalBookBalance != initialBookBalance {
+		return fmt.Errorf("balance not restored after perf run: from_balance=%d want=%d book_balance=%d want=%d",
+			finalFromBalance, initialFromBalance, finalBookBalance, initialBookBalance)
+	}
+
+	reports := []string{
+		fmt.Sprintf("# Core Txn Perf Report\n\n- generated_at_utc: %s\n- duration_book_transfer: %s\n- concurrency: %d\n- warmup_pair_count: %d\n- book_transfer_origins_for_refund: %d\n- final_balance_check: PASS (from=%d, book=%d)",
+			time.Now().UTC().Format(time.RFC3339),
+			cfg.Duration,
+			cfg.Concurrency,
+			cfg.WarmupRequests,
+			len(bookOriginTxnNos),
+			finalFromBalance,
+			finalBookBalance,
+		),
+		buildMetricsMarkdown(bookTransferMetrics),
+		buildMetricsMarkdown(bookRefundMetrics),
+	}
+	fullReport := strings.Join(reports, "\n\n")
+	fmt.Println(buildMetricsMarkdown(bookTransferMetrics))
+	fmt.Println(buildMetricsMarkdown(bookRefundMetrics))
+	if err := os.WriteFile("perf.md", []byte(fullReport+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write perf.md failed: %w", err)
 	}
 	return nil
+}
+
+func snapshotBalances(repo *db.Repository, fromAccountNo, bookAccountNo string) (int64, int64, error) {
+	from, ok := repo.GetAccount(fromAccountNo)
+	if !ok {
+		return 0, 0, fmt.Errorf("from account not found: %s", fromAccountNo)
+	}
+	book, ok := repo.GetAccount(bookAccountNo)
+	if !ok {
+		return 0, 0, fmt.Errorf("book account not found: %s", bookAccountNo)
+	}
+	return from.Balance, book.Balance, nil
+}
+
+func collectSucceededTxnNos(rows []resultRow) []string {
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if row.SubmitOK && row.E2EOK && strings.TrimSpace(row.TxnNo) != "" {
+			out = append(out, row.TxnNo)
+		}
+	}
+	return out
 }
 
 func setupPerfServer(
@@ -272,7 +403,7 @@ func setupPerfServer(
 	processingTTLSeconds int,
 	webhookPollInterval time.Duration,
 	maxBodyBytes int64,
-) (*httptest.Server, *httptest.Server, *webhookSink, string, string, string, error) {
+) (*perfRuntime, error) {
 	ids := idpkg.NewRuntimeUUIDProvider()
 	merchantSvc := service.NewMerchantService(repo, ids)
 	customerSvc := service.NewCustomerService(repo, ids)
@@ -283,25 +414,25 @@ func setupPerfServer(
 
 	merchant, err := merchantSvc.CreateMerchant("", "perf-core-txn")
 	if err != nil {
-		return nil, nil, nil, "", "", "", fmt.Errorf("create merchant: %w", err)
+		return nil, fmt.Errorf("create merchant: %w", err)
 	}
 
 	fromCustomer, err := customerSvc.CreateCustomer(merchant.MerchantNo, "u_perf_from")
 	if err != nil {
-		return nil, nil, nil, "", "", "", fmt.Errorf("create from customer: %w", err)
+		return nil, fmt.Errorf("create from customer: %w", err)
 	}
-	toCustomer, err := customerSvc.CreateCustomer(merchant.MerchantNo, toOutUserID)
+	bookTransferCustomer, err := customerSvc.CreateCustomer(merchant.MerchantNo, toBookTransferOutUser)
 	if err != nil {
-		return nil, nil, nil, "", "", "", fmt.Errorf("create to customer: %w", err)
+		return nil, fmt.Errorf("create book transfer customer: %w", err)
 	}
 
 	fromAccountNo, err := repo.NewAccountNo(merchant.MerchantNo, "CUSTOMER")
 	if err != nil {
-		return nil, nil, nil, "", "", "", fmt.Errorf("new from account no: %w", err)
+		return nil, fmt.Errorf("new from account no: %w", err)
 	}
-	toAccountNo, err := repo.NewAccountNo(merchant.MerchantNo, "CUSTOMER")
+	toBookTransferAccountNo, err := repo.NewAccountNo(merchant.MerchantNo, "CUSTOMER")
 	if err != nil {
-		return nil, nil, nil, "", "", "", fmt.Errorf("new to account no: %w", err)
+		return nil, fmt.Errorf("new book transfer account no: %w", err)
 	}
 
 	if err := repo.CreateAccount(service.Account{
@@ -316,26 +447,26 @@ func setupPerfServer(
 		AllowTransfer:     true,
 		Balance:           1_000_000_000_000,
 	}); err != nil {
-		return nil, nil, nil, "", "", "", fmt.Errorf("create from account: %w", err)
+		return nil, fmt.Errorf("create from account: %w", err)
 	}
 	if err := repo.CreateAccount(service.Account{
-		AccountNo:         toAccountNo,
+		AccountNo:         toBookTransferAccountNo,
 		MerchantNo:        merchant.MerchantNo,
-		CustomerNo:        toCustomer.CustomerNo,
+		CustomerNo:        bookTransferCustomer.CustomerNo,
 		AccountType:       "CUSTOMER",
 		AllowOverdraft:    false,
 		MaxOverdraftLimit: 0,
 		AllowDebitOut:     true,
 		AllowCreditIn:     true,
 		AllowTransfer:     true,
+		BookEnabled:       true,
 		Balance:           0,
 	}); err != nil {
-		return nil, nil, nil, "", "", "", fmt.Errorf("create to account: %w", err)
+		return nil, fmt.Errorf("create book transfer account: %w", err)
 	}
-
 	secret, _, err := secretManager.RotateSecret(context.Background(), merchant.MerchantNo)
 	if err != nil {
-		return nil, nil, nil, "", "", "", fmt.Errorf("rotate merchant secret: %w", err)
+		return nil, fmt.Errorf("rotate merchant secret: %w", err)
 	}
 
 	processingGuard := service.NewRedisProcessingGuard(redisClient, time.Duration(processingTTLSeconds)*time.Second)
@@ -363,7 +494,7 @@ func setupPerfServer(
 	webhookURL := strings.Replace(webhookServer.URL, "127.0.0.1", "localhost", 1)
 	if err := repo.UpsertWebhookConfig(merchant.MerchantNo, webhookURL, true); err != nil {
 		webhookServer.Close()
-		return nil, nil, nil, "", "", "", fmt.Errorf("upsert webhook config: %w", err)
+		return nil, fmt.Errorf("upsert webhook config: %w", err)
 	}
 	webhookWorker := service.NewWebhookWorker(repo, secretManager, 8, 500, []int{1})
 	go webhookWorker.Start(ctx, webhookPollInterval)
@@ -392,40 +523,25 @@ func setupPerfServer(
 		SecretRotator:  secretManager,
 		Business:       business,
 	})
-	return httptest.NewServer(r), webhookServer, sink, merchant.MerchantNo, secret, fromAccountNo, nil
+	return &perfRuntime{
+		Server:                httptest.NewServer(r),
+		WebhookServer:         webhookServer,
+		WebhookSink:           sink,
+		MerchantNo:            merchant.MerchantNo,
+		Secret:                secret,
+		TransferFromAccountNo: fromAccountNo,
+		TransferBookToAccount: toBookTransferAccountNo,
+	}, nil
 }
 
-func runWarmup(
-	client *http.Client,
-	baseURL, merchantNo, secret, fromAccountNo string,
-	warmup int,
-	maxBodyBytes int64,
-	sink *webhookSink,
-	webhookWaitTimeout time.Duration,
-) error {
-	for i := 0; i < warmup; i++ {
-		nonce := "warmup-" + strconv.Itoa(i)
-		row := fireTransferOnce(client, baseURL, merchantNo, secret, fromAccountNo, nonce, maxBodyBytes, sink, webhookWaitTimeout, true)
-		awaitWebhookResult(&row, webhookWaitTimeout)
-		if !row.SubmitOK || !row.E2EOK || row.TransportErr != "" || row.E2EErr != "" {
-			return fmt.Errorf("status=%d code=%s submit_ok=%t e2e_ok=%t transport_err=%s e2e_err=%s",
-				row.StatusCode, row.Code, row.SubmitOK, row.E2EOK, row.TransportErr, row.E2EErr)
-		}
-	}
-	return nil
-}
-
-func runLoad(
-	client *http.Client,
-	baseURL, merchantNo, secret, fromAccountNo string,
+func runLoadDuration(
 	duration time.Duration,
 	concurrency int,
-	maxBodyBytes int64,
-	sink *webhookSink,
 	webhookWaitTimeout time.Duration,
 	mode string,
 	requireWebhook bool,
-) metrics {
+	fire scenarioFireFn,
+) ([]resultRow, metrics) {
 	var idCounter uint64
 	start := time.Now()
 	deadline := start.Add(duration)
@@ -443,7 +559,7 @@ func runLoad(
 				}
 				id := atomic.AddUint64(&idCounter, 1)
 				nonce := mode + "-" + strconv.Itoa(workerID) + "-" + strconv.FormatUint(id, 10)
-				results <- fireTransferOnce(client, baseURL, merchantNo, secret, fromAccountNo, nonce, maxBodyBytes, sink, webhookWaitTimeout, requireWebhook)
+				results <- fire(nonce)
 			}
 		}(w)
 	}
@@ -470,20 +586,84 @@ func runLoad(
 		}
 	}
 
+	return rows, aggregate(rows, submitElapsed, time.Since(start), mode)
+}
+
+type refundFireFn func(nonce, originTxnNo string) resultRow
+
+func runLoadByOriginTxnNos(
+	originTxnNos []string,
+	concurrency int,
+	webhookWaitTimeout time.Duration,
+	mode string,
+	requireWebhook bool,
+	fire refundFireFn,
+) metrics {
+	if len(originTxnNos) == 0 {
+		return aggregate(nil, 0, 0, mode)
+	}
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	if concurrency > len(originTxnNos) {
+		concurrency = len(originTxnNos)
+	}
+
+	type refundJob struct {
+		Idx      int
+		OriginNo string
+	}
+	jobs := make(chan refundJob, len(originTxnNos))
+	results := make(chan resultRow, len(originTxnNos))
+	start := time.Now()
+
+	for i, originTxnNo := range originTxnNos {
+		jobs <- refundJob{Idx: i + 1, OriginNo: originTxnNo}
+	}
+	close(jobs)
+
+	var wg sync.WaitGroup
+	for w := 0; w < concurrency; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for job := range jobs {
+				nonce := mode + "-" + strconv.Itoa(workerID) + "-" + strconv.Itoa(job.Idx)
+				results <- fire(nonce, job.OriginNo)
+			}
+		}(w)
+	}
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	rows := make([]resultRow, 0, len(originTxnNos))
+	pending := make([]int, 0, len(originTxnNos))
+	for row := range results {
+		idx := len(rows)
+		rows = append(rows, row)
+		if requireWebhook && row.SubmitOK && row.WebhookDone != nil {
+			pending = append(pending, idx)
+		}
+	}
+	submitElapsed := time.Since(start)
+	if requireWebhook {
+		for _, idx := range pending {
+			awaitWebhookResult(&rows[idx], webhookWaitTimeout)
+		}
+	}
 	return aggregate(rows, submitElapsed, time.Since(start), mode)
 }
 
-func fireTransferOnce(
+func fireAPIPostOnce(
 	client *http.Client,
-	baseURL, merchantNo, secret, fromAccountNo, nonce string,
+	baseURL, merchantNo, secret, nonce, path, outTradeNo string,
+	payload map[string]any,
 	maxBodyBytes int64,
 	sink *webhookSink,
-	webhookWaitTimeout time.Duration,
 	requireWebhook bool,
 ) resultRow {
-	path := "/api/v1/transactions/transfer"
-	outTradeNo := "ord_perf_" + nonce
-
 	var done <-chan struct{}
 	if requireWebhook {
 		if sink == nil {
@@ -495,14 +675,6 @@ func fireTransferOnce(
 		if requireWebhook && sink != nil && done != nil {
 			sink.cancel(outTradeNo, done)
 		}
-	}
-
-	payload := map[string]any{
-		"out_trade_no":    outTradeNo,
-		"transfer_scene":  "P2P",
-		"from_account_no": fromAccountNo,
-		"to_out_user_id":  toOutUserID,
-		"amount":          1,
 	}
 
 	rawBody, err := json.Marshal(payload)
@@ -550,7 +722,13 @@ func fireTransferOnce(
 		return resultRow{StatusCode: resp.StatusCode, SubmitLatency: submitLatency, TransportErr: "decode response: " + err.Error()}
 	}
 	code, _ := parsed["code"].(string)
-	row := resultRow{StatusCode: resp.StatusCode, Code: code, SubmitLatency: submitLatency, SubmitStartedAt: submitStart}
+	txnNo := ""
+	if dataMap, ok := parsed["data"].(map[string]any); ok {
+		if v, ok := dataMap["txn_no"].(string); ok {
+			txnNo = strings.TrimSpace(v)
+		}
+	}
+	row := resultRow{StatusCode: resp.StatusCode, Code: code, TxnNo: txnNo, SubmitLatency: submitLatency, SubmitStartedAt: submitStart}
 	row.SubmitOK = resp.StatusCode == http.StatusCreated && code == "SUCCESS"
 	if !row.SubmitOK {
 		cancelWait()
@@ -708,7 +886,7 @@ func percentile(vals []time.Duration, p int) time.Duration {
 	if p >= 100 {
 		return vals[len(vals)-1]
 	}
-	idx := (len(vals)-1)*p/100
+	idx := (len(vals) - 1) * p / 100
 	return vals[idx]
 }
 
