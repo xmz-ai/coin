@@ -47,9 +47,7 @@ var (
 	ErrTxnStatusInvalid = domain.ErrTxnStatusInvalid
 	ErrTxnNotFound      = domain.ErrTxnNotFound
 
-	ErrRefundAmountExceeded     = domain.ErrRefundAmountExceeded
-	ErrRefundBreakdownInvalid   = domain.ErrRefundBreakdownInvalid
-	ErrRefundAccountNotInOrigin = domain.ErrRefundAccountNotInOrigin
+	ErrRefundAmountExceeded = domain.ErrRefundAmountExceeded
 
 	ErrBookDisabled     = domain.ErrBookDisabled
 	ErrExpireAtRequired = domain.ErrExpireAtRequired

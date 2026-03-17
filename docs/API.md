@@ -479,22 +479,14 @@ Request:
   "out_trade_no": "ord_90004_refund_1",
   "biz_type": "REFUND",
   "refund_of_txn_no": "01956f4e-9d22-73bc-8e11-3f5e9c7a2001",
-  "amount": 200,
-  "refund_breakdown": [
-    {
-      "account_no": "6217701201001234567",
-      "amount": 200
-    }
-  ]
+  "amount": 200
 }
 ```
 
 校验：
 1. 原单存在且可退
 2. `amount <= origin.refundable_amount`
-3. 若传 `refund_breakdown`，则其金额总和必须等于 `amount`
-4. 若传 `refund_breakdown`，其中 `account_no` 必须属于原交易涉及的账户集合
-5. 并发退款通过 CAS 保证不超退
+3. 并发退款通过 CAS 保证不超退
 
 ## 4.5 查询交易
 

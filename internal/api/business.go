@@ -93,6 +93,8 @@ func NewBusinessHandler(
 	}
 }
 
+const refundAccountBookUnsupportedCode = "REFUND_ACCOUNT_BOOK_UNSUPPORTED"
+
 func (h *BusinessHandler) Register(v1 *gin.RouterGroup) {
 	if v1 == nil {
 		return
@@ -141,17 +143,11 @@ type transferRequest struct {
 	Amount        int64  `json:"amount"`
 }
 
-type refundPartRequest struct {
-	AccountNo string `json:"account_no"`
-	Amount    int64  `json:"amount"`
-}
-
 type refundRequest struct {
-	OutTradeNo    string              `json:"out_trade_no"`
-	BizType       string              `json:"biz_type"`
-	RefundOfTxnNo string              `json:"refund_of_txn_no"`
-	Amount        int64               `json:"amount"`
-	Breakdown     []refundPartRequest `json:"refund_breakdown"`
+	OutTradeNo    string `json:"out_trade_no"`
+	BizType       string `json:"biz_type"`
+	RefundOfTxnNo string `json:"refund_of_txn_no"`
+	Amount        int64  `json:"amount"`
 }
 
 type webhookConfigRequest struct {
@@ -559,7 +555,7 @@ func (h *BusinessHandler) handleTransfer(c *gin.Context) {
 }
 
 func (h *BusinessHandler) handleRefund(c *gin.Context) {
-	if h == nil || h.transfer == nil || h.asyncTransfer == nil || h.merchants == nil || h.query == nil {
+	if h == nil || h.transfer == nil || h.asyncTransfer == nil || h.merchants == nil {
 		writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "business handler not configured")
 		return
 	}
@@ -592,37 +588,17 @@ func (h *BusinessHandler) handleRefund(c *gin.Context) {
 		return
 	}
 
-	sum := int64(0)
-	for _, item := range req.Breakdown {
-		accountNo := strings.TrimSpace(item.AccountNo)
-		if accountNo == "" || item.Amount <= 0 {
-			writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid refund_breakdown")
-			return
-		}
-		sum += item.Amount
-	}
-	if len(req.Breakdown) > 0 && sum != req.Amount {
-		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "refund_breakdown amount mismatch")
-		return
-	}
-	if len(req.Breakdown) > 0 {
-		origin, found := h.query.GetByTxnNo(req.RefundOfTxnNo)
-		if !found || origin.MerchantNo != merchantNo {
-			writeRefundError(c, service.ErrTxnNotFound)
-			return
-		}
-		allowed := map[string]struct{}{}
-		if v := strings.TrimSpace(origin.DebitAccountNo); v != "" {
-			allowed[v] = struct{}{}
-		}
-		if v := strings.TrimSpace(origin.CreditAccountNo); v != "" {
-			allowed[v] = struct{}{}
-		}
-		for _, item := range req.Breakdown {
-			accountNo := strings.TrimSpace(item.AccountNo)
-			if _, ok := allowed[accountNo]; !ok {
-				writeRefundError(c, service.ErrRefundAccountNotInOrigin)
+	if h.query != nil {
+		if origin, found := h.query.GetByTxnNo(req.RefundOfTxnNo); found && origin.MerchantNo == merchantNo {
+			if strings.TrimSpace(origin.DebitAccountNo) == "" {
+				writeError(c, http.StatusConflict, refundAccountBookUnsupportedCode, "refund target account missing")
 				return
+			}
+			if h.accounts != nil {
+				if targetAccount, ok := h.accounts.GetAccount(strings.TrimSpace(origin.DebitAccountNo)); ok && targetAccount.BookEnabled {
+					writeError(c, http.StatusConflict, refundAccountBookUnsupportedCode, "refund to book-enabled target account is not supported")
+					return
+				}
 			}
 		}
 	}
@@ -926,20 +902,5 @@ func writeTransferError(c *gin.Context, err error) {
 		writeError(c, http.StatusConflict, "INSUFFICIENT_BALANCE", "insufficient balance")
 	default:
 		writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "transfer validate failed")
-	}
-}
-
-func writeRefundError(c *gin.Context, err error) {
-	switch {
-	case errors.Is(err, service.ErrTxnNotFound):
-		writeError(c, http.StatusNotFound, "TXN_NOT_FOUND", "origin txn not found")
-	case errors.Is(err, service.ErrRefundAmountExceeded):
-		writeError(c, http.StatusConflict, "REFUND_AMOUNT_EXCEEDED", "refund amount exceeded")
-	case errors.Is(err, service.ErrRefundBreakdownInvalid):
-		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "refund_breakdown amount mismatch")
-	case errors.Is(err, service.ErrRefundAccountNotInOrigin):
-		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "refund_breakdown account not in origin")
-	default:
-		writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "submit refund failed")
 	}
 }

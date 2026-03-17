@@ -449,9 +449,6 @@ func TestTC1109APIRefundSuccess(t *testing.T) {
 		"biz_type":         "REFUND",
 		"refund_of_txn_no": originTxnNo,
 		"amount":           20,
-		"refund_breakdown": []map[string]any{
-			{"account_no": testDebitAccountNo, "amount": 20},
-		},
 	})
 	refundResp := httptest.NewRecorder()
 	r.ServeHTTP(refundResp, refundReq)
@@ -557,76 +554,6 @@ func TestTC1110APIRefundAmountExceeded(t *testing.T) {
 	}
 	if len(events) != 0 {
 		t.Fatalf("expected 0 refund outbox event on failed refund, got %+v", events)
-	}
-}
-
-func TestTC1111APIRefundBreakdownInvalid(t *testing.T) {
-	r, _, _, merchantNo, secret := newTxnAPITestServer(t)
-
-	originReq := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/transfer", merchantNo, secret, "nonce-1111-origin", map[string]any{
-		"out_trade_no":    "ord_1111_origin",
-		"transfer_scene":  "P2P",
-		"from_account_no": testDebitAccountNo,
-		"to_account_no":   testCreditAccountNo,
-		"amount":          40,
-	})
-	originResp := httptest.NewRecorder()
-	r.ServeHTTP(originResp, originReq)
-	if originResp.Code != http.StatusCreated {
-		t.Fatalf("origin transfer expected 201, got %d body=%s", originResp.Code, originResp.Body.String())
-	}
-	originTxnNo := decodeJSONMap(t, originResp.Body.Bytes())["data"].(map[string]any)["txn_no"].(string)
-	waitTxnStatus(t, r, merchantNo, secret, originTxnNo, service.TxnStatusRecvSuccess)
-
-	refundReq := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/refund", merchantNo, secret, "nonce-1111-refund", map[string]any{
-		"out_trade_no":     "ord_1111_refund",
-		"refund_of_txn_no": originTxnNo,
-		"amount":           20,
-		"refund_breakdown": []map[string]any{
-			{"account_no": testDebitAccountNo, "amount": 10},
-		},
-	})
-	refundResp := httptest.NewRecorder()
-	r.ServeHTTP(refundResp, refundReq)
-	if refundResp.Code != http.StatusBadRequest {
-		t.Fatalf("refund breakdown invalid expected 400, got %d body=%s", refundResp.Code, refundResp.Body.String())
-	}
-}
-
-func TestTC1129APIRefundBreakdownAccountNotInOrigin(t *testing.T) {
-	r, _, _, merchantNo, secret := newTxnAPITestServer(t)
-
-	originReq := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/transfer", merchantNo, secret, "nonce-1129-origin", map[string]any{
-		"out_trade_no":    "ord_1129_origin",
-		"transfer_scene":  "P2P",
-		"from_account_no": testDebitAccountNo,
-		"to_account_no":   testCreditAccountNo,
-		"amount":          40,
-	})
-	originResp := httptest.NewRecorder()
-	r.ServeHTTP(originResp, originReq)
-	if originResp.Code != http.StatusCreated {
-		t.Fatalf("origin transfer expected 201, got %d body=%s", originResp.Code, originResp.Body.String())
-	}
-	originTxnNo := decodeJSONMap(t, originResp.Body.Bytes())["data"].(map[string]any)["txn_no"].(string)
-	waitTxnStatus(t, r, merchantNo, secret, originTxnNo, service.TxnStatusRecvSuccess)
-
-	refundReq := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/refund", merchantNo, secret, "nonce-1129-refund", map[string]any{
-		"out_trade_no":     "ord_1129_refund",
-		"refund_of_txn_no": originTxnNo,
-		"amount":           20,
-		"refund_breakdown": []map[string]any{
-			{"account_no": "6217701201009999999", "amount": 20},
-		},
-	})
-	refundResp := httptest.NewRecorder()
-	r.ServeHTTP(refundResp, refundReq)
-	if refundResp.Code != http.StatusBadRequest {
-		t.Fatalf("refund breakdown account invalid expected 400, got %d body=%s", refundResp.Code, refundResp.Body.String())
-	}
-	body := decodeJSONMap(t, refundResp.Body.Bytes())
-	if body["code"] != "INVALID_PARAM" {
-		t.Fatalf("expected INVALID_PARAM, got %v", body["code"])
 	}
 }
 
@@ -967,6 +894,46 @@ func TestTC1118APITransferBookEnabledAcceptsToExpireAt(t *testing.T) {
 	want := time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)
 	if !txn.CreditExpireAt.UTC().Equal(want) {
 		t.Fatalf("unexpected normalized credit_expire_at: got=%s want=%s", txn.CreditExpireAt.UTC(), want)
+	}
+}
+
+func TestTC1118APIRefundBookEnabledTargetRejectedAtSubmit(t *testing.T) {
+	r, repo, pool, merchantNo, secret := newTxnAPITestServer(t)
+
+	originReq := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/transfer", merchantNo, secret, "nonce-1118-refund-origin", map[string]any{
+		"out_trade_no":    "ord_1118_refund_origin",
+		"transfer_scene":  "P2P",
+		"from_account_no": testDebitAccountNo,
+		"to_account_no":   testCreditAccountNo,
+		"amount":          60,
+	})
+	originResp := httptest.NewRecorder()
+	r.ServeHTTP(originResp, originReq)
+	if originResp.Code != http.StatusCreated {
+		t.Fatalf("origin transfer expected 201, got %d body=%s", originResp.Code, originResp.Body.String())
+	}
+	originTxnNo := decodeJSONMap(t, originResp.Body.Bytes())["data"].(map[string]any)["txn_no"].(string)
+	waitTxnStatus(t, r, merchantNo, secret, originTxnNo, service.TxnStatusRecvSuccess)
+
+	setAccountBookEnabled(t, pool, testDebitAccountNo, true)
+
+	refundReq := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/refund", merchantNo, secret, "nonce-1118-refund", map[string]any{
+		"out_trade_no":     "ord_1118_refund",
+		"refund_of_txn_no": originTxnNo,
+		"amount":           20,
+	})
+	refundResp := httptest.NewRecorder()
+	r.ServeHTTP(refundResp, refundReq)
+	if refundResp.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d body=%s", refundResp.Code, refundResp.Body.String())
+	}
+	body := decodeJSONMap(t, refundResp.Body.Bytes())
+	if body["code"] != "REFUND_ACCOUNT_BOOK_UNSUPPORTED" {
+		t.Fatalf("expected REFUND_ACCOUNT_BOOK_UNSUPPORTED, got %v", body["code"])
+	}
+
+	if _, ok := repo.GetTransferTxnByOutTradeNo(merchantNo, "ord_1118_refund"); ok {
+		t.Fatalf("refund txn should not be created when target account is book-enabled")
 	}
 }
 

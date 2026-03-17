@@ -725,7 +725,6 @@ outbox 事件投递失败或超时。
 - `refund_of_txn_no`
 - `amount`
 - `biz_type=REFUND`
-- `refund_breakdown`（可选，按账户指定退款金额）
 
 **Output**
 - `txn_no`

@@ -220,16 +220,6 @@
 - **When** 发起退款
 - **Then** 返回超退错误
 
-### TC-6003 refund_breakdown 金额和校验
-- **Given** 提供 breakdown 且 sum != amount
-- **When** 发起退款
-- **Then** 返回参数校验错误
-
-### TC-6004 refund_breakdown 账户集合校验
-- **Given** breakdown 含原交易未涉及账户
-- **When** 发起退款
-- **Then** 返回参数校验错误
-
 ### TC-6005 并发退款不超退
 - **Given** 两个并发退款请求总额大于可退金额
 - **When** 同时提交

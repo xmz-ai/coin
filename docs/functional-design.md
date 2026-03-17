@@ -84,7 +84,7 @@
 - 约束：转出账户必须 `allow_transfer=true`，借贷同事务；P2P 不走商户默认账户兜底。
 
 ### F-12 退款（REFUND）
-- 输入：`out_trade_no/refund_of_txn_no/amount/refund_breakdown(可选)`。
+- 输入：`out_trade_no/refund_of_txn_no/amount`。
 - 输出：`txn_no/status/refunded_amount/origin_refundable_left`。
 - 约束：CAS 控制并发不超退。
 

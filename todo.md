@@ -161,8 +161,6 @@
 
 **先写测试（Red）**
 - [x] 原单不存在/不可退拒绝
-- [x] `refund_breakdown` 金额和必须等于 `amount`
-- [x] `refund_breakdown` 账户集合必须属于原交易账户集合
 - [x] 并发退款不超退（CAS）
 
 **最小实现（Green）**

@@ -147,9 +147,6 @@ ConsumeRequest
 ```text
 RefundRequest
   -> create refund txn
-  -> validate refund_breakdown (optional):
-     - sum(refund_breakdown.amount) == amount
-     - account_no set must be subset of origin txn involved accounts
   -> CAS update origin txn.refundable_amount
      - fail: return REFUND_AMOUNT_EXCEEDED or retryable conflict
   -> reverse accounting path
