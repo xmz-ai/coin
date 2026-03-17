@@ -82,6 +82,7 @@
 - `DUPLICATE_OUT_TRADE_NO`
 - `TXN_NOT_FOUND`
 - `REFUND_AMOUNT_EXCEEDED`
+- `REFUND_ORIGIN_BOOK_TRACE_MISSING`
 - `TXN_STATUS_INVALID`
 - `INTERNAL_ERROR`
 
@@ -109,6 +110,7 @@
 | `DUPLICATE_OUT_TRADE_NO` | 409 | 否 | 重复下单不被支持，请查单或更换 `out_trade_no` |
 | `TXN_NOT_FOUND` | 404 | 否 | 检查 `txn_no/out_trade_no` |
 | `REFUND_AMOUNT_EXCEEDED` | 409 | 否 | 降低退款金额或查询可退余额 |
+| `REFUND_ORIGIN_BOOK_TRACE_MISSING` | 409 | 否 | 检查原单账本分录是否完整并联系平台排查 |
 | `TXN_STATUS_INVALID` | 409 | 否 | 按状态机允许路径操作 |
 | `INTERNAL_ERROR` | 500 | 是 | 先按 `out_trade_no` 查单确认；确认需新交易时使用新 `out_trade_no` |
 

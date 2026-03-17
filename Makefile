@@ -4,13 +4,13 @@ GO ?= $(shell if [ -x /usr/local/go/bin/go ]; then echo /usr/local/go/bin/go; el
 GOCACHE ?= $(CURDIR)/.cache/go-build
 
 test:
-	bash ./scripts/test/smoke.sh
+	bash ./scripts/test/test.sh
 
 smoke:
-	bash ./scripts/test/smoke.sh
+	bash ./scripts/test/test.sh
 
 test-pg:
-	bash ./scripts/test/postgres.sh
+	bash ./scripts/test/test.sh
 
 sqlc:
 	go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.27.0 generate

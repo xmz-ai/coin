@@ -93,8 +93,6 @@ func NewBusinessHandler(
 	}
 }
 
-const refundAccountBookUnsupportedCode = "REFUND_ACCOUNT_BOOK_UNSUPPORTED"
-
 func (h *BusinessHandler) Register(v1 *gin.RouterGroup) {
 	if v1 == nil {
 		return
@@ -586,21 +584,6 @@ func (h *BusinessHandler) handleRefund(c *gin.Context) {
 	if req.BizType != "" && req.BizType != service.BizTypeRefund {
 		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "biz_type must be REFUND")
 		return
-	}
-
-	if h.query != nil {
-		if origin, found := h.query.GetByTxnNo(req.RefundOfTxnNo); found && origin.MerchantNo == merchantNo {
-			if strings.TrimSpace(origin.DebitAccountNo) == "" {
-				writeError(c, http.StatusConflict, refundAccountBookUnsupportedCode, "refund target account missing")
-				return
-			}
-			if h.accounts != nil {
-				if targetAccount, ok := h.accounts.GetAccount(strings.TrimSpace(origin.DebitAccountNo)); ok && targetAccount.BookEnabled {
-					writeError(c, http.StatusConflict, refundAccountBookUnsupportedCode, "refund to book-enabled target account is not supported")
-					return
-				}
-			}
-		}
 	}
 
 	txn, err := h.transfer.Submit(service.TransferRequest{

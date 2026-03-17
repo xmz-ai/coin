@@ -405,6 +405,31 @@ SET refundable_amount = refundable_amount - sqlc.arg(amount),
     updated_at = NOW()
 WHERE txn_no = sqlc.arg(origin_txn_no);
 
+-- name: ListOriginDebitBookChanges :many
+SELECT
+  delta,
+  expire_at,
+  created_at
+FROM account_book_change_log
+WHERE txn_no = sqlc.arg(txn_no)::uuid
+  AND account_no = sqlc.arg(account_no)
+  AND delta < 0
+ORDER BY change_id ASC;
+
+-- name: ListRefundDebitsByOrigin :many
+SELECT
+  t.txn_no::text AS txn_no,
+  t.amount
+FROM txn t
+JOIN account_change_log acl
+  ON acl.txn_no = t.txn_no
+WHERE t.merchant_no = sqlc.arg(merchant_no)
+  AND t.refund_of_txn_no = sqlc.arg(origin_txn_no)::uuid
+  AND t.biz_type = 'REFUND'
+  AND acl.account_no = sqlc.arg(origin_credit_account_no)
+  AND acl.delta < 0
+ORDER BY acl.change_id ASC, t.txn_no ASC;
+
 -- name: TxnCount :one
 SELECT COUNT(*)::bigint AS txn_count
 FROM txn;

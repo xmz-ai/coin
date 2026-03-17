@@ -897,8 +897,26 @@ func TestTC1118APITransferBookEnabledAcceptsToExpireAt(t *testing.T) {
 	}
 }
 
-func TestTC1118APIRefundBookEnabledTargetRejectedAtSubmit(t *testing.T) {
+func TestTC1118APIRefundBookEnabledTargetSupported(t *testing.T) {
 	r, repo, pool, merchantNo, secret := newTxnAPITestServer(t)
+
+	setAccountBookEnabled(t, pool, testDebitAccountNo, true)
+	today := time.Now().UTC()
+	expireAt := time.Date(today.Year(), today.Month(), today.Day()+5, 0, 0, 0, 0, time.UTC)
+
+	if _, err := pool.Exec(context.Background(), `
+UPDATE account
+SET balance = 60
+WHERE account_no = $1
+`, testDebitAccountNo); err != nil {
+		t.Fatalf("reset debit account balance failed: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO account_book (book_no, account_no, expire_at, balance)
+VALUES ('01956f4e-d111-7d11-8d11-d11111111111'::uuid, $1, $2::date, 60)
+`, testDebitAccountNo, expireAt); err != nil {
+		t.Fatalf("seed debit account book failed: %v", err)
+	}
 
 	originReq := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/transfer", merchantNo, secret, "nonce-1118-refund-origin", map[string]any{
 		"out_trade_no":    "ord_1118_refund_origin",
@@ -915,8 +933,6 @@ func TestTC1118APIRefundBookEnabledTargetRejectedAtSubmit(t *testing.T) {
 	originTxnNo := decodeJSONMap(t, originResp.Body.Bytes())["data"].(map[string]any)["txn_no"].(string)
 	waitTxnStatus(t, r, merchantNo, secret, originTxnNo, service.TxnStatusRecvSuccess)
 
-	setAccountBookEnabled(t, pool, testDebitAccountNo, true)
-
 	refundReq := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/refund", merchantNo, secret, "nonce-1118-refund", map[string]any{
 		"out_trade_no":     "ord_1118_refund",
 		"refund_of_txn_no": originTxnNo,
@@ -924,16 +940,34 @@ func TestTC1118APIRefundBookEnabledTargetRejectedAtSubmit(t *testing.T) {
 	})
 	refundResp := httptest.NewRecorder()
 	r.ServeHTTP(refundResp, refundReq)
-	if refundResp.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d body=%s", refundResp.Code, refundResp.Body.String())
+	if refundResp.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%s", refundResp.Code, refundResp.Body.String())
 	}
-	body := decodeJSONMap(t, refundResp.Body.Bytes())
-	if body["code"] != "REFUND_ACCOUNT_BOOK_UNSUPPORTED" {
-		t.Fatalf("expected REFUND_ACCOUNT_BOOK_UNSUPPORTED, got %v", body["code"])
+	refundBody := decodeJSONMap(t, refundResp.Body.Bytes())
+	refundData := refundBody["data"].(map[string]any)
+	refundTxnNo, _ := refundData["txn_no"].(string)
+	if refundTxnNo == "" {
+		t.Fatalf("expected refund txn_no")
+	}
+	waitTxnStatus(t, r, merchantNo, secret, refundTxnNo, service.TxnStatusRecvSuccess)
+
+	refundBookLogs := queryBookChangesByTxnNo(t, pool, refundTxnNo)
+	if len(refundBookLogs) == 0 {
+		t.Fatalf("expected refund book logs for book-enabled target")
+	}
+	var refundToDebit int64
+	for _, item := range refundBookLogs {
+		if item.AccountNo != testDebitAccountNo {
+			continue
+		}
+		refundToDebit += item.Delta
+	}
+	if refundToDebit != 20 {
+		t.Fatalf("expected refund credit to debit book=20, got %d, logs=%+v", refundToDebit, refundBookLogs)
 	}
 
-	if _, ok := repo.GetTransferTxnByOutTradeNo(merchantNo, "ord_1118_refund"); ok {
-		t.Fatalf("refund txn should not be created when target account is book-enabled")
+	if _, ok := repo.GetTransferTxnByOutTradeNo(merchantNo, "ord_1118_refund"); !ok {
+		t.Fatalf("refund txn should be created")
 	}
 }
 
