@@ -130,15 +130,15 @@ type debitRequest struct {
 }
 
 type transferRequest struct {
-	OutTradeNo    string `json:"out_trade_no"`
-	BizType       string `json:"biz_type"`
-	TransferScene string `json:"transfer_scene"`
-	FromAccountNo string `json:"from_account_no"`
-	FromOutUserID string `json:"from_out_user_id"`
-	ToAccountNo   string `json:"to_account_no"`
-	ToOutUserID   string `json:"to_out_user_id"`
-	ToExpireAt    string `json:"to_expire_at"`
-	Amount        int64  `json:"amount"`
+	OutTradeNo     string `json:"out_trade_no"`
+	BizType        string `json:"biz_type"`
+	TransferScene  string `json:"transfer_scene"`
+	FromAccountNo  string `json:"from_account_no"`
+	FromOutUserID  string `json:"from_out_user_id"`
+	ToAccountNo    string `json:"to_account_no"`
+	ToOutUserID    string `json:"to_out_user_id"`
+	ToExpireInDays int64  `json:"to_expire_in_days"`
+	Amount         int64  `json:"amount"`
 }
 
 type refundRequest struct {
@@ -426,7 +426,6 @@ func (h *BusinessHandler) handleTransfer(c *gin.Context) {
 	req.FromOutUserID = strings.TrimSpace(req.FromOutUserID)
 	req.ToAccountNo = strings.TrimSpace(req.ToAccountNo)
 	req.ToOutUserID = strings.TrimSpace(req.ToOutUserID)
-	req.ToExpireAt = strings.TrimSpace(req.ToExpireAt)
 
 	if req.OutTradeNo == "" || req.Amount <= 0 {
 		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "out_trade_no and amount are required")
@@ -446,6 +445,10 @@ func (h *BusinessHandler) handleTransfer(c *gin.Context) {
 	}
 	if req.TransferScene != "" && req.TransferScene != service.SceneP2P {
 		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "transfer_scene must be P2P")
+		return
+	}
+	if req.ToExpireInDays < 0 {
+		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "to_expire_in_days must be >= 0")
 		return
 	}
 
@@ -503,22 +506,17 @@ func (h *BusinessHandler) handleTransfer(c *gin.Context) {
 	}
 	var creditExpireAt *time.Time
 	if toAccount.BookEnabled {
-		if req.ToExpireAt == "" {
-			writeError(c, http.StatusBadRequest, "INVALID_PARAM", "to_expire_at is required for expiry account")
+		if req.ToExpireInDays <= 0 {
+			writeError(c, http.StatusBadRequest, "INVALID_PARAM", "to_expire_in_days is required for expiry account")
 			return
 		}
-		expireAt, err := time.Parse(time.RFC3339, req.ToExpireAt)
+		expireAt, err := calcExpireAtByDays(h.nowFn(), req.ToExpireInDays)
 		if err != nil {
-			writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid to_expire_at")
+			writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid to_expire_in_days")
 			return
 		}
 		expireUTC := normalizeExpiryDayUTC(expireAt)
 		creditExpireAt = &expireUTC
-	} else if req.ToExpireAt != "" {
-		if _, err := time.Parse(time.RFC3339, req.ToExpireAt); err != nil {
-			writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid to_expire_at")
-			return
-		}
 	}
 
 	txn, err := h.transfer.Submit(service.TransferRequest{

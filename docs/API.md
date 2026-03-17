@@ -451,7 +451,7 @@ Request:
   "from_out_user_id": "u_90001",
   "to_out_user_id": "u_90002",
   "amount": 500,
-  "to_expire_at": "2026-12-31T23:59:59.000Z"
+  "to_expire_in_days": 30
 }
 ```
 
@@ -462,7 +462,7 @@ Request:
 4. `from.allow_transfer=true`
 5. `from.allow_debit_out=true`
 6. `to.allow_credit_in=true`
-7. 若 `to.book_enabled=true`，`to_expire_at` 必填，并按该时间使用/创建 `account_book`
+7. 若 `to.book_enabled=true`，`to_expire_in_days` 必填（`>0`），服务端按 `now_utc + to_expire_in_days` 计算到期时间
 8. 币种一致
 9. 转出转入同事务
 

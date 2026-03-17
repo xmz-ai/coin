@@ -828,7 +828,7 @@ func TestTC1116APITransferByOutUserIDSuccess(t *testing.T) {
 	}
 }
 
-func TestTC1117APITransferBookEnabledRequiresToExpireAt(t *testing.T) {
+func TestTC1117APITransferBookEnabledRequiresToExpireInDays(t *testing.T) {
 	r, repo, pool, merchantNo, secret := newTxnAPITestServer(t)
 
 	creditAccount, ok := repo.GetAccount(testCreditAccountNo)
@@ -856,7 +856,7 @@ func TestTC1117APITransferBookEnabledRequiresToExpireAt(t *testing.T) {
 	}
 }
 
-func TestTC1118APITransferBookEnabledAcceptsToExpireAt(t *testing.T) {
+func TestTC1118APITransferBookEnabledAcceptsToExpireInDays(t *testing.T) {
 	r, repo, pool, merchantNo, secret := newTxnAPITestServer(t)
 
 	creditAccount, ok := repo.GetAccount(testCreditAccountNo)
@@ -867,12 +867,12 @@ func TestTC1118APITransferBookEnabledAcceptsToExpireAt(t *testing.T) {
 	setAccountBookEnabled(t, pool, creditAccount.AccountNo, true)
 
 	req := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/transfer", merchantNo, secret, "nonce-1118-1", map[string]any{
-		"out_trade_no":     "ord_1118",
-		"from_out_user_id": "u_1100",
-		"to_out_user_id":   "u_1101",
-		"amount":           10,
-		"to_expire_at":     "2026-12-31T23:59:59Z",
-		"transfer_scene":   "P2P",
+		"out_trade_no":      "ord_1118",
+		"from_out_user_id":  "u_1100",
+		"to_out_user_id":    "u_1101",
+		"amount":            10,
+		"to_expire_in_days": 1,
+		"transfer_scene":    "P2P",
 	})
 	resp := httptest.NewRecorder()
 	r.ServeHTTP(resp, req)
@@ -891,7 +891,7 @@ func TestTC1118APITransferBookEnabledAcceptsToExpireAt(t *testing.T) {
 	if !ok {
 		t.Fatalf("txn not found")
 	}
-	want := time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)
+	want := time.Date(2024, 3, 10, 0, 0, 0, 0, time.UTC)
 	if !txn.CreditExpireAt.UTC().Equal(want) {
 		t.Fatalf("unexpected normalized credit_expire_at: got=%s want=%s", txn.CreditExpireAt.UTC(), want)
 	}
