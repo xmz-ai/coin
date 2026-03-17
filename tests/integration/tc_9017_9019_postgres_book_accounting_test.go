@@ -194,14 +194,133 @@ WHERE txn_no = $2::uuid
 	}
 }
 
-func TestTC9021PostgresRefundCreditStageBookEnabledRequiresExpireAt(t *testing.T) {
+func TestTC9021PostgresRefundBookEnabledTargetRestoresByRemainingDays(t *testing.T) {
 	repo, pool, merchant, debitAccountNo, creditAccountNo, _ := setupPostgresTransferFixture(t, service.TxnStatusInit, 200)
+
+	today := time.Now().UTC()
+	originBookExpire := time.Date(today.Year(), today.Month(), today.Day()+5, 0, 0, 0, 0, time.UTC)
+	if _, err := pool.Exec(context.Background(), `
+UPDATE account
+SET book_enabled = true, balance = 200
+WHERE account_no = $1
+`, debitAccountNo); err != nil {
+		t.Fatalf("enable debit account book failed: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO account_book (book_no, account_no, expire_at, balance)
+VALUES ('01956f4e-9221-7922-8922-922192219221'::uuid, $1, $2::date, 200)
+`, debitAccountNo, originBookExpire); err != nil {
+		t.Fatalf("seed origin debit account book failed: %v", err)
+	}
 
 	originTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a9221"
 	if err := repo.CreateTransferTxn(service.TransferTxn{
 		TxnNo:            originTxnNo,
 		MerchantNo:       merchant.MerchantNo,
 		OutTradeNo:       "ord_9021_origin",
+		BizType:          service.BizTypeTransfer,
+		TransferScene:    service.SceneP2P,
+		DebitAccountNo:   debitAccountNo,
+		CreditAccountNo:  creditAccountNo,
+		Amount:           200,
+		RefundableAmount: 200,
+		Status:           service.TxnStatusProcessing,
+	}); err != nil {
+		t.Fatalf("create origin txn failed: %v", err)
+	}
+	applied, err := repo.ApplyTransferDebitStage(originTxnNo, debitAccountNo, 200)
+	if err != nil || !applied {
+		t.Fatalf("apply origin debit stage failed: applied=%v err=%v", applied, err)
+	}
+	applied, err = repo.ApplyTransferCreditStage(originTxnNo, creditAccountNo, 200)
+	if err != nil || !applied {
+		t.Fatalf("apply origin credit stage failed: applied=%v err=%v", applied, err)
+	}
+
+	originBookLogs := queryBookChangesByTxnNo(t, pool, originTxnNo)
+	if len(originBookLogs) != 1 || originBookLogs[0].AccountNo != debitAccountNo || originBookLogs[0].Delta != -200 {
+		t.Fatalf("unexpected origin book logs: %+v", originBookLogs)
+	}
+
+	originDebitAt := time.Date(today.Year(), today.Month(), today.Day()-10, 13, 0, 0, 0, time.UTC)
+	originExpireAt := time.Date(today.Year(), today.Month(), today.Day()-2, 0, 0, 0, 0, time.UTC)
+	if _, err := pool.Exec(context.Background(), `
+UPDATE account_book_change_log
+SET created_at = $1::timestamptz, expire_at = $2::date
+WHERE txn_no = $3::uuid
+  AND account_no = $4
+`, originDebitAt, originExpireAt, originTxnNo, debitAccountNo); err != nil {
+		t.Fatalf("override origin book change timing failed: %v", err)
+	}
+
+	if _, err := pool.Exec(context.Background(), `
+UPDATE account
+SET book_enabled = false
+WHERE account_no = $1
+`, creditAccountNo); err != nil {
+		t.Fatalf("ensure origin credit account non-book failed: %v", err)
+	}
+
+	refundTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a9222"
+	if err := repo.CreateTransferTxn(service.TransferTxn{
+		TxnNo:            refundTxnNo,
+		MerchantNo:       merchant.MerchantNo,
+		OutTradeNo:       "ord_9021_refund",
+		BizType:          service.BizTypeRefund,
+		TransferScene:    "",
+		Amount:           50,
+		RefundOfTxnNo:    originTxnNo,
+		RefundableAmount: 0,
+		Status:           service.TxnStatusInit,
+	}); err != nil {
+		t.Fatalf("create refund txn failed: %v", err)
+	}
+
+	processor := service.NewTransferAsyncProcessor(repo)
+	if err := processor.Process(refundTxnNo); err != nil {
+		t.Fatalf("process refund failed: %v", err)
+	}
+
+	refund, ok := repo.GetTransferTxn(refundTxnNo)
+	if !ok {
+		t.Fatalf("refund txn not found")
+	}
+	if refund.Status != service.TxnStatusRecvSuccess {
+		t.Fatalf("expected RECV_SUCCESS, got %s", refund.Status)
+	}
+
+	bookLogs := queryBookChangesByTxnNo(t, pool, refundTxnNo)
+	if len(bookLogs) != 1 {
+		t.Fatalf("expected 1 refund account_book_change_log row, got %d", len(bookLogs))
+	}
+	if bookLogs[0].AccountNo != debitAccountNo || bookLogs[0].Delta != 50 {
+		t.Fatalf("unexpected refund book log row: %+v", bookLogs[0])
+	}
+
+	remainingDays := int64(originExpireAt.Sub(time.Date(originDebitAt.Year(), originDebitAt.Month(), originDebitAt.Day(), 0, 0, 0, 0, time.UTC)) / (24 * time.Hour))
+	if remainingDays <= 0 {
+		t.Fatalf("test setup invalid remainingDays=%d", remainingDays)
+	}
+	wantExpireAt := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, time.UTC).Add(time.Duration(remainingDays) * 24 * time.Hour)
+	if !bookLogs[0].ExpireAt.Equal(wantExpireAt) {
+		t.Fatalf("unexpected refund expire_at: got=%s want=%s", bookLogs[0].ExpireAt.UTC(), wantExpireAt.UTC())
+	}
+	if !bookLogs[0].ExpireAt.After(time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("refund expire_at should be after today, got=%s", bookLogs[0].ExpireAt.UTC())
+	}
+	if !originExpireAt.Before(time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("test setup invalid: originExpireAt should be in past, got=%s", originExpireAt.UTC())
+	}
+}
+
+func TestTC9022PostgresRefundBookEnabledTargetMissingOriginBookTraceFailed(t *testing.T) {
+	repo, pool, merchant, debitAccountNo, creditAccountNo, _ := setupPostgresTransferFixture(t, service.TxnStatusInit, 200)
+
+	originTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a9223"
+	if err := repo.CreateTransferTxn(service.TransferTxn{
+		TxnNo:            originTxnNo,
+		MerchantNo:       merchant.MerchantNo,
+		OutTradeNo:       "ord_9022_origin",
 		BizType:          service.BizTypeTransfer,
 		TransferScene:    service.SceneP2P,
 		DebitAccountNo:   debitAccountNo,
@@ -229,11 +348,11 @@ WHERE account_no = $1
 		t.Fatalf("enable origin debit account book failed: %v", err)
 	}
 
-	refundTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a9222"
+	refundTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a9224"
 	if err := repo.CreateTransferTxn(service.TransferTxn{
 		TxnNo:            refundTxnNo,
 		MerchantNo:       merchant.MerchantNo,
-		OutTradeNo:       "ord_9021_refund",
+		OutTradeNo:       "ord_9022_refund",
 		BizType:          service.BizTypeRefund,
 		TransferScene:    "",
 		Amount:           50,
@@ -246,8 +365,8 @@ WHERE account_no = $1
 
 	processor := service.NewTransferAsyncProcessor(repo)
 	err = processor.Process(refundTxnNo)
-	if !errors.Is(err, service.ErrExpireAtRequired) {
-		t.Fatalf("expected ErrExpireAtRequired, got %v", err)
+	if !errors.Is(err, service.ErrRefundOriginBookTraceMissing) {
+		t.Fatalf("expected ErrRefundOriginBookTraceMissing, got %v", err)
 	}
 
 	refund, ok := repo.GetTransferTxn(refundTxnNo)
@@ -257,8 +376,8 @@ WHERE account_no = $1
 	if refund.Status != service.TxnStatusFailed {
 		t.Fatalf("expected FAILED status, got %s", refund.Status)
 	}
-	if refund.ErrorCode != "REFUND_CREDIT_FAILED" {
-		t.Fatalf("expected REFUND_CREDIT_FAILED, got %s", refund.ErrorCode)
+	if refund.ErrorCode != "REFUND_ORIGIN_BOOK_TRACE_MISSING" {
+		t.Fatalf("expected REFUND_ORIGIN_BOOK_TRACE_MISSING, got %s", refund.ErrorCode)
 	}
 
 	bookLogs := queryBookChangesByTxnNo(t, pool, refundTxnNo)
@@ -266,4 +385,3 @@ WHERE account_no = $1
 		t.Fatalf("expected no account_book_change_log on failed refund credit, got %d", len(bookLogs))
 	}
 }
-

@@ -24,7 +24,8 @@ var (
 	ErrTxnStatusInvalid = errors.New("txn status invalid")
 	ErrTxnNotFound      = errors.New("txn not found")
 
-	ErrRefundAmountExceeded = errors.New("refund amount exceeded")
+	ErrRefundAmountExceeded         = errors.New("refund amount exceeded")
+	ErrRefundOriginBookTraceMissing = errors.New("refund origin book trace missing")
 
 	ErrBookDisabled     = errors.New("book disabled")
 	ErrExpireAtRequired = errors.New("expire_at required")

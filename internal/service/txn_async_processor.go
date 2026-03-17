@@ -201,6 +201,8 @@ func (p *TransferAsyncProcessor) refundCreditErrorCode(err error) string {
 	switch {
 	case errors.Is(err, ErrTxnNotFound):
 		return "REFUND_ORIGIN_NOT_FOUND"
+	case errors.Is(err, ErrRefundOriginBookTraceMissing):
+		return "REFUND_ORIGIN_BOOK_TRACE_MISSING"
 	default:
 		return "REFUND_CREDIT_FAILED"
 	}

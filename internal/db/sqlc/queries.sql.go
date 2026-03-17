@@ -1131,6 +1131,95 @@ func (q *Queries) ListAvailableAccountBooksForUpdate(ctx context.Context, arg Li
 	return items, nil
 }
 
+const listOriginDebitBookChanges = `-- name: ListOriginDebitBookChanges :many
+SELECT
+  delta,
+  expire_at,
+  created_at
+FROM account_book_change_log
+WHERE txn_no = $1::uuid
+  AND account_no = $2
+  AND delta < 0
+ORDER BY change_id ASC
+`
+
+type ListOriginDebitBookChangesParams struct {
+	TxnNo     pgtype.UUID
+	AccountNo string
+}
+
+type ListOriginDebitBookChangesRow struct {
+	Delta     int64
+	ExpireAt  pgtype.Date
+	CreatedAt pgtype.Timestamptz
+}
+
+func (q *Queries) ListOriginDebitBookChanges(ctx context.Context, arg ListOriginDebitBookChangesParams) ([]ListOriginDebitBookChangesRow, error) {
+	rows, err := q.db.Query(ctx, listOriginDebitBookChanges, arg.TxnNo, arg.AccountNo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListOriginDebitBookChangesRow
+	for rows.Next() {
+		var i ListOriginDebitBookChangesRow
+		if err := rows.Scan(&i.Delta, &i.ExpireAt, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRefundDebitsByOrigin = `-- name: ListRefundDebitsByOrigin :many
+SELECT
+  t.txn_no::text AS txn_no,
+  t.amount
+FROM txn t
+JOIN account_change_log acl
+  ON acl.txn_no = t.txn_no
+WHERE t.merchant_no = $1
+  AND t.refund_of_txn_no = $2::uuid
+  AND t.biz_type = 'REFUND'
+  AND acl.account_no = $3
+  AND acl.delta < 0
+ORDER BY acl.change_id ASC, t.txn_no ASC
+`
+
+type ListRefundDebitsByOriginParams struct {
+	MerchantNo            string
+	OriginTxnNo           pgtype.UUID
+	OriginCreditAccountNo string
+}
+
+type ListRefundDebitsByOriginRow struct {
+	TxnNo  string
+	Amount int64
+}
+
+func (q *Queries) ListRefundDebitsByOrigin(ctx context.Context, arg ListRefundDebitsByOriginParams) ([]ListRefundDebitsByOriginRow, error) {
+	rows, err := q.db.Query(ctx, listRefundDebitsByOrigin, arg.MerchantNo, arg.OriginTxnNo, arg.OriginCreditAccountNo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRefundDebitsByOriginRow
+	for rows.Next() {
+		var i ListRefundDebitsByOriginRow
+		if err := rows.Scan(&i.TxnNo, &i.Amount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTransferTxns = `-- name: ListTransferTxns :many
 SELECT
   t.txn_no::text AS txn_no,
