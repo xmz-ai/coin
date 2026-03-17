@@ -33,7 +33,8 @@ import (
 )
 
 const (
-	toBookTransferOutUser = "u_perf_to_book"
+	toBookTransferOutUser    = "u_perf_to_book"
+	toNonBookTransferOutUser = "u_perf_to_non_book"
 )
 
 type perfConfig struct {
@@ -109,6 +110,7 @@ type perfRuntime struct {
 	Secret                string
 	TransferFromAccountNo string
 	TransferBookToAccount string
+	TransferToAccountNo   string
 }
 
 type webhookSink struct {
@@ -258,13 +260,18 @@ func run(cfg perfConfig) error {
 	defer runtimeEnv.Server.Close()
 	defer runtimeEnv.WebhookServer.Close()
 
-	initialFromBalance, initialBookBalance, err := snapshotBalances(repo, runtimeEnv.TransferFromAccountNo, runtimeEnv.TransferBookToAccount)
+	initialFromBalance, initialBookBalance, initialToBalance, err := snapshotBalances(
+		repo,
+		runtimeEnv.TransferFromAccountNo,
+		runtimeEnv.TransferBookToAccount,
+		runtimeEnv.TransferToAccountNo,
+	)
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("[perf] merchant_no=%s from_account_no=%s book_to_account_no=%s\n",
-		runtimeEnv.MerchantNo, runtimeEnv.TransferFromAccountNo, runtimeEnv.TransferBookToAccount)
+	fmt.Printf("[perf] merchant_no=%s from_account_no=%s book_to_account_no=%s to_account_no=%s\n",
+		runtimeEnv.MerchantNo, runtimeEnv.TransferFromAccountNo, runtimeEnv.TransferBookToAccount, runtimeEnv.TransferToAccountNo)
 	fmt.Printf("[perf] duration=%s concurrency=%d warmup=%d timeout=%s\n",
 		cfg.Duration, cfg.Concurrency, cfg.WarmupRequests, cfg.RequestTimeout)
 	fmt.Printf("[perf] mode=webhook-e2e webhook_poll=%s webhook_wait_timeout=%s\n", cfg.WebhookPollInterval, cfg.WebhookWaitTimeout)
@@ -292,9 +299,28 @@ func run(cfg perfConfig) error {
 		}
 		return fireAPIPostOnce(httpClient, runtimeEnv.Server.URL, runtimeEnv.MerchantNo, runtimeEnv.Secret, nonce, "/api/v1/transactions/refund", outTradeNo, payload, cfg.MaxBodyBytes, runtimeEnv.WebhookSink, true)
 	}
+	fireTransfer := func(nonce string) resultRow {
+		outTradeNo := "ord_perf_transfer_" + nonce
+		payload := map[string]any{
+			"out_trade_no":    outTradeNo,
+			"transfer_scene":  "P2P",
+			"from_account_no": runtimeEnv.TransferFromAccountNo,
+			"to_account_no":   runtimeEnv.TransferToAccountNo,
+			"amount":          1,
+		}
+		return fireAPIPostOnce(httpClient, runtimeEnv.Server.URL, runtimeEnv.MerchantNo, runtimeEnv.Secret, nonce, "/api/v1/transactions/transfer", outTradeNo, payload, cfg.MaxBodyBytes, runtimeEnv.WebhookSink, true)
+	}
+	fireRefund := func(nonce, originTxnNo string) resultRow {
+		outTradeNo := "ord_perf_refund_" + nonce
+		payload := map[string]any{
+			"out_trade_no":     outTradeNo,
+			"refund_of_txn_no": originTxnNo,
+			"amount":           1,
+		}
+		return fireAPIPostOnce(httpClient, runtimeEnv.Server.URL, runtimeEnv.MerchantNo, runtimeEnv.Secret, nonce, "/api/v1/transactions/refund", outTradeNo, payload, cfg.MaxBodyBytes, runtimeEnv.WebhookSink, true)
+	}
 
 	if cfg.WarmupRequests > 0 {
-		warmupOrigins := make([]string, 0, cfg.WarmupRequests)
 		for i := 0; i < cfg.WarmupRequests; i++ {
 			nonce := "warmup-book-transfer-" + strconv.Itoa(i)
 			row := fireBookTransfer(nonce)
@@ -303,14 +329,29 @@ func run(cfg perfConfig) error {
 				return fmt.Errorf("book transfer warmup failed: status=%d code=%s submit_ok=%t e2e_ok=%t txn_no=%s transport_err=%s e2e_err=%s",
 					row.StatusCode, row.Code, row.SubmitOK, row.E2EOK, row.TxnNo, row.TransportErr, row.E2EErr)
 			}
-			warmupOrigins = append(warmupOrigins, row.TxnNo)
-		}
-		for i, originTxnNo := range warmupOrigins {
-			nonce := "warmup-book-refund-" + strconv.Itoa(i)
-			row := fireBookRefund(nonce, originTxnNo)
+			bookOriginTxnNo := row.TxnNo
+			nonce = "warmup-book-refund-" + strconv.Itoa(i)
+			row = fireBookRefund(nonce, bookOriginTxnNo)
 			awaitWebhookResult(&row, cfg.WebhookWaitTimeout)
 			if !row.SubmitOK || !row.E2EOK || row.TransportErr != "" || row.E2EErr != "" {
 				return fmt.Errorf("book refund warmup failed: status=%d code=%s submit_ok=%t e2e_ok=%t origin_txn_no=%s transport_err=%s e2e_err=%s",
+					row.StatusCode, row.Code, row.SubmitOK, row.E2EOK, bookOriginTxnNo, row.TransportErr, row.E2EErr)
+			}
+
+			nonce = "warmup-transfer-" + strconv.Itoa(i)
+			row = fireTransfer(nonce)
+			awaitWebhookResult(&row, cfg.WebhookWaitTimeout)
+			if !row.SubmitOK || !row.E2EOK || row.TransportErr != "" || row.E2EErr != "" || strings.TrimSpace(row.TxnNo) == "" {
+				return fmt.Errorf("transfer warmup failed: status=%d code=%s submit_ok=%t e2e_ok=%t txn_no=%s transport_err=%s e2e_err=%s",
+					row.StatusCode, row.Code, row.SubmitOK, row.E2EOK, row.TxnNo, row.TransportErr, row.E2EErr)
+			}
+
+			originTxnNo := row.TxnNo
+			nonce = "warmup-refund-" + strconv.Itoa(i)
+			row = fireRefund(nonce, originTxnNo)
+			awaitWebhookResult(&row, cfg.WebhookWaitTimeout)
+			if !row.SubmitOK || !row.E2EOK || row.TransportErr != "" || row.E2EErr != "" {
+				return fmt.Errorf("refund warmup failed: status=%d code=%s submit_ok=%t e2e_ok=%t origin_txn_no=%s transport_err=%s e2e_err=%s",
 					row.StatusCode, row.Code, row.SubmitOK, row.E2EOK, originTxnNo, row.TransportErr, row.E2EErr)
 			}
 		}
@@ -342,29 +383,66 @@ func run(cfg perfConfig) error {
 	)
 	fmt.Printf("[perf] scenario=book_refund done\n")
 
-	finalFromBalance, finalBookBalance, err := snapshotBalances(repo, runtimeEnv.TransferFromAccountNo, runtimeEnv.TransferBookToAccount)
+	fmt.Printf("[perf] scenario=transfer start\n")
+	transferRows, transferMetrics := runLoadDuration(
+		cfg.Duration,
+		cfg.Concurrency,
+		cfg.WebhookWaitTimeout,
+		"transfer",
+		true,
+		fireTransfer,
+	)
+	originTxnNos := collectSucceededTxnNos(transferRows)
+	if len(originTxnNos) == 0 {
+		return fmt.Errorf("transfer completed but no successful txn_no produced")
+	}
+	fmt.Printf("[perf] scenario=transfer done successful_origins=%d\n", len(originTxnNos))
+
+	fmt.Printf("[perf] scenario=refund start input_origins=%d\n", len(originTxnNos))
+	refundMetrics := runLoadByOriginTxnNos(
+		originTxnNos,
+		cfg.Concurrency,
+		cfg.WebhookWaitTimeout,
+		"refund",
+		true,
+		fireRefund,
+	)
+	fmt.Printf("[perf] scenario=refund done\n")
+
+	finalFromBalance, finalBookBalance, finalToBalance, err := snapshotBalances(
+		repo,
+		runtimeEnv.TransferFromAccountNo,
+		runtimeEnv.TransferBookToAccount,
+		runtimeEnv.TransferToAccountNo,
+	)
 	if err != nil {
 		return err
 	}
-	if finalFromBalance != initialFromBalance || finalBookBalance != initialBookBalance {
-		return fmt.Errorf("balance not restored after perf run: from_balance=%d want=%d book_balance=%d want=%d",
-			finalFromBalance, initialFromBalance, finalBookBalance, initialBookBalance)
+	if finalFromBalance != initialFromBalance || finalBookBalance != initialBookBalance || finalToBalance != initialToBalance {
+		return fmt.Errorf("balance not restored after perf run: from_balance=%d want=%d book_balance=%d want=%d to_balance=%d want=%d",
+			finalFromBalance, initialFromBalance, finalBookBalance, initialBookBalance, finalToBalance, initialToBalance)
 	}
 
 	reports := []string{
-		fmt.Sprintf("# Core Txn Perf Report\n\n- generated_at_utc: %s\n- duration_book_transfer: %s\n- concurrency: %d\n- warmup_pair_count: %d\n- book_transfer_origins_for_refund: %d\n- final_balance_check: PASS (from=%d, book=%d)",
+		fmt.Sprintf("# Core Txn Perf Report\n\n- generated_at_utc: %s\n- duration_per_transfer_scenario: %s\n- concurrency: %d\n- warmup_pair_count_per_mode: %d\n- transfer_origins_for_refund: %d\n- book_transfer_origins_for_refund: %d\n- final_balance_check: PASS (from=%d, to=%d, book=%d)",
 			time.Now().UTC().Format(time.RFC3339),
 			cfg.Duration,
 			cfg.Concurrency,
 			cfg.WarmupRequests,
+			len(originTxnNos),
 			len(bookOriginTxnNos),
 			finalFromBalance,
+			finalToBalance,
 			finalBookBalance,
 		),
+		buildMetricsMarkdown(transferMetrics),
+		buildMetricsMarkdown(refundMetrics),
 		buildMetricsMarkdown(bookTransferMetrics),
 		buildMetricsMarkdown(bookRefundMetrics),
 	}
 	fullReport := strings.Join(reports, "\n\n")
+	fmt.Println(buildMetricsMarkdown(transferMetrics))
+	fmt.Println(buildMetricsMarkdown(refundMetrics))
 	fmt.Println(buildMetricsMarkdown(bookTransferMetrics))
 	fmt.Println(buildMetricsMarkdown(bookRefundMetrics))
 	if err := os.WriteFile("perf.md", []byte(fullReport+"\n"), 0o644); err != nil {
@@ -373,16 +451,20 @@ func run(cfg perfConfig) error {
 	return nil
 }
 
-func snapshotBalances(repo *db.Repository, fromAccountNo, bookAccountNo string) (int64, int64, error) {
+func snapshotBalances(repo *db.Repository, fromAccountNo, bookAccountNo, toAccountNo string) (int64, int64, int64, error) {
 	from, ok := repo.GetAccount(fromAccountNo)
 	if !ok {
-		return 0, 0, fmt.Errorf("from account not found: %s", fromAccountNo)
+		return 0, 0, 0, fmt.Errorf("from account not found: %s", fromAccountNo)
 	}
 	book, ok := repo.GetAccount(bookAccountNo)
 	if !ok {
-		return 0, 0, fmt.Errorf("book account not found: %s", bookAccountNo)
+		return 0, 0, 0, fmt.Errorf("book account not found: %s", bookAccountNo)
 	}
-	return from.Balance, book.Balance, nil
+	to, ok := repo.GetAccount(toAccountNo)
+	if !ok {
+		return 0, 0, 0, fmt.Errorf("to account not found: %s", toAccountNo)
+	}
+	return from.Balance, book.Balance, to.Balance, nil
 }
 
 func collectSucceededTxnNos(rows []resultRow) []string {
@@ -421,6 +503,10 @@ func setupPerfServer(
 	if err != nil {
 		return nil, fmt.Errorf("create from customer: %w", err)
 	}
+	transferCustomer, err := customerSvc.CreateCustomer(merchant.MerchantNo, toNonBookTransferOutUser)
+	if err != nil {
+		return nil, fmt.Errorf("create transfer customer: %w", err)
+	}
 	bookTransferCustomer, err := customerSvc.CreateCustomer(merchant.MerchantNo, toBookTransferOutUser)
 	if err != nil {
 		return nil, fmt.Errorf("create book transfer customer: %w", err)
@@ -429,6 +515,10 @@ func setupPerfServer(
 	fromAccountNo, err := repo.NewAccountNo(merchant.MerchantNo, "CUSTOMER")
 	if err != nil {
 		return nil, fmt.Errorf("new from account no: %w", err)
+	}
+	toAccountNo, err := repo.NewAccountNo(merchant.MerchantNo, "CUSTOMER")
+	if err != nil {
+		return nil, fmt.Errorf("new transfer account no: %w", err)
 	}
 	toBookTransferAccountNo, err := repo.NewAccountNo(merchant.MerchantNo, "CUSTOMER")
 	if err != nil {
@@ -463,6 +553,21 @@ func setupPerfServer(
 		Balance:           0,
 	}); err != nil {
 		return nil, fmt.Errorf("create book transfer account: %w", err)
+	}
+	if err := repo.CreateAccount(service.Account{
+		AccountNo:         toAccountNo,
+		MerchantNo:        merchant.MerchantNo,
+		CustomerNo:        transferCustomer.CustomerNo,
+		AccountType:       "CUSTOMER",
+		AllowOverdraft:    false,
+		MaxOverdraftLimit: 0,
+		AllowDebitOut:     true,
+		AllowCreditIn:     true,
+		AllowTransfer:     true,
+		BookEnabled:       false,
+		Balance:           0,
+	}); err != nil {
+		return nil, fmt.Errorf("create transfer account: %w", err)
 	}
 	secret, _, err := secretManager.RotateSecret(context.Background(), merchant.MerchantNo)
 	if err != nil {
@@ -531,6 +636,7 @@ func setupPerfServer(
 		Secret:                secret,
 		TransferFromAccountNo: fromAccountNo,
 		TransferBookToAccount: toBookTransferAccountNo,
+		TransferToAccountNo:   toAccountNo,
 	}, nil
 }
 
