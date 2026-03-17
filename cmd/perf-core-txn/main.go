@@ -530,12 +530,12 @@ func setupPerfServer(
 		MerchantNo:        merchant.MerchantNo,
 		CustomerNo:        fromCustomer.CustomerNo,
 		AccountType:       "CUSTOMER",
-		AllowOverdraft:    false,
+		AllowOverdraft:    true,
 		MaxOverdraftLimit: 0,
 		AllowDebitOut:     true,
 		AllowCreditIn:     true,
 		AllowTransfer:     true,
-		Balance:           1_000_000_000_000,
+		Balance:           0,
 	}); err != nil {
 		return nil, fmt.Errorf("create from account: %w", err)
 	}
