@@ -1036,6 +1036,109 @@ VALUES ('01956f4e-d111-7d11-8d11-d11111111111'::uuid, $1, $2::date, 60)
 	}
 }
 
+func TestTC1133APISubmitRejectsInvalidOutTradeNo(t *testing.T) {
+	r, repo, _, merchantNo, secret := newTxnAPITestServer(t)
+
+	cases := []struct {
+		name    string
+		path    string
+		nonce   string
+		payload map[string]any
+	}{
+		{
+			name:  "credit",
+			path:  "/api/v1/transactions/credit",
+			nonce: "nonce-1133-credit",
+			payload: map[string]any{
+				"out_trade_no": "ord_1133/credit",
+				"user_id":      "u_1101",
+				"amount":       10,
+			},
+		},
+		{
+			name:  "debit",
+			path:  "/api/v1/transactions/debit",
+			nonce: "nonce-1133-debit",
+			payload: map[string]any{
+				"out_trade_no":     "ord_1133/debit",
+				"debit_account_no": testDebitAccountNo,
+				"amount":           10,
+			},
+		},
+		{
+			name:  "transfer",
+			path:  "/api/v1/transactions/transfer",
+			nonce: "nonce-1133-transfer",
+			payload: map[string]any{
+				"out_trade_no":    "ord_1133/transfer",
+				"from_account_no": testDebitAccountNo,
+				"to_account_no":   testCreditAccountNo,
+				"transfer_scene":  "P2P",
+				"amount":          10,
+			},
+		},
+		{
+			name:  "refund",
+			path:  "/api/v1/transactions/refund",
+			nonce: "nonce-1133-refund",
+			payload: map[string]any{
+				"out_trade_no":     "ord_1133/refund",
+				"refund_of_txn_no": "01956f4e-9d22-73bc-8e11-3f5e9c7a2001",
+				"amount":           10,
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			req := signedAPIRequest(t, http.MethodPost, tc.path, merchantNo, secret, tc.nonce, tc.payload)
+			resp := httptest.NewRecorder()
+			r.ServeHTTP(resp, req)
+			if resp.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d body=%s", resp.Code, resp.Body.String())
+			}
+			body := decodeJSONMap(t, resp.Body.Bytes())
+			if body["code"] != "INVALID_PARAM" {
+				t.Fatalf("expected INVALID_PARAM, got %v", body["code"])
+			}
+			if body["message"] != "invalid out_trade_no" {
+				t.Fatalf("expected invalid out_trade_no message, got %v", body["message"])
+			}
+		})
+	}
+
+	if got := repo.TxnCount(); got != 0 {
+		t.Fatalf("expected no txn created, got %d", got)
+	}
+}
+
+func TestTC1134APIRefundRejectsInvalidRefundOfTxnNo(t *testing.T) {
+	r, repo, _, merchantNo, secret := newTxnAPITestServer(t)
+
+	req := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/refund", merchantNo, secret, "nonce-1134-refund", map[string]any{
+		"out_trade_no":     "ord_1134_refund",
+		"refund_of_txn_no": "not-a-uuid",
+		"amount":           10,
+	})
+	resp := httptest.NewRecorder()
+	r.ServeHTTP(resp, req)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	body := decodeJSONMap(t, resp.Body.Bytes())
+	if body["code"] != "INVALID_PARAM" {
+		t.Fatalf("expected INVALID_PARAM, got %v", body["code"])
+	}
+	if body["message"] != "invalid refund_of_txn_no" {
+		t.Fatalf("expected invalid refund_of_txn_no message, got %v", body["message"])
+	}
+
+	if got := repo.TxnCount(); got != 0 {
+		t.Fatalf("expected no txn created, got %d", got)
+	}
+}
+
 func TestTC1119APIListTransactionsFilterByOutUserID(t *testing.T) {
 	r, _, _, merchantNo, secret := newTxnAPITestServer(t)
 
