@@ -3,13 +3,14 @@ package service
 import (
 	"errors"
 	"strings"
+	"sync"
 )
 
 const (
 	defaultAsyncInitWorkers       = 4
 	defaultAsyncPaySuccessWorkers = 4
-	defaultAsyncInitQueueSize     = 10240
-	defaultAsyncPaySuccessQueue   = 10240
+	defaultAsyncInitQueueSize     = 65536
+	defaultAsyncPaySuccessQueue   = 65536
 )
 
 // TransferAsyncProcessor processes transfer/refund transactions asynchronously
@@ -44,8 +45,60 @@ func (o TransferAsyncProcessorOptions) withDefaults() TransferAsyncProcessorOpti
 type TransferAsyncProcessor struct {
 	repo            Repository
 	guard           StageProcessingGuard
-	initQueue       chan string
-	paySuccessQueue chan string
+	initQueue       *stageQueue
+	paySuccessQueue *stageQueue
+}
+
+type stageQueue struct {
+	ch      chan string
+	mu      sync.Mutex
+	pending map[string]struct{}
+}
+
+func newStageQueue(size int) *stageQueue {
+	if size <= 0 {
+		size = 1
+	}
+	return &stageQueue{
+		ch:      make(chan string, size),
+		pending: map[string]struct{}{},
+	}
+}
+
+func (q *stageQueue) Enqueue(txnNo string) bool {
+	if q == nil {
+		return false
+	}
+	txnNo = strings.TrimSpace(txnNo)
+	if txnNo == "" {
+		return false
+	}
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if _, exists := q.pending[txnNo]; exists {
+		return true
+	}
+	select {
+	case q.ch <- txnNo:
+		q.pending[txnNo] = struct{}{}
+		return true
+	default:
+		return false
+	}
+}
+
+func (q *stageQueue) Done(txnNo string) {
+	if q == nil {
+		return
+	}
+	txnNo = strings.TrimSpace(txnNo)
+	if txnNo == "" {
+		return
+	}
+	q.mu.Lock()
+	delete(q.pending, txnNo)
+	q.mu.Unlock()
 }
 
 func NewTransferAsyncProcessor(repo Repository) *TransferAsyncProcessor {
@@ -64,19 +117,25 @@ func NewTransferAsyncProcessorWithGuardAndOptions(repo Repository, guard StagePr
 	p := &TransferAsyncProcessor{
 		repo:            repo,
 		guard:           guard,
-		initQueue:       make(chan string, opts.InitQueueSize),
-		paySuccessQueue: make(chan string, opts.PaySuccessQueue),
+		initQueue:       newStageQueue(opts.InitQueueSize),
+		paySuccessQueue: newStageQueue(opts.PaySuccessQueue),
 	}
 	p.startWorkers(TxnStatusInit, opts.InitWorkers, p.initQueue)
 	p.startWorkers(TxnStatusPaySuccess, opts.PaySuccessWorkers, p.paySuccessQueue)
 	return p
 }
 
-func (p *TransferAsyncProcessor) startWorkers(stage string, workerCount int, queue <-chan string) {
+func (p *TransferAsyncProcessor) startWorkers(stage string, workerCount int, queue *stageQueue) {
+	if queue == nil {
+		return
+	}
 	for i := 0; i < workerCount; i++ {
-		go func(expectedStatus string, jobs <-chan string) {
-			for txnNo := range jobs {
-				_ = p.processStage(txnNo, expectedStatus)
+		go func(expectedStatus string, q *stageQueue) {
+			for txnNo := range q.ch {
+				func() {
+					defer q.Done(txnNo)
+					_ = p.processStage(txnNo, expectedStatus)
+				}()
 			}
 		}(stage, queue)
 	}
@@ -103,22 +162,10 @@ func (p *TransferAsyncProcessor) EnqueueByStatus(txnNo, status string) bool {
 
 	switch status {
 	case TxnStatusInit:
-		return enqueueTxn(p.initQueue, txnNo)
+		return p.initQueue.Enqueue(txnNo)
 	case TxnStatusPaySuccess:
-		return enqueueTxn(p.paySuccessQueue, txnNo)
+		return p.paySuccessQueue.Enqueue(txnNo)
 	case TxnStatusRecvSuccess, TxnStatusFailed:
-		return true
-	default:
-		return false
-	}
-}
-
-func enqueueTxn(queue chan string, txnNo string) bool {
-	if queue == nil {
-		return false
-	}
-	select {
-	case queue <- txnNo:
 		return true
 	default:
 		return false
