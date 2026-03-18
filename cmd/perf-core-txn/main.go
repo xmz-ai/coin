@@ -904,7 +904,6 @@ func setupPerfServer(
 	processingGuard := service.NewRedisProcessingGuard(redisClient, time.Duration(processingTTLSeconds)*time.Second)
 	asyncProcessor := service.NewTransferAsyncProcessorWithGuardAndOptions(repo, processingGuard, txnAsyncOpts)
 	txnRecoveryWorker := service.NewTransferRecoveryWorkerWithStaleThreshold(repo, asyncProcessor, txnRecoveryBatch, txnRecoveryStale)
-	go txnRecoveryWorker.Start(ctx, txnRecoveryInterval)
 
 	sink := newWebhookSink()
 	webhookServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -931,6 +930,8 @@ func setupPerfServer(
 		return nil, fmt.Errorf("upsert webhook config: %w", err)
 	}
 	webhookWorker := service.NewWebhookWorker(repo, secretManager, 8, 500, []int{1})
+	asyncProcessor.SetWebhookDispatcher(webhookWorker)
+	go txnRecoveryWorker.Start(ctx, txnRecoveryInterval)
 	go webhookWorker.Start(ctx, webhookPollInterval)
 
 	business := api.NewBusinessHandler(
@@ -938,7 +939,6 @@ func setupPerfServer(
 		repo,
 		transferRoutingSvc,
 		asyncProcessor,
-		webhookWorker,
 		accountResolver,
 		repo,
 		querySvc,

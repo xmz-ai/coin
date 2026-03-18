@@ -1575,7 +1575,7 @@ func newTxnAPITestServer(t *testing.T) (*gin.Engine, *db.Repository, *pgxpool.Po
 	querySvc := service.NewTxnQueryService(repo)
 	base := time.Unix(1_710_000_000, 0).UTC()
 	tick := 0
-	businessHandler := api.NewBusinessHandler(transferSvc, repo, transferRoutingSvc, asyncTransferSvc, nil, accountResolver, repo, querySvc, repo, func() time.Time {
+	businessHandler := api.NewBusinessHandler(transferSvc, repo, transferRoutingSvc, asyncTransferSvc, accountResolver, repo, querySvc, repo, func() time.Time {
 		tick++
 		return base.Add(time.Duration(tick) * time.Millisecond)
 	})

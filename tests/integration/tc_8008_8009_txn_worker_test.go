@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +23,25 @@ func (g failingStageGuard) TryBegin(txnNo, stage string) bool {
 
 func (g failingStageGuard) TryBeginWithError(txnNo, stage string) (bool, error) {
 	return false, g.err
+}
+
+type recordingNotifyDispatcher struct {
+	mu     sync.Mutex
+	txnNos []string
+}
+
+func (d *recordingNotifyDispatcher) Enqueue(txnNo string) {
+	d.mu.Lock()
+	d.txnNos = append(d.txnNos, txnNo)
+	d.mu.Unlock()
+}
+
+func (d *recordingNotifyDispatcher) Snapshot() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]string, len(d.txnNos))
+	copy(out, d.txnNos)
+	return out
 }
 
 func TestTC8008TransferWorkerProcessesInitTxn(t *testing.T) {
@@ -134,6 +154,51 @@ func TestTC8010TransferEnqueueFastPathWithoutPollingWorker(t *testing.T) {
 	}
 	got, _ := repo.GetTransferTxn(txn.TxnNo)
 	t.Fatalf("expected fast-path enqueue to finish without polling worker, got status=%s", got.Status)
+}
+
+func TestTC8030TransferEnqueueTriggersNotifyDispatcherAfterRecvSuccess(t *testing.T) {
+	repo, _, merchant, debitAccountNo, creditAccountNo := setupWorkerTransferFixture(t)
+
+	transferSvc := service.NewTransferService(repo, idpkg.NewFixedUUIDProvider([]string{
+		"01956f4e-9d22-73bc-8e11-3f5e9c7a8830",
+	}))
+	txn, err := transferSvc.Submit(service.TransferRequest{
+		MerchantNo:       merchant.MerchantNo,
+		OutTradeNo:       "ord_8030",
+		BizType:          "TRANSFER",
+		TransferScene:    service.SceneP2P,
+		DebitAccountNo:   debitAccountNo,
+		CreditAccountNo:  creditAccountNo,
+		Amount:           100,
+		RefundableAmount: 100,
+		Status:           service.TxnStatusInit,
+	})
+	if err != nil {
+		t.Fatalf("submit txn failed: %v", err)
+	}
+
+	processor := service.NewTransferAsyncProcessor(repo)
+	dispatcher := &recordingNotifyDispatcher{}
+	processor.SetWebhookDispatcher(dispatcher)
+	processor.Enqueue(txn.TxnNo)
+
+	waitTxnStatusRepo(t, repo, txn.TxnNo, service.TxnStatusRecvSuccess, 2*time.Second)
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	var calls []string
+	for time.Now().Before(deadline) {
+		calls = dispatcher.Snapshot()
+		if len(calls) >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected notify dispatcher called once, got=%v", calls)
+	}
+	if calls[0] != txn.TxnNo {
+		t.Fatalf("unexpected notify txn_no: got=%s want=%s", calls[0], txn.TxnNo)
+	}
 }
 
 func TestTC8010GuardUnavailableDoesNotFailTxn(t *testing.T) {
