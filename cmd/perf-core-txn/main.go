@@ -68,7 +68,7 @@ type resultRow struct {
 	E2ELatency        time.Duration
 	SubmitStartedAt   time.Time
 	E2ECompletedAt    time.Time
-	WebhookDone       <-chan struct{}
+	WebhookDone       <-chan time.Time
 	CancelWebhookWait func()
 	SubmitOK          bool
 	E2EOK             bool
@@ -121,15 +121,15 @@ type perfRuntime struct {
 
 type webhookSink struct {
 	mu      sync.Mutex
-	waiters map[string][]chan struct{}
+	waiters map[string][]chan time.Time
 }
 
 func newWebhookSink() *webhookSink {
-	return &webhookSink{waiters: map[string][]chan struct{}{}}
+	return &webhookSink{waiters: map[string][]chan time.Time{}}
 }
 
-func (s *webhookSink) expect(outTradeNo string) <-chan struct{} {
-	ch := make(chan struct{})
+func (s *webhookSink) expect(outTradeNo string) <-chan time.Time {
+	ch := make(chan time.Time, 1)
 	s.mu.Lock()
 	s.waiters[outTradeNo] = append(s.waiters[outTradeNo], ch)
 	s.mu.Unlock()
@@ -141,12 +141,16 @@ func (s *webhookSink) signal(outTradeNo string) {
 	waiters := s.waiters[outTradeNo]
 	delete(s.waiters, outTradeNo)
 	s.mu.Unlock()
+	doneAt := time.Now()
 	for _, ch := range waiters {
-		close(ch)
+		select {
+		case ch <- doneAt:
+		default:
+		}
 	}
 }
 
-func (s *webhookSink) cancel(outTradeNo string, target <-chan struct{}) {
+func (s *webhookSink) cancel(outTradeNo string, target <-chan time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	waiters := s.waiters[outTradeNo]
@@ -155,8 +159,7 @@ func (s *webhookSink) cancel(outTradeNo string, target <-chan struct{}) {
 	}
 	kept := waiters[:0]
 	for _, ch := range waiters {
-		if (<-chan struct{})(ch) == target {
-			close(ch)
+		if (<-chan time.Time)(ch) == target {
 			continue
 		}
 		kept = append(kept, ch)
@@ -1146,7 +1149,7 @@ func fireAPIPostOnce(
 	sink *webhookSink,
 	requireWebhook bool,
 ) resultRow {
-	var done <-chan struct{}
+	var done <-chan time.Time
 	if requireWebhook {
 		if sink == nil {
 			return resultRow{TransportErr: "webhook sink not configured"}
@@ -1238,8 +1241,8 @@ func awaitWebhookResult(row *resultRow, webhookWaitTimeout time.Duration) {
 	}
 	timer := time.NewTimer(remaining)
 	select {
-	case <-row.WebhookDone:
-		row.E2ECompletedAt = time.Now()
+	case doneAt := <-row.WebhookDone:
+		row.E2ECompletedAt = doneAt
 		row.E2ELatency = row.E2ECompletedAt.Sub(row.SubmitStartedAt)
 		row.E2EOK = true
 	case <-timer.C:
