@@ -44,6 +44,7 @@ type perfConfig struct {
 	RedisDB              int
 	Passphrase           string
 	ProcessingTTLSeconds int
+	TxnAsyncOpts         service.TransferAsyncProcessorOptions
 
 	Duration            time.Duration
 	Concurrency         int
@@ -185,9 +186,9 @@ func loadPerfConfig() (perfConfig, error) {
 	maxBodyBytes := getenvInt("PERF_MAX_BODY_BYTES", 1<<20)
 	webhookPollMs := getenvInt("PERF_WEBHOOK_POLL_INTERVAL_MS", 10)
 	webhookWaitTimeoutMs := getenvInt("PERF_WEBHOOK_WAIT_TIMEOUT_MS", 60000)
-	txnRecoveryIntervalMs := getenvInt("PERF_TXN_RECOVERY_INTERVAL_MS", 50)
-	txnRecoveryStaleMs := getenvInt("PERF_TXN_RECOVERY_STALE_MS", 200)
-	txnRecoveryBatch := getenvInt("PERF_TXN_RECOVERY_BATCH", 2000)
+	txnRecoveryIntervalMs := getenvInt("PERF_TXN_RECOVERY_INTERVAL_MS", max(base.TxnRecoveryIntervalMS, 1))
+	txnRecoveryStaleMs := getenvInt("PERF_TXN_RECOVERY_STALE_MS", max(base.TxnRecoveryStaleMS, 1))
+	txnRecoveryBatch := getenvInt("PERF_TXN_RECOVERY_BATCH", max(base.TxnRecoveryBatchSize, 1))
 
 	if durationSec <= 0 {
 		return perfConfig{}, fmt.Errorf("PERF_DURATION_SECONDS must be > 0")
@@ -224,16 +225,22 @@ func loadPerfConfig() (perfConfig, error) {
 		RedisDB:              base.RedisDB,
 		Passphrase:           base.MerchantSecretPassphrase,
 		ProcessingTTLSeconds: max(base.ProcessingKeyTTLSeconds, 1),
-		Duration:             time.Duration(durationSec) * time.Second,
-		Concurrency:          concurrency,
-		WarmupRequests:       max(warmup, 0),
-		RequestTimeout:       time.Duration(requestTimeoutMs) * time.Millisecond,
-		MaxBodyBytes:         int64(maxBodyBytes),
-		WebhookPollInterval:  time.Duration(webhookPollMs) * time.Millisecond,
-		WebhookWaitTimeout:   time.Duration(webhookWaitTimeoutMs) * time.Millisecond,
-		TxnRecoveryInterval:  time.Duration(txnRecoveryIntervalMs) * time.Millisecond,
-		TxnRecoveryStale:     time.Duration(txnRecoveryStaleMs) * time.Millisecond,
-		TxnRecoveryBatch:     txnRecoveryBatch,
+		TxnAsyncOpts: service.TransferAsyncProcessorOptions{
+			InitWorkers:       max(base.TxnAsyncStageWorkersInit, 1),
+			PaySuccessWorkers: max(base.TxnAsyncStageWorkersPaySuccess, 1),
+			InitQueueSize:     max(base.TxnAsyncQueueSizeInit, 1),
+			PaySuccessQueue:   max(base.TxnAsyncQueueSizePaySuccess, 1),
+		},
+		Duration:            time.Duration(durationSec) * time.Second,
+		Concurrency:         concurrency,
+		WarmupRequests:      max(warmup, 0),
+		RequestTimeout:      time.Duration(requestTimeoutMs) * time.Millisecond,
+		MaxBodyBytes:        int64(maxBodyBytes),
+		WebhookPollInterval: time.Duration(webhookPollMs) * time.Millisecond,
+		WebhookWaitTimeout:  time.Duration(webhookWaitTimeoutMs) * time.Millisecond,
+		TxnRecoveryInterval: time.Duration(txnRecoveryIntervalMs) * time.Millisecond,
+		TxnRecoveryStale:    time.Duration(txnRecoveryStaleMs) * time.Millisecond,
+		TxnRecoveryBatch:    txnRecoveryBatch,
 	}, nil
 }
 
@@ -269,6 +276,7 @@ func run(cfg perfConfig) error {
 		redisClient,
 		secretManager,
 		cfg.ProcessingTTLSeconds,
+		cfg.TxnAsyncOpts,
 		cfg.TxnRecoveryBatch,
 		cfg.TxnRecoveryInterval,
 		cfg.TxnRecoveryStale,
@@ -296,6 +304,8 @@ func run(cfg perfConfig) error {
 	fmt.Printf("[perf] duration=%s concurrency=%d warmup=%d timeout=%s\n",
 		cfg.Duration, cfg.Concurrency, cfg.WarmupRequests, cfg.RequestTimeout)
 	fmt.Printf("[perf] mode=webhook-e2e webhook_poll=%s webhook_wait_timeout=%s\n", cfg.WebhookPollInterval, cfg.WebhookWaitTimeout)
+	fmt.Printf("[perf] txn_async init_workers=%d pay_success_workers=%d init_queue=%d pay_success_queue=%d\n",
+		cfg.TxnAsyncOpts.InitWorkers, cfg.TxnAsyncOpts.PaySuccessWorkers, cfg.TxnAsyncOpts.InitQueueSize, cfg.TxnAsyncOpts.PaySuccessQueue)
 	fmt.Printf("[perf] txn_recovery interval=%s stale=%s batch=%d\n", cfg.TxnRecoveryInterval, cfg.TxnRecoveryStale, cfg.TxnRecoveryBatch)
 
 	httpClient := &http.Client{Timeout: cfg.RequestTimeout}
@@ -377,6 +387,17 @@ func run(cfg perfConfig) error {
 					row.StatusCode, row.Code, row.SubmitOK, row.E2EOK, originTxnNo, row.TransportErr, row.E2EErr)
 			}
 		}
+		if err := assertBalances(repo,
+			runtimeEnv.TransferFromAccountNo,
+			runtimeEnv.TransferBookToAccount,
+			runtimeEnv.TransferToAccountNo,
+			initialFromBalance,
+			initialBookBalance,
+			initialToBalance,
+			"warmup",
+		); err != nil {
+			return err
+		}
 	}
 
 	fmt.Printf("[perf] scenario=book_transfer start\n")
@@ -389,8 +410,37 @@ func run(cfg perfConfig) error {
 		fireBookTransfer,
 	)
 	bookOriginTxnNos := collectSucceededTxnNos(bookTransferRows)
+	if err := assertScenarioMetrics("book_transfer", bookTransferMetrics, true); err != nil {
+		return err
+	}
 	if len(bookOriginTxnNos) == 0 {
 		return fmt.Errorf("book_transfer completed but no successful txn_no produced")
+	}
+	if len(bookOriginTxnNos) != bookTransferMetrics.Total {
+		return fmt.Errorf("book_transfer successful txn_no count mismatch: got=%d total=%d", len(bookOriginTxnNos), bookTransferMetrics.Total)
+	}
+	if err := assertUniqueTxnNos("book_transfer", bookOriginTxnNos); err != nil {
+		return err
+	}
+	if err := assertTxnStatusByOutTradePrefix(pool, "ord_perf_book_transfer_book_transfer-", service.TxnStatusRecvSuccess, bookTransferMetrics.Total, "book_transfer"); err != nil {
+		return err
+	}
+	if err := assertNoInFlightTxnByOutTradePrefix(pool, "ord_perf_book_transfer_book_transfer-", "book_transfer"); err != nil {
+		return err
+	}
+	if err := assertChangeLogCountsByOutTradePrefix(pool, "ord_perf_book_transfer_book_transfer-", bookTransferMetrics.Total*2, bookTransferMetrics.Total, "book_transfer"); err != nil {
+		return err
+	}
+	if err := assertBalances(repo,
+		runtimeEnv.TransferFromAccountNo,
+		runtimeEnv.TransferBookToAccount,
+		runtimeEnv.TransferToAccountNo,
+		initialFromBalance-int64(len(bookOriginTxnNos)),
+		initialBookBalance+int64(len(bookOriginTxnNos)),
+		initialToBalance,
+		"book_transfer",
+	); err != nil {
+		return err
 	}
 	fmt.Printf("[perf] scenario=book_transfer done successful_origins=%d\n", len(bookOriginTxnNos))
 
@@ -403,6 +453,32 @@ func run(cfg perfConfig) error {
 		true,
 		fireBookRefund,
 	)
+	if err := assertScenarioMetrics("book_refund", bookRefundMetrics, true); err != nil {
+		return err
+	}
+	if err := assertScenarioInputCoverage("book_refund", len(bookOriginTxnNos), bookRefundMetrics); err != nil {
+		return err
+	}
+	if err := assertTxnStatusByOutTradePrefix(pool, "ord_perf_book_refund_book_refund-", service.TxnStatusRecvSuccess, bookRefundMetrics.Total, "book_refund"); err != nil {
+		return err
+	}
+	if err := assertNoInFlightTxnByOutTradePrefix(pool, "ord_perf_book_refund_book_refund-", "book_refund"); err != nil {
+		return err
+	}
+	if err := assertChangeLogCountsByOutTradePrefix(pool, "ord_perf_book_refund_book_refund-", bookRefundMetrics.Total*2, bookRefundMetrics.Total, "book_refund"); err != nil {
+		return err
+	}
+	if err := assertBalances(repo,
+		runtimeEnv.TransferFromAccountNo,
+		runtimeEnv.TransferBookToAccount,
+		runtimeEnv.TransferToAccountNo,
+		initialFromBalance,
+		initialBookBalance,
+		initialToBalance,
+		"book_refund",
+	); err != nil {
+		return err
+	}
 	fmt.Printf("[perf] scenario=book_refund done\n")
 
 	fmt.Printf("[perf] scenario=transfer start\n")
@@ -415,8 +491,37 @@ func run(cfg perfConfig) error {
 		fireTransfer,
 	)
 	originTxnNos := collectSucceededTxnNos(transferRows)
+	if err := assertScenarioMetrics("transfer", transferMetrics, true); err != nil {
+		return err
+	}
 	if len(originTxnNos) == 0 {
 		return fmt.Errorf("transfer completed but no successful txn_no produced")
+	}
+	if len(originTxnNos) != transferMetrics.Total {
+		return fmt.Errorf("transfer successful txn_no count mismatch: got=%d total=%d", len(originTxnNos), transferMetrics.Total)
+	}
+	if err := assertUniqueTxnNos("transfer", originTxnNos); err != nil {
+		return err
+	}
+	if err := assertTxnStatusByOutTradePrefix(pool, "ord_perf_transfer_transfer-", service.TxnStatusRecvSuccess, transferMetrics.Total, "transfer"); err != nil {
+		return err
+	}
+	if err := assertNoInFlightTxnByOutTradePrefix(pool, "ord_perf_transfer_transfer-", "transfer"); err != nil {
+		return err
+	}
+	if err := assertChangeLogCountsByOutTradePrefix(pool, "ord_perf_transfer_transfer-", transferMetrics.Total*2, 0, "transfer"); err != nil {
+		return err
+	}
+	if err := assertBalances(repo,
+		runtimeEnv.TransferFromAccountNo,
+		runtimeEnv.TransferBookToAccount,
+		runtimeEnv.TransferToAccountNo,
+		initialFromBalance-int64(len(originTxnNos)),
+		initialBookBalance,
+		initialToBalance+int64(len(originTxnNos)),
+		"transfer",
+	); err != nil {
+		return err
 	}
 	fmt.Printf("[perf] scenario=transfer done successful_origins=%d\n", len(originTxnNos))
 
@@ -429,6 +534,32 @@ func run(cfg perfConfig) error {
 		true,
 		fireRefund,
 	)
+	if err := assertScenarioMetrics("refund", refundMetrics, true); err != nil {
+		return err
+	}
+	if err := assertScenarioInputCoverage("refund", len(originTxnNos), refundMetrics); err != nil {
+		return err
+	}
+	if err := assertTxnStatusByOutTradePrefix(pool, "ord_perf_refund_refund-", service.TxnStatusRecvSuccess, refundMetrics.Total, "refund"); err != nil {
+		return err
+	}
+	if err := assertNoInFlightTxnByOutTradePrefix(pool, "ord_perf_refund_refund-", "refund"); err != nil {
+		return err
+	}
+	if err := assertChangeLogCountsByOutTradePrefix(pool, "ord_perf_refund_refund-", refundMetrics.Total*2, 0, "refund"); err != nil {
+		return err
+	}
+	if err := assertBalances(repo,
+		runtimeEnv.TransferFromAccountNo,
+		runtimeEnv.TransferBookToAccount,
+		runtimeEnv.TransferToAccountNo,
+		initialFromBalance,
+		initialBookBalance,
+		initialToBalance,
+		"refund",
+	); err != nil {
+		return err
+	}
 	fmt.Printf("[perf] scenario=refund done\n")
 
 	finalFromBalance, finalBookBalance, finalToBalance, err := snapshotBalances(
@@ -489,6 +620,172 @@ func snapshotBalances(repo *db.Repository, fromAccountNo, bookAccountNo, toAccou
 	return from.Balance, book.Balance, to.Balance, nil
 }
 
+func assertBalances(
+	repo *db.Repository,
+	fromAccountNo, bookAccountNo, toAccountNo string,
+	wantFrom, wantBook, wantTo int64,
+	stage string,
+) error {
+	gotFrom, gotBook, gotTo, err := snapshotBalances(repo, fromAccountNo, bookAccountNo, toAccountNo)
+	if err != nil {
+		return fmt.Errorf("%s balance check failed: %w", stage, err)
+	}
+	if gotFrom != wantFrom || gotBook != wantBook || gotTo != wantTo {
+		return fmt.Errorf("%s balance mismatch: from_balance=%d want=%d book_balance=%d want=%d to_balance=%d want=%d",
+			stage, gotFrom, wantFrom, gotBook, wantBook, gotTo, wantTo)
+	}
+	return nil
+}
+
+func assertScenarioMetrics(stage string, m metrics, requireWebhook bool) error {
+	if m.Total <= 0 {
+		return fmt.Errorf("%s no requests executed", stage)
+	}
+	if m.TransportErr != 0 || m.HTTP5xx != 0 || m.HTTP4xxOther != 0 || m.HTTP409 != 0 {
+		return fmt.Errorf("%s request errors found: transport_err=%d http_5xx=%d http_4xx_other=%d http_409=%d",
+			stage, m.TransportErr, m.HTTP5xx, m.HTTP4xxOther, m.HTTP409)
+	}
+	if m.SubmitSuccess != m.Total {
+		return fmt.Errorf("%s submit success mismatch: submit_success=%d total=%d", stage, m.SubmitSuccess, m.Total)
+	}
+	if requireWebhook && m.E2ESuccess != m.Total {
+		return fmt.Errorf("%s e2e success mismatch: e2e_success=%d total=%d", stage, m.E2ESuccess, m.Total)
+	}
+	if successCount, ok := m.ErrorCodeHistogram["SUCCESS"]; !ok || successCount != m.Total {
+		return fmt.Errorf("%s response code mismatch: SUCCESS=%d total=%d", stage, successCount, m.Total)
+	}
+	return nil
+}
+
+func assertScenarioInputCoverage(stage string, wantInputs int, m metrics) error {
+	if m.Total != wantInputs {
+		return fmt.Errorf("%s total mismatch: total=%d want=%d", stage, m.Total, wantInputs)
+	}
+	if m.SubmitSuccess != wantInputs {
+		return fmt.Errorf("%s submit success mismatch: submit_success=%d want=%d", stage, m.SubmitSuccess, wantInputs)
+	}
+	if m.E2ESuccess != wantInputs {
+		return fmt.Errorf("%s e2e success mismatch: e2e_success=%d want=%d", stage, m.E2ESuccess, wantInputs)
+	}
+	return nil
+}
+
+func assertUniqueTxnNos(stage string, txnNos []string) error {
+	seen := make(map[string]struct{}, len(txnNos))
+	for _, txnNo := range txnNos {
+		key := strings.TrimSpace(txnNo)
+		if key == "" {
+			return fmt.Errorf("%s contains empty txn_no", stage)
+		}
+		if _, exists := seen[key]; exists {
+			return fmt.Errorf("%s contains duplicate txn_no: %s", stage, key)
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
+}
+
+func assertTxnStatusByOutTradePrefix(pool *pgxpool.Pool, outTradePrefix, wantStatus string, wantTotal int, stage string) error {
+	if pool == nil {
+		return fmt.Errorf("%s status check failed: db pool is nil", stage)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := pool.Query(ctx, `
+SELECT status, COUNT(*)
+FROM txn
+WHERE out_trade_no LIKE $1
+GROUP BY status
+`, outTradePrefix+"%")
+	if err != nil {
+		return fmt.Errorf("%s status check query failed: %w", stage, err)
+	}
+	defer rows.Close()
+
+	total := 0
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return fmt.Errorf("%s status check scan failed: %w", stage, err)
+		}
+		total += count
+		if strings.TrimSpace(status) != wantStatus {
+			return fmt.Errorf("%s unexpected txn status for prefix=%s: status=%s count=%d want_status=%s",
+				stage, outTradePrefix, status, count, wantStatus)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("%s status check rows error: %w", stage, err)
+	}
+	if total != wantTotal {
+		return fmt.Errorf("%s txn count mismatch for prefix=%s: got=%d want=%d",
+			stage, outTradePrefix, total, wantTotal)
+	}
+	return nil
+}
+
+func assertNoInFlightTxnByOutTradePrefix(pool *pgxpool.Pool, outTradePrefix, stage string) error {
+	if pool == nil {
+		return fmt.Errorf("%s in-flight check failed: db pool is nil", stage)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var inFlight int
+	err := pool.QueryRow(ctx, `
+SELECT COUNT(*)
+FROM txn
+WHERE out_trade_no LIKE $1
+  AND status IN ('INIT', 'PAY_SUCCESS')
+`, outTradePrefix+"%").Scan(&inFlight)
+	if err != nil {
+		return fmt.Errorf("%s in-flight check query failed: %w", stage, err)
+	}
+	if inFlight != 0 {
+		return fmt.Errorf("%s in-flight txn remains for prefix=%s: count=%d", stage, outTradePrefix, inFlight)
+	}
+	return nil
+}
+
+func assertChangeLogCountsByOutTradePrefix(pool *pgxpool.Pool, outTradePrefix string, wantAccountChange, wantBookChange int, stage string) error {
+	if pool == nil {
+		return fmt.Errorf("%s change-log check failed: db pool is nil", stage)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var gotAccountChange int
+	if err := pool.QueryRow(ctx, `
+SELECT COUNT(*)
+FROM account_change_log l
+JOIN txn t ON t.txn_no = l.txn_no
+WHERE t.out_trade_no LIKE $1
+`, outTradePrefix+"%").Scan(&gotAccountChange); err != nil {
+		return fmt.Errorf("%s account_change_log count query failed: %w", stage, err)
+	}
+	if gotAccountChange != wantAccountChange {
+		return fmt.Errorf("%s account_change_log count mismatch for prefix=%s: got=%d want=%d",
+			stage, outTradePrefix, gotAccountChange, wantAccountChange)
+	}
+
+	var gotBookChange int
+	if err := pool.QueryRow(ctx, `
+SELECT COUNT(*)
+FROM account_book_change_log l
+JOIN txn t ON t.txn_no = l.txn_no
+WHERE t.out_trade_no LIKE $1
+`, outTradePrefix+"%").Scan(&gotBookChange); err != nil {
+		return fmt.Errorf("%s account_book_change_log count query failed: %w", stage, err)
+	}
+	if gotBookChange != wantBookChange {
+		return fmt.Errorf("%s account_book_change_log count mismatch for prefix=%s: got=%d want=%d",
+			stage, outTradePrefix, gotBookChange, wantBookChange)
+	}
+	return nil
+}
+
 func collectSucceededTxnNos(rows []resultRow) []string {
 	out := make([]string, 0, len(rows))
 	for _, row := range rows {
@@ -505,6 +802,7 @@ func setupPerfServer(
 	redisClient *goredis.Client,
 	secretManager *db.MerchantSecretManager,
 	processingTTLSeconds int,
+	txnAsyncOpts service.TransferAsyncProcessorOptions,
 	txnRecoveryBatch int,
 	txnRecoveryInterval time.Duration,
 	txnRecoveryStale time.Duration,
@@ -600,7 +898,7 @@ func setupPerfServer(
 	}
 
 	processingGuard := service.NewRedisProcessingGuard(redisClient, time.Duration(processingTTLSeconds)*time.Second)
-	asyncProcessor := service.NewTransferAsyncProcessorWithGuard(repo, processingGuard)
+	asyncProcessor := service.NewTransferAsyncProcessorWithGuardAndOptions(repo, processingGuard, txnAsyncOpts)
 	txnRecoveryWorker := service.NewTransferRecoveryWorkerWithStaleThreshold(repo, asyncProcessor, txnRecoveryBatch, txnRecoveryStale)
 	go txnRecoveryWorker.Start(ctx, txnRecoveryInterval)
 
