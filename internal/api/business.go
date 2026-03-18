@@ -3,11 +3,13 @@ package api
 import (
 	"errors"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/xmz-ai/coin/internal/service"
 )
 
@@ -154,6 +156,8 @@ type webhookConfigRequest struct {
 	Enabled bool   `json:"enabled"`
 }
 
+var outTradeNoPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
 func (h *BusinessHandler) handleCredit(c *gin.Context) {
 	if h == nil || h.transfer == nil || h.query == nil || h.merchants == nil || h.transferRouter == nil || h.asyncTransfer == nil || h.accountResolver == nil || h.accounts == nil {
 		writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "business handler not configured")
@@ -183,6 +187,10 @@ func (h *BusinessHandler) handleCredit(c *gin.Context) {
 
 	if req.OutTradeNo == "" || req.Amount <= 0 {
 		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "out_trade_no and amount are required")
+		return
+	}
+	if !isValidOutTradeNo(req.OutTradeNo) {
+		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid out_trade_no")
 		return
 	}
 	if req.CreditAccountNo == "" && req.UserID == "" {
@@ -318,6 +326,10 @@ func (h *BusinessHandler) handleDebit(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "out_trade_no and amount are required")
 		return
 	}
+	if !isValidOutTradeNo(req.OutTradeNo) {
+		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid out_trade_no")
+		return
+	}
 	if req.DebitAccountNo == "" && req.DebitOutUserID == "" {
 		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "debit_account_no or debit_out_user_id is required")
 		return
@@ -440,6 +452,10 @@ func (h *BusinessHandler) handleTransfer(c *gin.Context) {
 
 	if req.OutTradeNo == "" || req.Amount <= 0 {
 		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "out_trade_no and amount are required")
+		return
+	}
+	if !isValidOutTradeNo(req.OutTradeNo) {
+		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid out_trade_no")
 		return
 	}
 	if req.FromAccountNo == "" && req.FromOutUserID == "" {
@@ -588,6 +604,14 @@ func (h *BusinessHandler) handleRefund(c *gin.Context) {
 	req.RefundOfTxnNo = strings.TrimSpace(req.RefundOfTxnNo)
 	if req.OutTradeNo == "" || req.RefundOfTxnNo == "" || req.Amount <= 0 {
 		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "out_trade_no, refund_of_txn_no and amount are required")
+		return
+	}
+	if !isValidOutTradeNo(req.OutTradeNo) {
+		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid out_trade_no")
+		return
+	}
+	if !isValidUUID(req.RefundOfTxnNo) {
+		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid refund_of_txn_no")
 		return
 	}
 	if req.BizType != "" && req.BizType != service.BizTypeRefund {
@@ -852,6 +876,15 @@ func calcExpireAtByDays(now time.Time, expireInDays int64) (time.Time, error) {
 func normalizeExpiryDayUTC(t time.Time) time.Time {
 	u := t.UTC()
 	return time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+func isValidOutTradeNo(outTradeNo string) bool {
+	return outTradeNoPattern.MatchString(outTradeNo)
+}
+
+func isValidUUID(v string) bool {
+	_, err := uuid.Parse(v)
+	return err == nil
 }
 
 func writeSuccess(c *gin.Context, data any) {
