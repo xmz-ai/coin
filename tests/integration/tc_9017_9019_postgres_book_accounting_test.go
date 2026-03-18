@@ -362,21 +362,21 @@ WHERE account_no = $1
 
 	processor := service.NewTransferAsyncProcessor(repo)
 	processor.Enqueue(refundTxnNo)
-	waitTxnStatusRepo(t, repo, refundTxnNo, service.TxnStatusFailed, 2*time.Second)
+	waitTxnStatusRepo(t, repo, refundTxnNo, service.TxnStatusPaySuccess, 2*time.Second)
 
 	refund, ok := repo.GetTransferTxn(refundTxnNo)
 	if !ok {
 		t.Fatalf("refund txn not found")
 	}
-	if refund.Status != service.TxnStatusFailed {
-		t.Fatalf("expected FAILED status, got %s", refund.Status)
+	if refund.Status != service.TxnStatusPaySuccess {
+		t.Fatalf("expected PAY_SUCCESS status for compensatable refund, got %s", refund.Status)
 	}
-	if refund.ErrorCode != "REFUND_ORIGIN_BOOK_TRACE_MISSING" {
-		t.Fatalf("expected REFUND_ORIGIN_BOOK_TRACE_MISSING, got %s", refund.ErrorCode)
+	if refund.ErrorCode != "" {
+		t.Fatalf("expected empty error_code while staying in PAY_SUCCESS, got %s", refund.ErrorCode)
 	}
 
 	bookLogs := queryBookChangesByTxnNo(t, pool, refundTxnNo)
 	if len(bookLogs) != 0 {
-		t.Fatalf("expected no account_book_change_log on failed refund credit, got %d", len(bookLogs))
+		t.Fatalf("expected no account_book_change_log on blocked refund credit, got %d", len(bookLogs))
 	}
 }

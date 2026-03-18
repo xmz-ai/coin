@@ -165,7 +165,7 @@
 ### TC-4009 状态机合法迁移
 - **Given** 交易在 INIT
 - **When** 按流程推进
-- **Then** 仅允许 `INIT->PROCESSING->PAY_SUCCESS->RECV_SUCCESS`
+- **Then** 仅允许 `INIT->PAY_SUCCESS->RECV_SUCCESS`
 
 ### TC-4010 状态机非法迁移拒绝
 - **Given** 交易在 INIT
@@ -284,7 +284,7 @@
 - **Then** 状态进入 DEAD，不再无限重试
 
 ### TC-8005 交易补偿推进滞留状态
-- **Given** 存在 `PROCESSING/PAY_SUCCESS` 滞留交易
+- **Given** 存在 `INIT/PAY_SUCCESS` 滞留交易
 - **When** 执行补偿任务
 - **Then** 交易推进到可收敛终态
 

@@ -10,6 +10,8 @@ import (
 	"github.com/xmz-ai/coin/internal/service"
 )
 
+const outboxClaimProcessLease = 30 * time.Minute
+
 // Repo is an in-memory repository used by tests.
 type Repo struct {
 	mu sync.RWMutex
@@ -42,10 +44,11 @@ type AccountChange struct {
 }
 
 type outboxRecord struct {
-	event   service.OutboxEventDelivery
-	status  string
-	retries int
-	nextAt  time.Time
+	event     service.OutboxEventDelivery
+	status    string
+	retries   int
+	nextAt    time.Time
+	updatedAt time.Time
 }
 
 func New() *Repo {
@@ -484,8 +487,9 @@ func (r *Repo) ApplyTransferCreditStage(txnNo, creditAccountNo string, amount in
 				Status:        txn.Status,
 				RetryCount:    0,
 			},
-			status:  "PENDING",
-			retries: 0,
+			status:    "PENDING",
+			retries:   0,
+			updatedAt: time.Now().UTC(),
 		}
 		r.outboxEventOrder = append(r.outboxEventOrder, eventID)
 	}
@@ -580,8 +584,9 @@ func (r *Repo) ApplyRefundCreditStage(refundTxnNo, creditAccountNo string, amoun
 				Status:        refund.Status,
 				RetryCount:    0,
 			},
-			status:  "PENDING",
-			retries: 0,
+			status:    "PENDING",
+			retries:   0,
+			updatedAt: time.Now().UTC(),
 		}
 		r.outboxEventOrder = append(r.outboxEventOrder, eventID)
 	}
@@ -628,8 +633,9 @@ func (r *Repo) ApplyRefund(refundTxnNo, originTxnNo string, amount int64) (left 
 					Status:        refund.Status,
 					RetryCount:    0,
 				},
-				status:  "PENDING",
-				retries: 0,
+				status:    "PENDING",
+				retries:   0,
+				updatedAt: time.Now().UTC(),
 			}
 			r.outboxEventOrder = append(r.outboxEventOrder, eventID)
 		}
@@ -661,21 +667,30 @@ func (r *Repo) ClaimDueOutboxEvents(limit int, now time.Time) ([]service.OutboxE
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	now = now.UTC()
 	if limit <= 0 {
 		limit = 100
 	}
 	items := make([]service.OutboxEventDelivery, 0, limit)
+	staleBefore := time.Now().UTC().Add(-outboxClaimProcessLease)
 	for _, id := range r.outboxEventOrder {
 		rec, ok := r.outboxByEventID[id]
 		if !ok {
 			continue
 		}
-		if rec.status != "PENDING" {
+		claimable := false
+		switch rec.status {
+		case "PENDING":
+			claimable = rec.nextAt.IsZero() || !rec.nextAt.After(now)
+		case "PROCESSING":
+			claimable = !rec.updatedAt.IsZero() && !rec.updatedAt.After(staleBefore)
+		}
+		if !claimable {
 			continue
 		}
-		if !rec.nextAt.IsZero() && rec.nextAt.After(now.UTC()) {
-			continue
-		}
+		rec.status = "PROCESSING"
+		rec.updatedAt = now
+		r.outboxByEventID[id] = rec
 		items = append(items, rec.event)
 		if len(items) >= limit {
 			break
@@ -688,10 +703,12 @@ func (r *Repo) ClaimDueOutboxEventsByTxnNo(txnNo string, limit int, now time.Tim
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	now = now.UTC()
 	if limit <= 0 {
 		limit = 100
 	}
 	items := make([]service.OutboxEventDelivery, 0, limit)
+	staleBefore := time.Now().UTC().Add(-outboxClaimProcessLease)
 	for _, id := range r.outboxEventOrder {
 		rec, ok := r.outboxByEventID[id]
 		if !ok {
@@ -700,12 +717,19 @@ func (r *Repo) ClaimDueOutboxEventsByTxnNo(txnNo string, limit int, now time.Tim
 		if rec.event.TxnNo != txnNo {
 			continue
 		}
-		if rec.status != "PENDING" {
+		claimable := false
+		switch rec.status {
+		case "PENDING":
+			claimable = rec.nextAt.IsZero() || !rec.nextAt.After(now)
+		case "PROCESSING":
+			claimable = !rec.updatedAt.IsZero() && !rec.updatedAt.After(staleBefore)
+		}
+		if !claimable {
 			continue
 		}
-		if !rec.nextAt.IsZero() && rec.nextAt.After(now.UTC()) {
-			continue
-		}
+		rec.status = "PROCESSING"
+		rec.updatedAt = now
+		r.outboxByEventID[id] = rec
 		items = append(items, rec.event)
 		if len(items) >= limit {
 			break
@@ -723,6 +747,7 @@ func (r *Repo) MarkOutboxEventSuccess(eventID string) error {
 		return nil
 	}
 	rec.status = service.NotifyStatusSuccess
+	rec.updatedAt = time.Now().UTC()
 	r.outboxByEventID[eventID] = rec
 	return nil
 }
@@ -743,6 +768,7 @@ func (r *Repo) MarkOutboxEventRetry(eventID string, retryCount int, nextRetryAt 
 	} else {
 		rec.status = "PENDING"
 	}
+	rec.updatedAt = time.Now().UTC()
 	r.outboxByEventID[eventID] = rec
 	return nil
 }
