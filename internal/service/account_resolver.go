@@ -1,11 +1,23 @@
 package service
 
 type AccountResolver struct {
-	repo Repository
+	repo                Repository
+	customerProvisioner CustomerAccountProvisioner
 }
 
-func NewAccountResolver(repo Repository) *AccountResolver {
-	return &AccountResolver{repo: repo}
+type CustomerAccountProvisioner interface {
+	EnsureCustomerAccountForCredit(merchantNo, outUserID string) (string, error)
+}
+
+func NewAccountResolver(repo Repository, customerProvisioners ...CustomerAccountProvisioner) *AccountResolver {
+	var provisioner CustomerAccountProvisioner
+	if len(customerProvisioners) > 0 {
+		provisioner = customerProvisioners[0]
+	}
+	return &AccountResolver{
+		repo:                repo,
+		customerProvisioner: provisioner,
+	}
 }
 
 func (r *AccountResolver) ResolveCustomerAccount(merchantNo, accountNo, outUserID string) (string, error) {
@@ -69,4 +81,11 @@ func (r *AccountResolver) ResolveMerchantSystemAccount(merchantNo, accountNo, ou
 		return m.ReceivableAccountNo, nil
 	}
 	return "", nil
+}
+
+func (r *AccountResolver) EnsureCustomerAccountForCredit(merchantNo, outUserID string) (string, error) {
+	if r.customerProvisioner == nil {
+		return "", nil
+	}
+	return r.customerProvisioner.EnsureCustomerAccountForCredit(merchantNo, outUserID)
 }

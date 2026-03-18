@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/xmz-ai/coin/internal/service"
 )
 
 var ErrMerchantNoMismatch = errors.New("merchant_no mismatch")
@@ -20,9 +21,16 @@ type MerchantSecretVersionReader interface {
 }
 
 type ProtectedRoutesOptions struct {
-	AuthMiddleware gin.HandlerFunc
-	SecretRotator  MerchantSecretRotator
-	Business       *BusinessHandler
+	AuthMiddleware  gin.HandlerFunc
+	SecretRotator   MerchantSecretRotator
+	Business        *BusinessHandler
+	MerchantCreator MerchantCreator
+}
+
+type MerchantCreator interface {
+	CreateMerchant(merchantNo, name string) (service.Merchant, error)
+	UpsertMerchantFeatureConfig(merchantNo string, autoCreateAccountOnCustomerCreate, autoCreateCustomerOnCredit bool) error
+	GetMerchantFeatureConfig(merchantNo string) (service.MerchantFeatureConfig, bool, error)
 }
 
 func NewRouter() *gin.Engine {
@@ -38,7 +46,65 @@ func NewRouter() *gin.Engine {
 }
 
 func RegisterProtectedRoutes(r *gin.Engine, opts ProtectedRoutesOptions) {
-	if r == nil || opts.AuthMiddleware == nil {
+	if r == nil {
+		return
+	}
+
+	v1Public := r.Group("/api/v1")
+	if opts.MerchantCreator != nil && opts.SecretRotator != nil {
+		v1Public.POST("/merchants", func(c *gin.Context) {
+			var req struct {
+				Name                              string `json:"name"`
+				AutoCreateAccountOnCustomerCreate *bool  `json:"auto_create_account_on_customer_create"`
+				AutoCreateCustomerOnCredit        *bool  `json:"auto_create_customer_on_credit"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil {
+				writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid request body")
+				return
+			}
+			req.Name = strings.TrimSpace(req.Name)
+			if req.Name == "" {
+				writeError(c, http.StatusBadRequest, "INVALID_PARAM", "name is required")
+				return
+			}
+
+			autoCreateAccountOnCustomerCreate := true
+			if req.AutoCreateAccountOnCustomerCreate != nil {
+				autoCreateAccountOnCustomerCreate = *req.AutoCreateAccountOnCustomerCreate
+			}
+			autoCreateCustomerOnCredit := true
+			if req.AutoCreateCustomerOnCredit != nil {
+				autoCreateCustomerOnCredit = *req.AutoCreateCustomerOnCredit
+			}
+
+			merchant, err := opts.MerchantCreator.CreateMerchant("", req.Name)
+			if err != nil {
+				writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "create merchant failed")
+				return
+			}
+			if err := opts.MerchantCreator.UpsertMerchantFeatureConfig(merchant.MerchantNo, autoCreateAccountOnCustomerCreate, autoCreateCustomerOnCredit); err != nil {
+				writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "save merchant feature config failed")
+				return
+			}
+			secret, version, err := opts.SecretRotator.RotateSecret(c.Request.Context(), merchant.MerchantNo)
+			if err != nil {
+				writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "rotate merchant secret failed")
+				return
+			}
+
+			writeCreated(c, gin.H{
+				"merchant_no":                            merchant.MerchantNo,
+				"merchant_secret":                        secret,
+				"budget_account_no":                      merchant.BudgetAccountNo,
+				"receivable_account_no":                  merchant.ReceivableAccountNo,
+				"secret_version":                         version,
+				"auto_create_account_on_customer_create": autoCreateAccountOnCustomerCreate,
+				"auto_create_customer_on_credit":         autoCreateCustomerOnCredit,
+			})
+		})
+	}
+
+	if opts.AuthMiddleware == nil {
 		return
 	}
 
@@ -74,6 +140,20 @@ func RegisterProtectedRoutes(r *gin.Engine, opts ProtectedRoutesOptions) {
 			data["name"] = merchant.Name
 			data["budget_account_no"] = merchant.BudgetAccountNo
 			data["receivable_account_no"] = merchant.ReceivableAccountNo
+		}
+		if opts.MerchantCreator != nil {
+			featureCfg, found, err := opts.MerchantCreator.GetMerchantFeatureConfig(merchantNo)
+			if err != nil {
+				writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "load merchant feature config failed")
+				return
+			}
+			if found {
+				data["auto_create_account_on_customer_create"] = featureCfg.AutoCreateAccountOnCustomerCreate
+				data["auto_create_customer_on_credit"] = featureCfg.AutoCreateCustomerOnCredit
+			} else {
+				data["auto_create_account_on_customer_create"] = true
+				data["auto_create_customer_on_credit"] = true
+			}
 		}
 
 		writeSuccess(c, data)

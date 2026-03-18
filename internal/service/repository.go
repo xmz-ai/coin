@@ -11,6 +11,11 @@ type WebhookConfig struct {
 	Enabled bool
 }
 
+type MerchantFeatureConfig struct {
+	AutoCreateAccountOnCustomerCreate bool
+	AutoCreateCustomerOnCredit        bool
+}
+
 type OutboxEventDelivery struct {
 	EventID       string
 	TxnNo         string
@@ -28,6 +33,8 @@ type OutboxEventDelivery struct {
 type Repository interface {
 	CreateMerchant(m domain.Merchant) error
 	GetMerchantByNo(merchantNo string) (domain.Merchant, bool)
+	UpsertMerchantFeatureConfig(merchantNo string, autoCreateAccountOnCustomerCreate, autoCreateCustomerOnCredit bool) error
+	GetMerchantFeatureConfig(merchantNo string) (MerchantFeatureConfig, bool, error)
 
 	CreateAccount(a domain.Account) error
 	GetAccount(accountNo string) (domain.Account, bool)

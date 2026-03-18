@@ -66,22 +66,25 @@ type CodeSequence struct {
 }
 
 type Customer struct {
-	CustomerID pgtype.UUID
-	CustomerNo string
-	MerchantNo string
-	OutUserID  string
-	CreatedAt  pgtype.Timestamptz
-	UpdatedAt  pgtype.Timestamptz
+	CustomerID       pgtype.UUID
+	CustomerNo       string
+	MerchantNo       string
+	OutUserID        string
+	CreatedAt        pgtype.Timestamptz
+	UpdatedAt        pgtype.Timestamptz
+	DefaultAccountNo pgtype.Text
 }
 
 type Merchant struct {
-	MerchantID          pgtype.UUID
-	MerchantNo          string
-	Name                string
-	BudgetAccountNo     string
-	ReceivableAccountNo string
-	CreatedAt           pgtype.Timestamptz
-	UpdatedAt           pgtype.Timestamptz
+	MerchantID                        pgtype.UUID
+	MerchantNo                        string
+	Name                              string
+	BudgetAccountNo                   string
+	ReceivableAccountNo               string
+	CreatedAt                         pgtype.Timestamptz
+	UpdatedAt                         pgtype.Timestamptz
+	AutoCreateAccountOnCustomerCreate bool
+	AutoCreateCustomerOnCredit        bool
 }
 
 type MerchantApiCredential struct {

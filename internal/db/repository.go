@@ -87,6 +87,46 @@ func (r *Repository) GetMerchantByNo(merchantNo string) (service.Merchant, bool)
 	}, true
 }
 
+func (r *Repository) UpsertMerchantFeatureConfig(merchantNo string, autoCreateAccountOnCustomerCreate, autoCreateCustomerOnCredit bool) error {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE merchant
+		SET auto_create_account_on_customer_create = $2,
+			auto_create_customer_on_credit = $3,
+			updated_at = NOW()
+		WHERE merchant_no = $1
+	`, merchantNo, autoCreateAccountOnCustomerCreate, autoCreateCustomerOnCredit)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return service.ErrInvalidMerchantNo
+	}
+	return err
+}
+
+func (r *Repository) GetMerchantFeatureConfig(merchantNo string) (service.MerchantFeatureConfig, bool, error) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	var cfg service.MerchantFeatureConfig
+	err := r.pool.QueryRow(ctx, `
+		SELECT auto_create_account_on_customer_create, auto_create_customer_on_credit
+		FROM merchant
+		WHERE merchant_no = $1
+		LIMIT 1
+	`, merchantNo).Scan(&cfg.AutoCreateAccountOnCustomerCreate, &cfg.AutoCreateCustomerOnCredit)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return service.MerchantFeatureConfig{}, false, nil
+	}
+	if err != nil {
+		return service.MerchantFeatureConfig{}, false, err
+	}
+	return cfg, true, nil
+}
+
 func (r *Repository) CreateAccount(a service.Account) error {
 	ctx, cancel := r.withTimeout()
 	defer cancel()
@@ -109,6 +149,18 @@ func (r *Repository) CreateAccount(a service.Account) error {
 	if isUniqueViolation(err) {
 		return service.ErrAccountNoExists
 	}
+	if err != nil {
+		return err
+	}
+
+	if customerNo == "" {
+		return nil
+	}
+	_, err = r.queries.SetCustomerDefaultAccountIfEmpty(ctx, dbsqlc.SetCustomerDefaultAccountIfEmptyParams{
+		DefaultAccountNo: nullableText(a.AccountNo),
+		MerchantNo:       a.MerchantNo,
+		CustomerNo:       customerNo,
+	})
 	return err
 }
 
@@ -193,10 +245,11 @@ func (r *Repository) CreateCustomer(c service.Customer) error {
 	}
 
 	err = r.queries.CreateCustomer(ctx, dbsqlc.CreateCustomerParams{
-		CustomerID: customerID,
-		CustomerNo: c.CustomerNo,
-		MerchantNo: c.MerchantNo,
-		OutUserID:  c.OutUserID,
+		CustomerID:       customerID,
+		CustomerNo:       c.CustomerNo,
+		MerchantNo:       c.MerchantNo,
+		OutUserID:        c.OutUserID,
+		DefaultAccountNo: nullableText(strings.TrimSpace(c.DefaultAccountNo)),
 	})
 	if isUniqueViolation(err) {
 		return service.ErrCustomerExists
@@ -219,10 +272,11 @@ func (r *Repository) GetCustomerByOutUserID(merchantNo, outUserID string) (servi
 		return service.Customer{}, false
 	}
 	return service.Customer{
-		CustomerID: row.CustomerID,
-		CustomerNo: row.CustomerNo,
-		MerchantNo: row.MerchantNo,
-		OutUserID:  row.OutUserID,
+		CustomerID:       row.CustomerID,
+		CustomerNo:       row.CustomerNo,
+		MerchantNo:       row.MerchantNo,
+		OutUserID:        row.OutUserID,
+		DefaultAccountNo: strings.TrimSpace(row.DefaultAccountNo),
 	}, true
 }
 
@@ -257,7 +311,7 @@ func (r *Repository) GetAccountByCustomerNo(merchantNo, customerNo string) (serv
 
 	accountNo, err := r.queries.GetAccountNoByCustomerNo(ctx, dbsqlc.GetAccountNoByCustomerNoParams{
 		MerchantNo: merchantNo,
-		CustomerNo: nullableText(customerNo),
+		CustomerNo: customerNo,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return service.Account{}, false
@@ -265,8 +319,11 @@ func (r *Repository) GetAccountByCustomerNo(merchantNo, customerNo string) (serv
 	if err != nil {
 		return service.Account{}, false
 	}
+	if !accountNo.Valid || strings.TrimSpace(accountNo.String) == "" {
+		return service.Account{}, false
+	}
 
-	row, err := r.queries.GetAccountByNo(ctx, accountNo)
+	row, err := r.queries.GetAccountByNo(ctx, strings.TrimSpace(accountNo.String))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return service.Account{}, false
 	}

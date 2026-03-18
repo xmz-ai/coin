@@ -4,6 +4,8 @@ sql:
     schema:
       - "migrations/000001_init.up.sql"
       - "migrations/000002_txn_credit_expire_at.up.sql"
+      - "migrations/000003_merchant_auto_create_flags.up.sql"
+      - "migrations/000004_customer_default_account_no.up.sql"
     queries:
       - "internal/db/sql"
     gen:

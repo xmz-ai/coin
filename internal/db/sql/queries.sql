@@ -79,11 +79,11 @@ WHERE a.account_no = sqlc.arg(account_no)
 LIMIT 1;
 
 -- name: GetAccountNoByCustomerNo :one
-SELECT a.account_no
-FROM account a
-WHERE a.merchant_no = sqlc.arg(merchant_no)
-  AND a.customer_no = sqlc.arg(customer_no)
-ORDER BY a.account_no
+SELECT c.default_account_no
+FROM customer c
+WHERE c.merchant_no = sqlc.arg(merchant_no)
+  AND c.customer_no = sqlc.arg(customer_no)
+  AND c.default_account_no IS NOT NULL
 LIMIT 1;
 
 -- name: UpdateAccountCapabilities :exec
@@ -95,12 +95,13 @@ SET allow_debit_out = sqlc.arg(allow_debit_out),
 WHERE account_no = sqlc.arg(account_no);
 
 -- name: CreateCustomer :exec
-INSERT INTO customer (customer_id, customer_no, merchant_no, out_user_id)
+INSERT INTO customer (customer_id, customer_no, merchant_no, out_user_id, default_account_no)
 VALUES (
   sqlc.arg(customer_id)::uuid,
   sqlc.arg(customer_no),
   sqlc.arg(merchant_no),
-  sqlc.arg(out_user_id)
+  sqlc.arg(out_user_id),
+  sqlc.narg(default_account_no)
 );
 
 -- name: GetCustomerByOutUserID :one
@@ -108,11 +109,27 @@ SELECT
   c.customer_id::text AS customer_id,
   c.customer_no,
   c.merchant_no,
-  c.out_user_id
+  c.out_user_id,
+  COALESCE(c.default_account_no, '') AS default_account_no
 FROM customer c
 WHERE c.merchant_no = sqlc.arg(merchant_no)
   AND c.out_user_id = sqlc.arg(out_user_id)
 LIMIT 1;
+
+-- name: SetCustomerDefaultAccountIfEmpty :execrows
+UPDATE customer c
+SET default_account_no = sqlc.arg(default_account_no),
+    updated_at = NOW()
+WHERE c.merchant_no = sqlc.arg(merchant_no)
+  AND c.customer_no = sqlc.arg(customer_no)
+  AND c.default_account_no IS NULL
+  AND EXISTS (
+    SELECT 1
+    FROM account a
+    WHERE a.account_no = sqlc.arg(default_account_no)
+      AND a.merchant_no = c.merchant_no
+      AND a.customer_no = c.customer_no
+  );
 
 -- name: CreateTransferTxn :exec
 INSERT INTO txn (

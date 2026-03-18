@@ -213,20 +213,22 @@ func (q *Queries) CreateAccount(ctx context.Context, arg CreateAccountParams) er
 }
 
 const createCustomer = `-- name: CreateCustomer :exec
-INSERT INTO customer (customer_id, customer_no, merchant_no, out_user_id)
+INSERT INTO customer (customer_id, customer_no, merchant_no, out_user_id, default_account_no)
 VALUES (
   $1::uuid,
   $2,
   $3,
-  $4
+  $4,
+  $5
 )
 `
 
 type CreateCustomerParams struct {
-	CustomerID pgtype.UUID
-	CustomerNo string
-	MerchantNo string
-	OutUserID  string
+	CustomerID       pgtype.UUID
+	CustomerNo       string
+	MerchantNo       string
+	OutUserID        string
+	DefaultAccountNo pgtype.Text
 }
 
 func (q *Queries) CreateCustomer(ctx context.Context, arg CreateCustomerParams) error {
@@ -235,6 +237,7 @@ func (q *Queries) CreateCustomer(ctx context.Context, arg CreateCustomerParams) 
 		arg.CustomerNo,
 		arg.MerchantNo,
 		arg.OutUserID,
+		arg.DefaultAccountNo,
 	)
 	return err
 }
@@ -464,24 +467,24 @@ func (q *Queries) GetAccountForUpdateByNo(ctx context.Context, accountNo string)
 }
 
 const getAccountNoByCustomerNo = `-- name: GetAccountNoByCustomerNo :one
-SELECT a.account_no
-FROM account a
-WHERE a.merchant_no = $1
-  AND a.customer_no = $2
-ORDER BY a.account_no
+SELECT c.default_account_no
+FROM customer c
+WHERE c.merchant_no = $1
+  AND c.customer_no = $2
+  AND c.default_account_no IS NOT NULL
 LIMIT 1
 `
 
 type GetAccountNoByCustomerNoParams struct {
 	MerchantNo string
-	CustomerNo pgtype.Text
+	CustomerNo string
 }
 
-func (q *Queries) GetAccountNoByCustomerNo(ctx context.Context, arg GetAccountNoByCustomerNoParams) (string, error) {
+func (q *Queries) GetAccountNoByCustomerNo(ctx context.Context, arg GetAccountNoByCustomerNoParams) (pgtype.Text, error) {
 	row := q.db.QueryRow(ctx, getAccountNoByCustomerNo, arg.MerchantNo, arg.CustomerNo)
-	var account_no string
-	err := row.Scan(&account_no)
-	return account_no, err
+	var default_account_no pgtype.Text
+	err := row.Scan(&default_account_no)
+	return default_account_no, err
 }
 
 const getActiveSecretCiphertext = `-- name: GetActiveSecretCiphertext :one
@@ -505,7 +508,8 @@ SELECT
   c.customer_id::text AS customer_id,
   c.customer_no,
   c.merchant_no,
-  c.out_user_id
+  c.out_user_id,
+  COALESCE(c.default_account_no, '') AS default_account_no
 FROM customer c
 WHERE c.merchant_no = $1
   AND c.out_user_id = $2
@@ -518,10 +522,11 @@ type GetCustomerByOutUserIDParams struct {
 }
 
 type GetCustomerByOutUserIDRow struct {
-	CustomerID string
-	CustomerNo string
-	MerchantNo string
-	OutUserID  string
+	CustomerID       string
+	CustomerNo       string
+	MerchantNo       string
+	OutUserID        string
+	DefaultAccountNo string
 }
 
 func (q *Queries) GetCustomerByOutUserID(ctx context.Context, arg GetCustomerByOutUserIDParams) (GetCustomerByOutUserIDRow, error) {
@@ -532,6 +537,7 @@ func (q *Queries) GetCustomerByOutUserID(ctx context.Context, arg GetCustomerByO
 		&i.CustomerNo,
 		&i.MerchantNo,
 		&i.OutUserID,
+		&i.DefaultAccountNo,
 	)
 	return i, err
 }
@@ -1490,6 +1496,36 @@ WHERE event_id = $1::uuid
 func (q *Queries) MarkOutboxEventSuccess(ctx context.Context, eventID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, markOutboxEventSuccess, eventID)
 	return err
+}
+
+const setCustomerDefaultAccountIfEmpty = `-- name: SetCustomerDefaultAccountIfEmpty :execrows
+UPDATE customer c
+SET default_account_no = $1,
+    updated_at = NOW()
+WHERE c.merchant_no = $2
+  AND c.customer_no = $3
+  AND c.default_account_no IS NULL
+  AND EXISTS (
+    SELECT 1
+    FROM account a
+    WHERE a.account_no = $1
+      AND a.merchant_no = c.merchant_no
+      AND a.customer_no = c.customer_no
+  )
+`
+
+type SetCustomerDefaultAccountIfEmptyParams struct {
+	DefaultAccountNo pgtype.Text
+	MerchantNo       string
+	CustomerNo       string
+}
+
+func (q *Queries) SetCustomerDefaultAccountIfEmpty(ctx context.Context, arg SetCustomerDefaultAccountIfEmptyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setCustomerDefaultAccountIfEmpty, arg.DefaultAccountNo, arg.MerchantNo, arg.CustomerNo)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const tryDecreaseTxnRefundable = `-- name: TryDecreaseTxnRefundable :one

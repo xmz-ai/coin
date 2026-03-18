@@ -9,8 +9,9 @@ type Merchant struct {
 }
 
 type Customer struct {
-	CustomerID string
-	CustomerNo string
-	MerchantNo string
-	OutUserID  string
+	CustomerID       string
+	CustomerNo       string
+	MerchantNo       string
+	OutUserID        string
+	DefaultAccountNo string
 }

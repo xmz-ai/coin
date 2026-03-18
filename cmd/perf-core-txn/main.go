@@ -491,7 +491,7 @@ func setupPerfServer(
 	customerSvc := service.NewCustomerService(repo, ids)
 	transferSvc := service.NewTransferService(repo, ids)
 	transferRoutingSvc := service.NewTransferRoutingService(repo)
-	accountResolver := service.NewAccountResolver(repo)
+	accountResolver := service.NewAccountResolver(repo, customerSvc)
 	querySvc := service.NewTxnQueryService(repo)
 
 	merchant, err := merchantSvc.CreateMerchant("", "perf-core-txn")
@@ -624,9 +624,10 @@ func setupPerfServer(
 
 	r := api.NewRouter()
 	api.RegisterProtectedRoutes(r, api.ProtectedRoutesOptions{
-		AuthMiddleware: authMw,
-		SecretRotator:  secretManager,
-		Business:       business,
+		AuthMiddleware:  authMw,
+		SecretRotator:   secretManager,
+		Business:        business,
+		MerchantCreator: merchantSvc,
 	})
 	return &perfRuntime{
 		Server:                httptest.NewServer(r),

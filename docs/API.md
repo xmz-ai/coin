@@ -130,7 +130,9 @@ Request:
 
 ```json
 {
-  "name": "Demo Merchant"
+  "name": "Demo Merchant",
+  "auto_create_account_on_customer_create": true,
+  "auto_create_customer_on_credit": true
 }
 ```
 
@@ -144,7 +146,9 @@ Response:
     "merchant_no": "1000123456789012",
     "merchant_secret": "msk_xxx_only_once",
     "budget_account_no": "6217701201001234567",
-    "receivable_account_no": "6217701202001234566"
+    "receivable_account_no": "6217701202001234566",
+    "auto_create_account_on_customer_create": true,
+    "auto_create_customer_on_credit": true
   }
 }
 ```
@@ -152,6 +156,7 @@ Response:
 规则：
 1. `merchant_secret` 仅返回一次。
 2. 同事务创建商户 + 预算账户 + 收款账户 + 绑定关系。
+3. `auto_create_account_on_customer_create` / `auto_create_customer_on_credit` 为可选开关，默认 `true`。
 
 ## 2.2 轮转商户密钥
 
@@ -196,7 +201,9 @@ Response:
     "status": "ACTIVE",
     "budget_account_no": "6217701201001234567",
     "receivable_account_no": "6217701202001234566",
-    "secret_version": 2
+    "secret_version": 2,
+    "auto_create_account_on_customer_create": true,
+    "auto_create_customer_on_credit": true
   }
 }
 ```
