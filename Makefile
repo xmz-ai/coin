@@ -6,11 +6,8 @@ GOCACHE ?= $(CURDIR)/.cache/go-build
 test:
 	bash ./scripts/test/test.sh
 
-smoke:
-	bash ./scripts/test/test.sh
-
-test-pg:
-	bash ./scripts/test/test.sh
+perf:
+	bash ./scripts/test/perf_core_txn_real.sh
 
 sqlc:
 	go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.27.0 generate
