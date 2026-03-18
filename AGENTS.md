@@ -33,6 +33,7 @@
   - `tests/unit`: pure logic
   - `tests/integration`: repository/service flow
   - `tests/e2e`: script-level smoke
+- In sandboxed agent environments, default to requesting escalated permissions before running test commands (`make test`, `go test`, `scripts/test/*.sh`) to avoid Docker socket and local port access failures.
 - For PG tests, set `COIN_TEST_POSTGRES_DSN`; use `COIN_TEST_PG_KEEP_SCHEMA=1` to inspect schemas after run.
 - For accounting changes, assert both balances and change logs.
 
