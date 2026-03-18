@@ -205,5 +205,5 @@
 
 ### 10.4 回归执行结果
 
-- `bash ./scripts/test/postgres.sh`：通过（已覆盖 TC9001~TC9005、TC9010~TC9020、TC9014~TC9019）。
+- `bash ./scripts/test/test.sh`：通过（已覆盖 TC9001~TC9005、TC9010~TC9020、TC9014~TC9019）。
 - `go test ./...`：通过。
