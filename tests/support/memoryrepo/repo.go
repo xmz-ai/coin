@@ -514,6 +514,9 @@ func (r *Repo) ApplyRefundDebitStage(refundTxnNo string, amount int64) (bool, er
 	if origin.MerchantNo != refund.MerchantNo {
 		return false, service.ErrTxnNotFound
 	}
+	if origin.BizType != service.BizTypeTransfer || origin.Status != service.TxnStatusRecvSuccess {
+		return false, service.ErrTxnStatusInvalid
+	}
 	if origin.RefundableAmount < amount {
 		return false, service.ErrRefundAmountExceeded
 	}

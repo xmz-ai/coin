@@ -81,6 +81,8 @@
 - `INSUFFICIENT_BALANCE`
 - `DUPLICATE_OUT_TRADE_NO`
 - `TXN_NOT_FOUND`
+- `REFUND_ORIGIN_NOT_FOUND`
+- `REFUND_ORIGIN_INVALID`
 - `REFUND_AMOUNT_EXCEEDED`
 - `REFUND_ORIGIN_BOOK_TRACE_MISSING`
 - `TXN_STATUS_INVALID`
@@ -109,6 +111,8 @@
 | `INSUFFICIENT_BALANCE` | 409 | 否 | 充值/调账后重试 |
 | `DUPLICATE_OUT_TRADE_NO` | 409 | 否 | 重复下单不被支持，请查单或更换 `out_trade_no` |
 | `TXN_NOT_FOUND` | 404 | 否 | 检查 `txn_no/out_trade_no` |
+| `REFUND_ORIGIN_NOT_FOUND` | 409 | 否 | 确认原单是否存在且归属当前商户 |
+| `REFUND_ORIGIN_INVALID` | 409 | 否 | 原单必须是 `TRANSFER` 且状态为 `RECV_SUCCESS` |
 | `REFUND_AMOUNT_EXCEEDED` | 409 | 否 | 降低退款金额或查询可退余额 |
 | `REFUND_ORIGIN_BOOK_TRACE_MISSING` | 409 | 否 | 检查原单账本分录是否完整并联系平台排查 |
 | `TXN_STATUS_INVALID` | 409 | 否 | 按状态机允许路径操作 |
@@ -493,9 +497,17 @@ Request:
 ```
 
 校验：
-1. 原单存在且可退
-2. `amount <= origin.refundable_amount`
-3. 并发退款通过 CAS 保证不超退
+1. 同步提交阶段：仅校验请求参数与幂等（`out_trade_no/refund_of_txn_no/amount`）。
+2. 异步执行阶段：原单必须存在、归属当前商户，且 `biz_type=TRANSFER`、`status=RECV_SUCCESS`。
+3. 异步执行阶段：`amount <= origin.refundable_amount`，并发退款通过 CAS 保证不超退。
+
+输出：
+- 提交响应固定返回 `txn_no/status`（`status=INIT`）。
+- 可退余额变化与失败原因通过查单获取（如 `REFUND_ORIGIN_NOT_FOUND/REFUND_ORIGIN_INVALID/REFUND_AMOUNT_EXCEEDED`）。
+
+说明：
+- HTTP 状态码为 `201 Created`
+- 建单成功即返回，服务端优先进程内异步执行；轮询 worker 仅用于故障恢复兜底
 
 ## 4.5 查询交易
 
@@ -689,7 +701,7 @@ Response:
 ## 7. 状态机与事务边界
 
 ## 7.1 状态机
-- `INIT -> PROCESSING -> PAY_SUCCESS -> RECV_SUCCESS`
+- `INIT -> PAY_SUCCESS -> RECV_SUCCESS`
 - 任一步异常：`-> FAILED`
 
 ## 7.2 事务边界

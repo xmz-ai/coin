@@ -85,8 +85,8 @@
 
 ### F-12 退款（REFUND）
 - 输入：`out_trade_no/refund_of_txn_no/amount`。
-- 输出：`txn_no/status/refunded_amount/origin_refundable_left`。
-- 约束：CAS 控制并发不超退。
+- 输出：`txn_no/status`（提交态）。
+- 约束：异步阶段校验原单为 `TRANSFER` 且 `RECV_SUCCESS`；并发退款通过 `refundable_amount` CAS 控制不超退。
 
 ### F-13 查询交易（单笔）
 - 输入：`txn_no` 或 `out_trade_no`。
@@ -131,7 +131,7 @@
 ## 2.6 运维治理
 
 ### F-21 交易补偿
-- 扫描滞留状态（如 `PROCESSING/PAY_SUCCESS`）推进到可收敛状态。
+- 扫描滞留状态（如 `INIT/PAY_SUCCESS`）推进到可收敛状态。
 
 ### F-22 通知补偿
 - 扫描失败通知并重试。

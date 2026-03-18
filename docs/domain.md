@@ -192,7 +192,7 @@
 - `debit_account_no`（交易借方账户）
 - `credit_account_no`（交易贷方账户）
 - `amount`
-- `status`（INIT/PROCESSING/PAY_SUCCESS/RECV_SUCCESS/FAILED）
+- `status`（INIT/PAY_SUCCESS/RECV_SUCCESS/FAILED）
 - `refund_of_txn_no`（退款单关联）
 - `refundable_amount`
 - `error_code`
@@ -266,12 +266,14 @@
 - FEFO（先到期先扣）
 - 入账写入指定 `expire_at` 对应账本（`expire_at` 必填）
 
-## 3.4 RefundService
+## 3.4 Refund Stage Pipeline
 职责：
-- 原单可退金额校验、退款账户集合校验、余额回补
+- 在异步阶段校验原单与退款单关系，并按“先扣后入”推进退款状态
 
 关键规则：
+- 原单必须 `biz_type=TRANSFER` 且 `status=RECV_SUCCESS`
 - `refundable_amount` CAS 递减控制并发退款
+- 提交接口仅返回 `txn_no/status`，最终结果通过查单获取
 
 ---
 
@@ -335,16 +337,15 @@
 
 ### 流程
 1. 创建 `txn(status=INIT)`（主单记录双方账户、金额、幂等键）
-2. 状态 `INIT -> PROCESSING`
-3. 扣借方：
+2. 扣借方并推进状态 `INIT -> PAY_SUCCESS`：
    - 非过期账户：直接减 `account.balance`
    - 过期账户：按路由规则减 `account_book.balance`，同步更新 `account.balance`
-4. 入贷方：
+3. 入贷方：
    - 非过期账户：加 `account.balance`
    - 过期账户：按 `expire_at` 写入/更新 `account_book`，同步更新 `account.balance`
-5. 写 `account_change_log`；必要时写 `account_book_change_log`
-6. 状态 `PROCESSING -> PAY_SUCCESS -> RECV_SUCCESS`
-7. 写 `outbox_event`（成功事件）
+4. 写 `account_change_log`；必要时写 `account_book_change_log`
+5. 入贷方成功后推进状态 `PAY_SUCCESS -> RECV_SUCCESS`
+6. 写 `outbox_event`（成功事件）
 
 ### 数据流
 - 写：`txn`、`account`/`account_book`、`account_change_log`、`account_book_change_log`(可选)、`outbox_event`
@@ -465,7 +466,7 @@ outbox 事件投递失败或超时。
 `API Request -> Idempotency Check -> Txn Init -> Command Execute -> Balance Mutation -> Logs -> Status Final -> Outbox -> Webhook`
 
 ## 5.2 状态流
-- `INIT -> PROCESSING -> PAY_SUCCESS -> RECV_SUCCESS`
+- `INIT -> PAY_SUCCESS -> RECV_SUCCESS`
 - 任一阶段异常：`-> FAILED`
 
 ## 5.3 记账路径分流
@@ -729,11 +730,9 @@ outbox 事件投递失败或超时。
 **Output**
 - `txn_no`
 - `status`
-- `refunded_amount`
-- `origin_refundable_left`
 
 **校验**
-- 原单可退
+- 原单必须是当前商户下的 `TRANSFER` 且状态 `RECV_SUCCESS`
 - `amount <= origin.refundable_amount`
 - 并发下 CAS 保证不超退
 

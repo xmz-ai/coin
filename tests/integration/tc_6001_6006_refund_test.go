@@ -195,6 +195,118 @@ func TestTC6004RefundCrossMerchantOriginRejected(t *testing.T) {
 	}
 }
 
+func TestTC6007RefundOriginStatusInvalidRejected(t *testing.T) {
+	repo, _, processor, merchantNo, originTxnNo, _, _ := setupRefundAsyncFixture(t)
+
+	if err := repo.UpdateTransferTxnStatus(originTxnNo, service.TxnStatusPaySuccess, "", ""); err != nil {
+		t.Fatalf("set origin status failed: %v", err)
+	}
+
+	refundTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a6007"
+	if err := repo.CreateTransferTxn(service.TransferTxn{
+		TxnNo:         refundTxnNo,
+		MerchantNo:    merchantNo,
+		OutTradeNo:    "ord_6007_refund",
+		BizType:       service.BizTypeRefund,
+		RefundOfTxnNo: originTxnNo,
+		Amount:        10,
+		Status:        service.TxnStatusInit,
+	}); err != nil {
+		t.Fatalf("create refund txn failed: %v", err)
+	}
+
+	processor.Enqueue(refundTxnNo)
+	waitTxnStatusRepo(t, repo, refundTxnNo, service.TxnStatusFailed, 2*time.Second)
+
+	refund, ok := repo.GetTransferTxn(refundTxnNo)
+	if !ok {
+		t.Fatalf("refund txn not found")
+	}
+	if refund.Status != service.TxnStatusFailed {
+		t.Fatalf("expected FAILED, got %s", refund.Status)
+	}
+	if refund.ErrorCode != "REFUND_ORIGIN_INVALID" {
+		t.Fatalf("expected REFUND_ORIGIN_INVALID, got %s", refund.ErrorCode)
+	}
+
+	origin, ok := repo.GetTransferTxn(originTxnNo)
+	if !ok {
+		t.Fatalf("origin txn not found")
+	}
+	if origin.RefundableAmount != 100 {
+		t.Fatalf("expected origin refundable_amount=100, got %d", origin.RefundableAmount)
+	}
+	events, err := repo.ClaimDueOutboxEventsByTxnNo(refundTxnNo, 10, time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("claim refund outbox events failed: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected 0 refund outbox event on failed refund, got %+v", events)
+	}
+}
+
+func TestTC6008RefundOriginBizTypeInvalidRejected(t *testing.T) {
+	repo, _, processor, merchantNo, originTxnNo, debitAccountNo, creditAccountNo := setupRefundAsyncFixture(t)
+
+	invalidOriginTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a6008"
+	if err := repo.CreateTransferTxn(service.TransferTxn{
+		TxnNo:            invalidOriginTxnNo,
+		MerchantNo:       merchantNo,
+		OutTradeNo:       "ord_6008_origin",
+		BizType:          service.BizTypeRefund,
+		RefundOfTxnNo:    originTxnNo,
+		DebitAccountNo:   debitAccountNo,
+		CreditAccountNo:  creditAccountNo,
+		Amount:           50,
+		RefundableAmount: 50,
+		Status:           service.TxnStatusRecvSuccess,
+	}); err != nil {
+		t.Fatalf("create invalid origin txn failed: %v", err)
+	}
+
+	refundTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a6009"
+	if err := repo.CreateTransferTxn(service.TransferTxn{
+		TxnNo:         refundTxnNo,
+		MerchantNo:    merchantNo,
+		OutTradeNo:    "ord_6008_refund",
+		BizType:       service.BizTypeRefund,
+		RefundOfTxnNo: invalidOriginTxnNo,
+		Amount:        10,
+		Status:        service.TxnStatusInit,
+	}); err != nil {
+		t.Fatalf("create refund txn failed: %v", err)
+	}
+
+	processor.Enqueue(refundTxnNo)
+	waitTxnStatusRepo(t, repo, refundTxnNo, service.TxnStatusFailed, 2*time.Second)
+
+	refund, ok := repo.GetTransferTxn(refundTxnNo)
+	if !ok {
+		t.Fatalf("refund txn not found")
+	}
+	if refund.Status != service.TxnStatusFailed {
+		t.Fatalf("expected FAILED, got %s", refund.Status)
+	}
+	if refund.ErrorCode != "REFUND_ORIGIN_INVALID" {
+		t.Fatalf("expected REFUND_ORIGIN_INVALID, got %s", refund.ErrorCode)
+	}
+
+	origin, ok := repo.GetTransferTxn(invalidOriginTxnNo)
+	if !ok {
+		t.Fatalf("invalid origin txn not found")
+	}
+	if origin.RefundableAmount != 50 {
+		t.Fatalf("expected invalid origin refundable_amount=50, got %d", origin.RefundableAmount)
+	}
+	events, err := repo.ClaimDueOutboxEventsByTxnNo(refundTxnNo, 10, time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("claim refund outbox events failed: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected 0 refund outbox event on failed refund, got %+v", events)
+	}
+}
+
 func TestTC6005ConcurrentRefundDoesNotExceed(t *testing.T) {
 	repo, _, _, merchantNo, originTxnNo, _, _ := setupRefundAsyncFixture(t)
 

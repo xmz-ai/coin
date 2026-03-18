@@ -59,7 +59,6 @@ type Repository interface {
 	ApplyTransferCreditStage(txnNo, creditAccountNo string, amount int64) (bool, error)
 	ApplyRefundDebitStage(refundTxnNo string, amount int64) (bool, error)
 	ApplyRefundCreditStage(refundTxnNo, creditAccountNo string, amount int64) (bool, error)
-	ApplyRefund(refundTxnNo, originTxnNo string, amount int64) (left int64, ok bool, err error)
 	TxnCount() int
 
 	UpsertWebhookConfig(merchantNo, url string, enabled bool) error

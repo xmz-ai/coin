@@ -359,6 +359,8 @@ func (p *TransferAsyncProcessor) refundDebitErrorCode(err error) string {
 	switch {
 	case errors.Is(err, ErrTxnNotFound):
 		return "REFUND_ORIGIN_NOT_FOUND"
+	case errors.Is(err, ErrTxnStatusInvalid):
+		return "REFUND_ORIGIN_INVALID"
 	case errors.Is(err, ErrRefundAmountExceeded):
 		return "REFUND_AMOUNT_EXCEEDED"
 	default:
