@@ -29,6 +29,9 @@ func TestTC9001PostgresRepositoryCoreFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create merchant failed: %v", err)
 	}
+	if err := ms.UpsertMerchantFeatureConfig(m.MerchantNo, false, true); err != nil {
+		t.Fatalf("upsert merchant feature config failed: %v", err)
+	}
 	if _, err := ms.CreateMerchant(m.MerchantNo, "demo2"); !errors.Is(err, service.ErrMerchantNoExists) {
 		t.Fatalf("expected ErrMerchantNoExists, got %v", err)
 	}
@@ -41,7 +44,7 @@ func TestTC9001PostgresRepositoryCoreFlow(t *testing.T) {
 		t.Fatalf("expected ErrCustomerExists, got %v", err)
 	}
 
-	customerAccountNo := "6217701201900100011"
+	customerAccountNo := "1000000000009001001"
 	if err := repo.CreateAccount(service.Account{
 		AccountNo:     customerAccountNo,
 		MerchantNo:    m.MerchantNo,
@@ -77,4 +80,3 @@ func TestTC9001PostgresRepositoryCoreFlow(t *testing.T) {
 		t.Fatalf("expected applied change count=3 (1 from transfer + 2 manual), got %d", got)
 	}
 }
-

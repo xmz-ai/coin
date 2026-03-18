@@ -86,6 +86,39 @@ func TestTC2003CreateCustomerSuccess(t *testing.T) {
 	}
 }
 
+func TestTC2003CreateCustomerAutoCreatesDefaultAccountWhenFeatureEnabled(t *testing.T) {
+	repo := db.NewRepository(setupPostgresPool(t))
+	ids := idpkg.NewFixedUUIDProvider([]string{
+		"01956f4e-7b3e-7a4d-9f6b-4d9de4f7c001",
+		"01956f4e-8c11-71aa-b2d2-2b079f7e1001",
+	})
+	ms := service.NewMerchantService(repo, ids)
+	cs := service.NewCustomerService(repo, ids)
+
+	m, err := ms.CreateMerchant("", "demo")
+	if err != nil {
+		t.Fatalf("create merchant failed: %v", err)
+	}
+	if err := ms.UpsertMerchantFeatureConfig(m.MerchantNo, true, false); err != nil {
+		t.Fatalf("upsert merchant feature config failed: %v", err)
+	}
+
+	c, err := cs.CreateCustomer(m.MerchantNo, "u_90001_auto")
+	if err != nil {
+		t.Fatalf("create customer failed: %v", err)
+	}
+	account, ok := repo.GetAccountByCustomerNo(m.MerchantNo, c.CustomerNo)
+	if !ok {
+		t.Fatalf("expected default account created for customer_no=%s", c.CustomerNo)
+	}
+	if account.CustomerNo != c.CustomerNo || account.MerchantNo != m.MerchantNo {
+		t.Fatalf("default account binding mismatch: %+v", account)
+	}
+	if account.AccountType != "CUSTOMER" {
+		t.Fatalf("expected account_type CUSTOMER, got %s", account.AccountType)
+	}
+}
+
 func TestTC2004CustomerUniqueOnMerchantAndOutUserID(t *testing.T) {
 	repo := db.NewRepository(setupPostgresPool(t))
 	ids := idpkg.NewFixedUUIDProvider([]string{

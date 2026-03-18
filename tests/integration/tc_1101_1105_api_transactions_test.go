@@ -26,8 +26,8 @@ import (
 )
 
 const (
-	testDebitAccountNo  = "6217701201001106001"
-	testCreditAccountNo = "6217701201001106002"
+	testDebitAccountNo  = "1000000000001106001"
+	testCreditAccountNo = "1000000000001106002"
 )
 
 func TestTC1101APICreditSuccess(t *testing.T) {
@@ -158,6 +158,71 @@ func TestTC1102APICreditBookEnabledNormalizesExpireInDaysToUTCDate(t *testing.T)
 	want := time.Date(2024, 3, 10, 0, 0, 0, 0, time.UTC)
 	if !txn.CreditExpireAt.UTC().Equal(want) {
 		t.Fatalf("unexpected normalized credit_expire_at: got=%s want=%s", txn.CreditExpireAt.UTC(), want)
+	}
+}
+
+func TestTC1129APICreditByUserIDAutoCreatesCustomerAndAccountWhenFeatureEnabled(t *testing.T) {
+	r, repo, _, merchantNo, secret := newTxnAPITestServer(t)
+	if err := repo.UpsertMerchantFeatureConfig(merchantNo, false, true); err != nil {
+		t.Fatalf("upsert merchant feature config failed: %v", err)
+	}
+
+	req := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/credit", merchantNo, secret, "nonce-1129", map[string]any{
+		"out_trade_no": "ord_1129",
+		"user_id":      "u_1129_new",
+		"amount":       100,
+	})
+	resp := httptest.NewRecorder()
+	r.ServeHTTP(resp, req)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%s", resp.Code, resp.Body.String())
+	}
+
+	body := decodeJSONMap(t, resp.Body.Bytes())
+	data := body["data"].(map[string]any)
+	txnNo, _ := data["txn_no"].(string)
+	if txnNo == "" {
+		t.Fatalf("expected txn_no in response")
+	}
+	waitTxnStatus(t, r, merchantNo, secret, txnNo, service.TxnStatusRecvSuccess)
+
+	customer, ok := repo.GetCustomerByOutUserID(merchantNo, "u_1129_new")
+	if !ok {
+		t.Fatalf("expected customer auto-created")
+	}
+	account, ok := repo.GetAccountByCustomerNo(merchantNo, customer.CustomerNo)
+	if !ok {
+		t.Fatalf("expected account auto-created")
+	}
+
+	txn, ok := repo.GetTransferTxn(txnNo)
+	if !ok {
+		t.Fatalf("txn not found")
+	}
+	if txn.CreditAccountNo != account.AccountNo {
+		t.Fatalf("unexpected credit account: got=%s want=%s", txn.CreditAccountNo, account.AccountNo)
+	}
+}
+
+func TestTC1130APICreditByUserIDReturnsNotFoundWhenAutoCreateDisabled(t *testing.T) {
+	r, repo, _, merchantNo, secret := newTxnAPITestServer(t)
+	if err := repo.UpsertMerchantFeatureConfig(merchantNo, false, false); err != nil {
+		t.Fatalf("upsert merchant feature config failed: %v", err)
+	}
+
+	req := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/credit", merchantNo, secret, "nonce-1130", map[string]any{
+		"out_trade_no": "ord_1130",
+		"user_id":      "u_1130_not_found",
+		"amount":       100,
+	})
+	resp := httptest.NewRecorder()
+	r.ServeHTTP(resp, req)
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	body := decodeJSONMap(t, resp.Body.Bytes())
+	if body["code"] != "OUT_USER_ID_NOT_FOUND" {
+		t.Fatalf("expected OUT_USER_ID_NOT_FOUND, got %v", body["code"])
 	}
 }
 
@@ -1123,6 +1188,104 @@ func TestTC1122APIMerchantMeReturnsConfigAndRequestID(t *testing.T) {
 	if data["receivable_account_no"] != merchant.ReceivableAccountNo {
 		t.Fatalf("unexpected receivable_account_no: %v", data["receivable_account_no"])
 	}
+	if data["auto_create_account_on_customer_create"] != true {
+		t.Fatalf("expected auto_create_account_on_customer_create=true, got %v", data["auto_create_account_on_customer_create"])
+	}
+	if data["auto_create_customer_on_credit"] != true {
+		t.Fatalf("expected auto_create_customer_on_credit=true, got %v", data["auto_create_customer_on_credit"])
+	}
+}
+
+func TestTC1131APICreateMerchantSupportsFeatureOptions(t *testing.T) {
+	r, repo, _, _, _ := newTxnAPITestServer(t)
+
+	reqBody := map[string]any{
+		"name":                                   "merchant-1131",
+		"auto_create_account_on_customer_create": false,
+		"auto_create_customer_on_credit":         false,
+	}
+	raw, err := json.Marshal(reqBody)
+	if err != nil {
+		t.Fatalf("marshal request failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/merchants", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	r.ServeHTTP(resp, req)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%s", resp.Code, resp.Body.String())
+	}
+
+	body := decodeJSONMap(t, resp.Body.Bytes())
+	if body["code"] != "SUCCESS" {
+		t.Fatalf("expected SUCCESS, got %v", body["code"])
+	}
+	data := body["data"].(map[string]any)
+	merchantNo, _ := data["merchant_no"].(string)
+	merchantSecret, _ := data["merchant_secret"].(string)
+	if merchantNo == "" || merchantSecret == "" {
+		t.Fatalf("expected merchant_no and merchant_secret in response")
+	}
+	if data["auto_create_account_on_customer_create"] != false {
+		t.Fatalf("expected auto_create_account_on_customer_create=false, got %v", data["auto_create_account_on_customer_create"])
+	}
+	if data["auto_create_customer_on_credit"] != false {
+		t.Fatalf("expected auto_create_customer_on_credit=false, got %v", data["auto_create_customer_on_credit"])
+	}
+
+	cfg, found, err := repo.GetMerchantFeatureConfig(merchantNo)
+	if err != nil {
+		t.Fatalf("load merchant feature config failed: %v", err)
+	}
+	if !found {
+		t.Fatalf("expected merchant feature config found")
+	}
+	if cfg.AutoCreateAccountOnCustomerCreate || cfg.AutoCreateCustomerOnCredit {
+		t.Fatalf("unexpected merchant feature config: %+v", cfg)
+	}
+
+	meReq := signedAPIRequest(t, http.MethodGet, "/api/v1/merchants/me", merchantNo, merchantSecret, "nonce-1131-me", nil)
+	meResp := httptest.NewRecorder()
+	r.ServeHTTP(meResp, meReq)
+	if meResp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", meResp.Code, meResp.Body.String())
+	}
+	meBody := decodeJSONMap(t, meResp.Body.Bytes())
+	meData := meBody["data"].(map[string]any)
+	if meData["auto_create_account_on_customer_create"] != false {
+		t.Fatalf("expected auto_create_account_on_customer_create=false, got %v", meData["auto_create_account_on_customer_create"])
+	}
+	if meData["auto_create_customer_on_credit"] != false {
+		t.Fatalf("expected auto_create_customer_on_credit=false, got %v", meData["auto_create_customer_on_credit"])
+	}
+}
+
+func TestTC1132APICreateMerchantDefaultsFeatureOptionsTrue(t *testing.T) {
+	r, _, _, _, _ := newTxnAPITestServer(t)
+
+	raw, err := json.Marshal(map[string]any{
+		"name": "merchant-1132",
+	})
+	if err != nil {
+		t.Fatalf("marshal request failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/merchants", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	r.ServeHTTP(resp, req)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	body := decodeJSONMap(t, resp.Body.Bytes())
+	data := body["data"].(map[string]any)
+	if data["auto_create_account_on_customer_create"] != true {
+		t.Fatalf("expected auto_create_account_on_customer_create=true, got %v", data["auto_create_account_on_customer_create"])
+	}
+	if data["auto_create_customer_on_credit"] != true {
+		t.Fatalf("expected auto_create_customer_on_credit=true, got %v", data["auto_create_customer_on_credit"])
+	}
 }
 
 func TestTC1127APIGetWebhookConfigDefault(t *testing.T) {
@@ -1262,6 +1425,9 @@ func newTxnAPITestServer(t *testing.T) (*gin.Engine, *db.Repository, *pgxpool.Po
 	if err != nil {
 		t.Fatalf("create merchant failed: %v", err)
 	}
+	if err := merchantSvc.UpsertMerchantFeatureConfig(merchant.MerchantNo, false, true); err != nil {
+		t.Fatalf("disable auto account on customer create failed: %v", err)
+	}
 	merchantNo := merchant.MerchantNo
 	customerSvc := service.NewCustomerService(repo, ids)
 	debitCustomer, err := customerSvc.CreateCustomer(merchant.MerchantNo, "u_1100")
@@ -1295,11 +1461,14 @@ func newTxnAPITestServer(t *testing.T) (*gin.Engine, *db.Repository, *pgxpool.Po
 	}); err != nil {
 		t.Fatalf("create credit account failed: %v", err)
 	}
+	if err := merchantSvc.UpsertMerchantFeatureConfig(merchant.MerchantNo, true, true); err != nil {
+		t.Fatalf("restore merchant feature defaults failed: %v", err)
+	}
 
 	transferSvc := service.NewTransferService(repo, ids)
 	transferRoutingSvc := service.NewTransferRoutingService(repo)
 	asyncTransferSvc := service.NewTransferAsyncProcessor(repo)
-	accountResolver := service.NewAccountResolver(repo)
+	accountResolver := service.NewAccountResolver(repo, customerSvc)
 	querySvc := service.NewTxnQueryService(repo)
 	base := time.Unix(1_710_000_000, 0).UTC()
 	tick := 0
@@ -1326,9 +1495,10 @@ func newTxnAPITestServer(t *testing.T) (*gin.Engine, *db.Repository, *pgxpool.Po
 
 	r := api.NewRouter()
 	api.RegisterProtectedRoutes(r, api.ProtectedRoutesOptions{
-		AuthMiddleware: authMw,
-		SecretRotator:  secretManager,
-		Business:       businessHandler,
+		AuthMiddleware:  authMw,
+		SecretRotator:   secretManager,
+		Business:        businessHandler,
+		MerchantCreator: merchantSvc,
 	})
 	return r, repo, pool, merchantNo, secret
 }

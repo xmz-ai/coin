@@ -24,6 +24,7 @@ type Repo struct {
 	accountChanges   []AccountChange
 	appliedChangeCt  int
 	webhookConfigs   map[string]service.WebhookConfig
+	featureConfigs   map[string]service.MerchantFeatureConfig
 	outboxByEventID  map[string]outboxRecord
 	outboxEventOrder []string
 	notifyLogsByTxn  map[string][]service.NotifyLog
@@ -58,6 +59,7 @@ func New() *Repo {
 		transferTxnByNo:     map[string]service.TransferTxn{},
 		accountChanges:      make([]AccountChange, 0),
 		webhookConfigs:      map[string]service.WebhookConfig{},
+		featureConfigs:      map[string]service.MerchantFeatureConfig{},
 		outboxByEventID:     map[string]outboxRecord{},
 		outboxEventOrder:    make([]string, 0),
 		notifyLogsByTxn:     map[string][]service.NotifyLog{},
@@ -87,10 +89,34 @@ func (r *Repo) GetMerchantByNo(merchantNo string) (service.Merchant, bool) {
 	return m, ok
 }
 
+func (r *Repo) UpsertMerchantFeatureConfig(merchantNo string, autoCreateAccountOnCustomerCreate, autoCreateCustomerOnCredit bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.featureConfigs[merchantNo] = service.MerchantFeatureConfig{
+		AutoCreateAccountOnCustomerCreate: autoCreateAccountOnCustomerCreate,
+		AutoCreateCustomerOnCredit:        autoCreateCustomerOnCredit,
+	}
+	return nil
+}
+
+func (r *Repo) GetMerchantFeatureConfig(merchantNo string) (service.MerchantFeatureConfig, bool, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	cfg, ok := r.featureConfigs[merchantNo]
+	return cfg, ok, nil
+}
+
 func (r *Repo) CreateAccount(a service.Account) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.accountsByNo[a.AccountNo] = a
+	if a.CustomerNo != "" {
+		if c, ok := r.customersByNo[a.CustomerNo]; ok && c.MerchantNo == a.MerchantNo && c.DefaultAccountNo == "" {
+			c.DefaultAccountNo = a.AccountNo
+			r.customersByNo[a.CustomerNo] = c
+			r.customersByK[a.MerchantNo+":"+c.OutUserID] = c
+		}
+	}
 	return nil
 }
 
@@ -152,16 +178,21 @@ func (r *Repo) GetMerchantByID(merchantID string) (service.Merchant, bool) {
 func (r *Repo) GetAccountByCustomerNo(merchantNo, customerNo string) (service.Account, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	merchant, ok := r.merchantsByNo[merchantNo]
+	customer, ok := r.customersByNo[customerNo]
 	if !ok {
 		return service.Account{}, false
 	}
-	for _, a := range r.accountsByNo {
-		if a.MerchantNo == merchant.MerchantNo && a.CustomerNo == customerNo {
-			return a, true
-		}
+	if customer.MerchantNo != merchantNo || customer.DefaultAccountNo == "" {
+		return service.Account{}, false
 	}
-	return service.Account{}, false
+	account, ok := r.accountsByNo[customer.DefaultAccountNo]
+	if !ok {
+		return service.Account{}, false
+	}
+	if account.MerchantNo != merchantNo || account.CustomerNo != customerNo {
+		return service.Account{}, false
+	}
+	return account, true
 }
 
 func (r *Repo) CreateTransferTxn(txn service.TransferTxn) error {

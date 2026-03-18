@@ -37,13 +37,15 @@ func main() {
 	defer redisClient.Close()
 
 	ids := idpkg.NewRuntimeUUIDProvider()
+	merchantService := service.NewMerchantService(repo, ids)
 	transferService := service.NewTransferService(repo, ids)
+	customerService := service.NewCustomerService(repo, ids)
 	transferRoutingService := service.NewTransferRoutingService(repo)
 	processingGuard := service.NewRedisProcessingGuard(redisClient, time.Duration(cfg.ProcessingKeyTTLSeconds)*time.Second)
 	asyncTransferProcessor := service.NewTransferAsyncProcessorWithGuard(repo, processingGuard)
 	transferWorker := service.NewTransferRecoveryWorker(repo, asyncTransferProcessor, 200)
 	webhookWorker := service.NewWebhookWorker(repo, secretManager, cfg.WebhookMaxRetries, cfg.WebhookWorkerBatchSize, cfg.WebhookRetryBackoffMinute)
-	accountResolver := service.NewAccountResolver(repo)
+	accountResolver := service.NewAccountResolver(repo, customerService)
 	queryService := service.NewTxnQueryService(repo)
 	businessHandler := api.NewBusinessHandler(transferService, repo, transferRoutingService, asyncTransferProcessor, webhookWorker, accountResolver, repo, queryService, repo, nil)
 	// Fallback recovery worker; main path is in-process async Enqueue on API submit.
@@ -62,9 +64,10 @@ func main() {
 
 	r := api.NewRouter()
 	api.RegisterProtectedRoutes(r, api.ProtectedRoutesOptions{
-		AuthMiddleware: authMiddleware,
-		SecretRotator:  secretManager,
-		Business:       businessHandler,
+		AuthMiddleware:  authMiddleware,
+		SecretRotator:   secretManager,
+		Business:        businessHandler,
+		MerchantCreator: merchantService,
 	})
 	if err := r.Run(cfg.HTTPAddr); err != nil {
 		log.Fatalf("http server failed: %v", err)

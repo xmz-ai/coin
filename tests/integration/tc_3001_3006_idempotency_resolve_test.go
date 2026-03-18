@@ -70,14 +70,17 @@ func TestTC3003AccountNoAndOutUserIDConsistentPasses(t *testing.T) {
 	rs := service.NewAccountResolver(repo)
 
 	m, _ := ms.CreateMerchant("", "demo")
+	if err := ms.UpsertMerchantFeatureConfig(m.MerchantNo, false, true); err != nil {
+		t.Fatalf("upsert merchant feature config failed: %v", err)
+	}
 	c, _ := cs.CreateCustomer(m.MerchantNo, "u_3003")
-	repo.CreateAccount(service.Account{AccountNo: "6217701201003003001", MerchantNo: m.MerchantNo, CustomerNo: c.CustomerNo, AccountType: "CUSTOMER", AllowDebitOut: true, AllowCreditIn: true, AllowTransfer: true})
+	repo.CreateAccount(service.Account{AccountNo: "1000000000003003001", MerchantNo: m.MerchantNo, CustomerNo: c.CustomerNo, AccountType: "CUSTOMER", AllowDebitOut: true, AllowCreditIn: true, AllowTransfer: true})
 
-	accountNo, err := rs.ResolveCustomerAccount(m.MerchantNo, "6217701201003003001", "u_3003")
+	accountNo, err := rs.ResolveCustomerAccount(m.MerchantNo, "1000000000003003001", "u_3003")
 	if err != nil {
 		t.Fatalf("resolve failed: %v", err)
 	}
-	if accountNo != "6217701201003003001" {
+	if accountNo != "1000000000003003001" {
 		t.Fatalf("unexpected account_no: %s", accountNo)
 	}
 }
@@ -94,12 +97,15 @@ func TestTC3004AccountNoAndOutUserIDConflictRejected(t *testing.T) {
 	rs := service.NewAccountResolver(repo)
 
 	m, _ := ms.CreateMerchant("", "demo")
+	if err := ms.UpsertMerchantFeatureConfig(m.MerchantNo, false, true); err != nil {
+		t.Fatalf("upsert merchant feature config failed: %v", err)
+	}
 	c1, _ := cs.CreateCustomer(m.MerchantNo, "u_3004_1")
 	c2, _ := cs.CreateCustomer(m.MerchantNo, "u_3004_2")
-	repo.CreateAccount(service.Account{AccountNo: "6217701201003004001", MerchantNo: m.MerchantNo, CustomerNo: c1.CustomerNo, AccountType: "CUSTOMER", AllowDebitOut: true, AllowCreditIn: true, AllowTransfer: true})
-	repo.CreateAccount(service.Account{AccountNo: "6217701201003004002", MerchantNo: m.MerchantNo, CustomerNo: c2.CustomerNo, AccountType: "CUSTOMER", AllowDebitOut: true, AllowCreditIn: true, AllowTransfer: true})
+	repo.CreateAccount(service.Account{AccountNo: "1000000000003004001", MerchantNo: m.MerchantNo, CustomerNo: c1.CustomerNo, AccountType: "CUSTOMER", AllowDebitOut: true, AllowCreditIn: true, AllowTransfer: true})
+	repo.CreateAccount(service.Account{AccountNo: "1000000000003004002", MerchantNo: m.MerchantNo, CustomerNo: c2.CustomerNo, AccountType: "CUSTOMER", AllowDebitOut: true, AllowCreditIn: true, AllowTransfer: true})
 
-	_, err := rs.ResolveCustomerAccount(m.MerchantNo, "6217701201003004001", "u_3004_2")
+	_, err := rs.ResolveCustomerAccount(m.MerchantNo, "1000000000003004001", "u_3004_2")
 	if !errors.Is(err, service.ErrAccountResolveConflict) {
 		t.Fatalf("expected ErrAccountResolveConflict, got %v", err)
 	}

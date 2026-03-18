@@ -96,6 +96,14 @@ func (s *MerchantService) GetMerchantConfigByNo(merchantNo string) (Merchant, bo
 	return s.repo.GetMerchantByNo(merchantNo)
 }
 
+func (s *MerchantService) UpsertMerchantFeatureConfig(merchantNo string, autoCreateAccountOnCustomerCreate, autoCreateCustomerOnCredit bool) error {
+	return s.repo.UpsertMerchantFeatureConfig(merchantNo, autoCreateAccountOnCustomerCreate, autoCreateCustomerOnCredit)
+}
+
+func (s *MerchantService) GetMerchantFeatureConfig(merchantNo string) (MerchantFeatureConfig, bool, error) {
+	return s.repo.GetMerchantFeatureConfig(merchantNo)
+}
+
 func (s *MerchantService) GetAccountByNo(accountNo string) (Account, bool) {
 	return s.repo.GetAccount(accountNo)
 }

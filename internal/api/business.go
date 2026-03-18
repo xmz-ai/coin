@@ -33,6 +33,7 @@ type WebhookAsyncDispatcher interface {
 
 type CustomerAccountResolver interface {
 	ResolveCustomerAccount(merchantNo, accountNo, outUserID string) (string, error)
+	EnsureCustomerAccountForCredit(merchantNo, outUserID string) (string, error)
 }
 
 type AccountFinder interface {
@@ -205,8 +206,18 @@ func (h *BusinessHandler) handleCredit(c *gin.Context) {
 			return
 		}
 		if resolved == "" {
-			writeError(c, http.StatusNotFound, "OUT_USER_ID_NOT_FOUND", "account not found by user_id")
-			return
+			if req.CreditAccountNo == "" {
+				autoCreated, err := h.accountResolver.EnsureCustomerAccountForCredit(merchantNo, req.UserID)
+				if err != nil {
+					writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "auto create customer account failed")
+					return
+				}
+				resolved = strings.TrimSpace(autoCreated)
+			}
+			if resolved == "" {
+				writeError(c, http.StatusNotFound, "OUT_USER_ID_NOT_FOUND", "account not found by user_id")
+				return
+			}
 		}
 		creditAccountNo = resolved
 	}
