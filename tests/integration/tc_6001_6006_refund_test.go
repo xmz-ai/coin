@@ -1,7 +1,6 @@
 package integration
 
 import (
-	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -27,10 +26,8 @@ func TestTC6001OriginTxnNotFoundRejected(t *testing.T) {
 		t.Fatalf("create refund txn failed: %v", err)
 	}
 
-	err := processor.Process(refundTxnNo)
-	if !errors.Is(err, service.ErrTxnNotFound) {
-		t.Fatalf("expected ErrTxnNotFound, got %v", err)
-	}
+	processor.Enqueue(refundTxnNo)
+	waitTxnStatusRepo(t, repo, refundTxnNo, service.TxnStatusFailed, 2*time.Second)
 
 	refund, ok := repo.GetTransferTxn(refundTxnNo)
 	if !ok {
@@ -67,10 +64,8 @@ func TestTC6002RefundAmountExceededRejected(t *testing.T) {
 		t.Fatalf("create refund txn failed: %v", err)
 	}
 
-	err := processor.Process(refundTxnNo)
-	if !errors.Is(err, service.ErrRefundAmountExceeded) {
-		t.Fatalf("expected ErrRefundAmountExceeded, got %v", err)
-	}
+	processor.Enqueue(refundTxnNo)
+	waitTxnStatusRepo(t, repo, refundTxnNo, service.TxnStatusFailed, 2*time.Second)
 
 	refund, ok := repo.GetTransferTxn(refundTxnNo)
 	if !ok {
@@ -115,9 +110,8 @@ func TestTC6003RefundStagesToRecvSuccess(t *testing.T) {
 		t.Fatalf("create refund txn failed: %v", err)
 	}
 
-	if err := processor.Process(refundTxnNo); err != nil {
-		t.Fatalf("process refund failed: %v", err)
-	}
+	processor.Enqueue(refundTxnNo)
+	waitTxnStatusRepo(t, repo, refundTxnNo, service.TxnStatusRecvSuccess, 2*time.Second)
 
 	refund, ok := repo.GetTransferTxn(refundTxnNo)
 	if !ok {
@@ -179,10 +173,8 @@ func TestTC6004RefundCrossMerchantOriginRejected(t *testing.T) {
 		t.Fatalf("create refund txn failed: %v", err)
 	}
 
-	err := processor.Process(refundTxnNo)
-	if !errors.Is(err, service.ErrTxnNotFound) {
-		t.Fatalf("expected ErrTxnNotFound, got %v", err)
-	}
+	processor.Enqueue(refundTxnNo)
+	waitTxnStatusRepo(t, repo, refundTxnNo, service.TxnStatusFailed, 2*time.Second)
 
 	refund, ok := repo.GetTransferTxn(refundTxnNo)
 	if !ok {
@@ -233,41 +225,21 @@ func TestTC6005ConcurrentRefundDoesNotExceed(t *testing.T) {
 		}
 	}
 
+	processor := service.NewTransferAsyncProcessor(repo)
 	var wg sync.WaitGroup
-	errCh := make(chan error, 2)
 	for _, txnNo := range []string{refundTxnA, refundTxnB} {
 		wg.Add(1)
 		go func(txnNo string) {
 			defer wg.Done()
-			processor := service.NewTransferAsyncProcessor(repo)
-			errCh <- processor.Process(txnNo)
+			processor.Enqueue(txnNo)
 		}(txnNo)
 	}
 	wg.Wait()
-	close(errCh)
-
-	successByErr := 0
-	exceededByErr := 0
-	for err := range errCh {
-		if err == nil {
-			successByErr++
-			continue
-		}
-		if errors.Is(err, service.ErrRefundAmountExceeded) {
-			exceededByErr++
-		}
-	}
-	if successByErr != 1 || exceededByErr != 1 {
-		t.Fatalf("expected one success and one ErrRefundAmountExceeded, got success=%d exceeded=%d", successByErr, exceededByErr)
-	}
 
 	successByStatus := 0
 	exceededByStatus := 0
 	for _, txnNo := range []string{refundTxnA, refundTxnB} {
-		txn, ok := repo.GetTransferTxn(txnNo)
-		if !ok {
-			t.Fatalf("refund txn not found: %s", txnNo)
-		}
+		txn := waitTxnTerminalRepo(t, repo, txnNo, 2*time.Second)
 		if txn.Status == service.TxnStatusRecvSuccess {
 			successByStatus++
 		}
@@ -304,9 +276,8 @@ func TestTC6006RefundReverseAccounting(t *testing.T) {
 		t.Fatalf("create refund txn failed: %v", err)
 	}
 
-	if err := processor.Process(refundTxnNo); err != nil {
-		t.Fatalf("process refund failed: %v", err)
-	}
+	processor.Enqueue(refundTxnNo)
+	waitTxnStatusRepo(t, repo, refundTxnNo, service.TxnStatusRecvSuccess, 2*time.Second)
 
 	debit, _ := repo.GetAccount(debitAccountNo)
 	credit, _ := repo.GetAccount(creditAccountNo)

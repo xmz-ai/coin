@@ -41,18 +41,39 @@ func main() {
 	transferService := service.NewTransferService(repo, ids)
 	customerService := service.NewCustomerService(repo, ids)
 	transferRoutingService := service.NewTransferRoutingService(repo)
-	processingGuard := service.NewRedisProcessingGuard(redisClient, time.Duration(cfg.ProcessingKeyTTLSeconds)*time.Second)
-	asyncTransferProcessor := service.NewTransferAsyncProcessorWithGuard(repo, processingGuard)
-	transferWorker := service.NewTransferRecoveryWorker(repo, asyncTransferProcessor, 200)
+	guardTTL := time.Duration(cfg.TxnProcessingGuardTTLMS) * time.Millisecond
+	if guardTTL <= 0 {
+		guardTTL = time.Duration(cfg.ProcessingKeyTTLSeconds) * time.Second
+	}
+	processingGuard := service.NewRedisProcessingGuard(redisClient, guardTTL)
+	asyncTransferProcessor := service.NewTransferAsyncProcessorWithGuardAndOptions(repo, processingGuard, service.TransferAsyncProcessorOptions{
+		InitWorkers:       cfg.TxnAsyncStageWorkersInit,
+		ProcessingWorkers: cfg.TxnAsyncStageWorkersProcessing,
+		PaySuccessWorkers: cfg.TxnAsyncStageWorkersPaySuccess,
+		InitQueueSize:     cfg.TxnAsyncQueueSizeInit,
+		ProcessingQueue:   cfg.TxnAsyncQueueSizeProcessing,
+		PaySuccessQueue:   cfg.TxnAsyncQueueSizePaySuccess,
+	})
+	transferWorker := service.NewTransferRecoveryWorkerWithStaleThreshold(
+		repo,
+		asyncTransferProcessor,
+		200,
+		time.Duration(cfg.TxnRecoveryStaleMS)*time.Millisecond,
+	)
 	webhookWorker := service.NewWebhookWorker(repo, secretManager, cfg.WebhookMaxRetries, cfg.WebhookWorkerBatchSize, cfg.WebhookRetryBackoffMinute)
 	accountResolver := service.NewAccountResolver(repo, customerService)
 	queryService := service.NewTxnQueryService(repo)
 	businessHandler := api.NewBusinessHandler(transferService, repo, transferRoutingService, asyncTransferProcessor, webhookWorker, accountResolver, repo, queryService, repo, nil)
 	// Fallback recovery worker; main path is in-process async Enqueue on API submit.
-	go transferWorker.Start(ctx, 500*time.Millisecond)
+	go transferWorker.Start(ctx, time.Duration(cfg.TxnRecoveryIntervalMS)*time.Millisecond)
 	go webhookWorker.Start(ctx, time.Duration(cfg.WebhookWorkerIntervalMS)*time.Millisecond)
 
-	txnCompWorker := service.NewTransferRecoveryWorker(repo, asyncTransferProcessor, 200)
+	txnCompWorker := service.NewTransferRecoveryWorkerWithStaleThreshold(
+		repo,
+		asyncTransferProcessor,
+		200,
+		time.Duration(cfg.TxnRecoveryStaleMS)*time.Millisecond,
+	)
 	notifyCompWorker := service.NewWebhookWorker(repo, secretManager, cfg.WebhookMaxRetries, cfg.WebhookWorkerBatchSize, cfg.WebhookRetryBackoffMinute)
 	go txnCompWorker.StartWithReport(ctx, time.Duration(cfg.TxnCompensationIntervalMS)*time.Millisecond, service.NewCompensationReportHook())
 	go notifyCompWorker.StartWithReport(ctx, time.Duration(cfg.NotifyCompensationIntervalMS)*time.Millisecond, service.NewWebhookReportHook())

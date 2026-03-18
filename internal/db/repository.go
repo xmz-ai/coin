@@ -481,6 +481,44 @@ func (r *Repository) ListTransferTxnsByStatus(status string, limit int) ([]servi
 	return items, nil
 }
 
+func (r *Repository) ListStaleTransferTxnNosByStatus(status string, staleBefore time.Time, limit int) ([]string, error) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	rows, err := r.pool.Query(ctx, `
+SELECT t.txn_no::text
+FROM txn t
+WHERE t.status = $1
+  AND t.updated_at <= $2
+ORDER BY t.updated_at ASC, t.txn_no ASC
+LIMIT $3
+`, status, staleBefore.UTC(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]string, 0, limit)
+	for rows.Next() {
+		var txnNo string
+		if err := rows.Scan(&txnNo); err != nil {
+			return nil, err
+		}
+		items = append(items, txnNo)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 func (r *Repository) UpdateTransferTxnStatus(txnNo, status, errorCode, errorMsg string) error {
 	ctx, cancel := r.withTimeout()
 	defer cancel()

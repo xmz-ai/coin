@@ -12,6 +12,10 @@ type StageProcessingGuard interface {
 	TryBegin(txnNo, stage string) bool
 }
 
+type StageProcessingGuardEnder interface {
+	End(txnNo, stage string)
+}
+
 func ProcessingKey(txnNo, stage string) string {
 	return strings.TrimSpace(txnNo) + "+" + strings.TrimSpace(stage)
 }
@@ -37,4 +41,14 @@ func (g *ProcessingGuard) TryBegin(txnNo, stage string) bool {
 	}
 	g.seen[key] = struct{}{}
 	return true
+}
+
+func (g *ProcessingGuard) End(txnNo, stage string) {
+	key := ProcessingKey(txnNo, stage)
+	if key == "+" {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.seen, key)
 }

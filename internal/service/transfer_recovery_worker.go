@@ -7,19 +7,25 @@ import (
 )
 
 type TransferRecoveryWorker struct {
-	repo      Repository
-	processor *TransferAsyncProcessor
-	batchSize int
+	repo           Repository
+	processor      *TransferAsyncProcessor
+	batchSize      int
+	staleThreshold time.Duration
 }
 
 func NewTransferRecoveryWorker(repo Repository, processor *TransferAsyncProcessor, batchSize int) *TransferRecoveryWorker {
+	return NewTransferRecoveryWorkerWithStaleThreshold(repo, processor, batchSize, 0)
+}
+
+func NewTransferRecoveryWorkerWithStaleThreshold(repo Repository, processor *TransferAsyncProcessor, batchSize int, staleThreshold time.Duration) *TransferRecoveryWorker {
 	if batchSize <= 0 {
 		batchSize = 100
 	}
 	return &TransferRecoveryWorker{
-		repo:      repo,
-		processor: processor,
-		batchSize: batchSize,
+		repo:           repo,
+		processor:      processor,
+		batchSize:      batchSize,
+		staleThreshold: staleThreshold,
 	}
 }
 
@@ -29,12 +35,12 @@ func (w *TransferRecoveryWorker) RunOnce() {
 	}
 
 	for _, status := range []string{TxnStatusInit, TxnStatusProcessing, TxnStatusPaySuccess} {
-		txns, err := w.repo.ListTransferTxnsByStatus(status, w.batchSize)
+		txnNos, err := w.listTxnNosByStatus(status)
 		if err != nil {
 			continue
 		}
-		for _, txn := range txns {
-			_ = w.processor.Process(txn.TxnNo)
+		for _, txnNo := range txnNos {
+			_ = w.processor.EnqueueByStatus(txnNo, status)
 		}
 	}
 }
@@ -90,19 +96,38 @@ func (w *TransferRecoveryWorker) StartWithReport(ctx context.Context, interval t
 }
 
 func (w *TransferRecoveryWorker) runOnceWithResult() (int, error) {
-	processed := 0
+	dispatched := 0
 	for _, status := range []string{TxnStatusInit, TxnStatusProcessing, TxnStatusPaySuccess} {
-		txns, err := w.repo.ListTransferTxnsByStatus(status, w.batchSize)
+		txnNos, err := w.listTxnNosByStatus(status)
 		if err != nil {
-			return processed, err
+			return dispatched, err
 		}
-		for _, txn := range txns {
-			if err := w.processor.Process(txn.TxnNo); err == nil {
-				processed++
+		for _, txnNo := range txnNos {
+			if ok := w.processor.EnqueueByStatus(txnNo, status); ok {
+				dispatched++
 			} else {
-				log.Printf("txn compensation process failed: txn_no=%s status=%s err=%v", txn.TxnNo, status, err)
+				log.Printf("txn recovery enqueue dropped: txn_no=%s status=%s", txnNo, status)
 			}
 		}
 	}
-	return processed, nil
+	return dispatched, nil
+}
+
+func (w *TransferRecoveryWorker) listTxnNosByStatus(status string) ([]string, error) {
+	if w == nil || w.repo == nil {
+		return nil, nil
+	}
+	if w.staleThreshold > 0 {
+		staleBefore := time.Now().UTC().Add(-w.staleThreshold)
+		return w.repo.ListStaleTransferTxnNosByStatus(status, staleBefore, w.batchSize)
+	}
+	txns, err := w.repo.ListTransferTxnsByStatus(status, w.batchSize)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]string, 0, len(txns))
+	for _, txn := range txns {
+		items = append(items, txn.TxnNo)
+	}
+	return items, nil
 }

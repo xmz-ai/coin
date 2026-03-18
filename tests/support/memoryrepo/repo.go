@@ -247,6 +247,28 @@ func (r *Repo) ListTransferTxnsByStatus(status string, limit int) ([]service.Tra
 	return items[:limit], nil
 }
 
+func (r *Repo) ListStaleTransferTxnNosByStatus(status string, staleBefore time.Time, limit int) ([]string, error) {
+	txns, err := r.ListTransferTxnsByStatus(status, 0)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	staleBefore = staleBefore.UTC()
+	items := make([]string, 0, limit)
+	for _, txn := range txns {
+		if !staleBefore.IsZero() && txn.CreatedAt.After(staleBefore) {
+			continue
+		}
+		items = append(items, txn.TxnNo)
+		if len(items) >= limit {
+			break
+		}
+	}
+	return items, nil
+}
+
 func (r *Repo) ListTransferTxns(filter service.TxnListFilter) ([]service.TransferTxn, string) {
 	r.mu.RLock()
 	all := make([]service.TransferTxn, 0, len(r.transferTxnByNo))

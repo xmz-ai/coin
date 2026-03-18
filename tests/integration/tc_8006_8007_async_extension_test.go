@@ -58,10 +58,8 @@ func TestTC8007CompensationTasksForTxnAndNotify(t *testing.T) {
 	compWorker := service.NewCompensationWorker(txnWorker, notifyWorker, repo)
 
 	compWorker.RunOnce(context.Background())
-
-	if got, ok := repo.GetTransferTxn(txn.TxnNo); !ok || got.Status != service.TxnStatusRecvSuccess {
-		t.Fatalf("expected txn compensated to RECV_SUCCESS, got %+v ok=%v", got, ok)
-	}
+	waitTxnStatusRepo(t, repo, txn.TxnNo, service.TxnStatusRecvSuccess, 2*time.Second)
+	notifyWorker.RunOnce(context.Background())
 
 	events, err := repo.ClaimDueOutboxEvents(10, time.Now().UTC().Add(24*time.Hour))
 	if err != nil {

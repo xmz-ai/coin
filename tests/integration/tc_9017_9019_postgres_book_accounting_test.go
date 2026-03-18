@@ -2,7 +2,6 @@ package integration
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -161,9 +160,8 @@ WHERE txn_no = $2::uuid
 	}
 
 	processor := service.NewTransferAsyncProcessor(repo)
-	if err := processor.Process(txnNo); err != nil {
-		t.Fatalf("process txn failed: %v", err)
-	}
+	processor.Enqueue(txnNo)
+	waitTxnStatusRepo(t, repo, txnNo, service.TxnStatusRecvSuccess, 2*time.Second)
 
 	txn, ok := repo.GetTransferTxn(txnNo)
 	if !ok || txn.Status != service.TxnStatusRecvSuccess {
@@ -277,9 +275,8 @@ WHERE account_no = $1
 	}
 
 	processor := service.NewTransferAsyncProcessor(repo)
-	if err := processor.Process(refundTxnNo); err != nil {
-		t.Fatalf("process refund failed: %v", err)
-	}
+	processor.Enqueue(refundTxnNo)
+	waitTxnStatusRepo(t, repo, refundTxnNo, service.TxnStatusRecvSuccess, 2*time.Second)
 
 	refund, ok := repo.GetTransferTxn(refundTxnNo)
 	if !ok {
@@ -364,10 +361,8 @@ WHERE account_no = $1
 	}
 
 	processor := service.NewTransferAsyncProcessor(repo)
-	err = processor.Process(refundTxnNo)
-	if !errors.Is(err, service.ErrRefundOriginBookTraceMissing) {
-		t.Fatalf("expected ErrRefundOriginBookTraceMissing, got %v", err)
-	}
+	processor.Enqueue(refundTxnNo)
+	waitTxnStatusRepo(t, repo, refundTxnNo, service.TxnStatusFailed, 2*time.Second)
 
 	refund, ok := repo.GetTransferTxn(refundTxnNo)
 	if !ok {

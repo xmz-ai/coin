@@ -49,6 +49,7 @@ type Repository interface {
 	GetTransferTxn(txnNo string) (domain.TransferTxn, bool)
 	GetTransferTxnByOutTradeNo(merchantNo, outTradeNo string) (domain.TransferTxn, bool)
 	ListTransferTxnsByStatus(status string, limit int) ([]domain.TransferTxn, error)
+	ListStaleTransferTxnNosByStatus(status string, staleBefore time.Time, limit int) ([]string, error)
 	ListTransferTxns(filter domain.TxnListFilter) ([]domain.TransferTxn, string)
 	UpdateTransferTxnStatus(txnNo, status, errorCode, errorMsg string) error
 	TransitionTransferTxnStatus(txnNo, fromStatus, toStatus, errorCode, errorMsg string) (bool, error)
