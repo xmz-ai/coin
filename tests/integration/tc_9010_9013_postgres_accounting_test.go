@@ -9,7 +9,7 @@ import (
 )
 
 func TestTC9010PostgresDebitStageWritesBalanceAndLog(t *testing.T) {
-	repo, pool, _, debitAccountNo, _, txnNo := setupPostgresTransferFixture(t, service.TxnStatusProcessing, 120)
+	repo, pool, _, debitAccountNo, _, txnNo := setupPostgresTransferFixture(t, service.TxnStatusInit, 120)
 
 	applied, err := repo.ApplyTransferDebitStage(txnNo, debitAccountNo, 120)
 	if err != nil {
@@ -120,7 +120,7 @@ func TestTC9013PostgresRefundWritesReverseLogsAndBalances(t *testing.T) {
 		CreditAccountNo:  creditAccountNo,
 		Amount:           200,
 		RefundableAmount: 200,
-		Status:           service.TxnStatusProcessing,
+		Status:           service.TxnStatusInit,
 	}); err != nil {
 		t.Fatalf("create origin txn failed: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestTC9020PostgresConcurrentRefundCASNoOverRefund(t *testing.T) {
 		CreditAccountNo:  creditAccountNo,
 		Amount:           100,
 		RefundableAmount: 100,
-		Status:           service.TxnStatusProcessing,
+		Status:           service.TxnStatusInit,
 	}); err != nil {
 		t.Fatalf("create origin txn failed: %v", err)
 	}

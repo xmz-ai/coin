@@ -19,7 +19,6 @@ const (
 
 const (
 	TxnStatusInit        = "INIT"
-	TxnStatusProcessing  = "PROCESSING"
 	TxnStatusPaySuccess  = "PAY_SUCCESS"
 	TxnStatusRecvSuccess = "RECV_SUCCESS"
 	TxnStatusFailed      = "FAILED"

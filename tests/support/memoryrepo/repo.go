@@ -434,7 +434,7 @@ func (r *Repo) ApplyTransferDebitStage(txnNo, debitAccountNo string, amount int6
 	if !ok {
 		return false, service.ErrTxnNotFound
 	}
-	if txn.Status != service.TxnStatusProcessing {
+	if txn.Status != service.TxnStatusInit {
 		return false, nil
 	}
 	if txn.DebitAccountNo != "" && debitAccountNo != "" && txn.DebitAccountNo != debitAccountNo {
@@ -500,7 +500,7 @@ func (r *Repo) ApplyRefundDebitStage(refundTxnNo string, amount int64) (bool, er
 	if !exists {
 		return false, service.ErrTxnNotFound
 	}
-	if refund.Status != service.TxnStatusProcessing {
+	if refund.Status != service.TxnStatusInit {
 		return false, nil
 	}
 	if refund.BizType != service.BizTypeRefund || refund.RefundOfTxnNo == "" {

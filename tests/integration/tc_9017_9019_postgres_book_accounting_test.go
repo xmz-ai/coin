@@ -72,7 +72,7 @@ WHERE txn_no = $2::uuid
 }
 
 func TestTC9018PostgresDebitStageBookEnabledConsumesFEFOAndWritesBookLogs(t *testing.T) {
-	repo, pool, _, debitAccountNo, _, txnNo := setupPostgresTransferFixture(t, service.TxnStatusProcessing, 150)
+	repo, pool, _, debitAccountNo, _, txnNo := setupPostgresTransferFixture(t, service.TxnStatusInit, 150)
 
 	today := time.Now().UTC()
 	expiredAt := time.Date(today.Year(), today.Month(), today.Day()-1, 0, 0, 0, 0, time.UTC)
@@ -222,7 +222,7 @@ VALUES ('01956f4e-9221-7922-8922-922192219221'::uuid, $1, $2::date, 200)
 		CreditAccountNo:  creditAccountNo,
 		Amount:           200,
 		RefundableAmount: 200,
-		Status:           service.TxnStatusProcessing,
+		Status:           service.TxnStatusInit,
 	}); err != nil {
 		t.Fatalf("create origin txn failed: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestTC9022PostgresRefundBookEnabledTargetMissingOriginBookTraceFailed(t *te
 		CreditAccountNo:  creditAccountNo,
 		Amount:           200,
 		RefundableAmount: 200,
-		Status:           service.TxnStatusProcessing,
+		Status:           service.TxnStatusInit,
 	}); err != nil {
 		t.Fatalf("create origin txn failed: %v", err)
 	}

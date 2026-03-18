@@ -12,8 +12,6 @@ func (s *TxnStateMachine) Transit(next string) error {
 	allowed := false
 	switch s.status {
 	case TxnStatusInit:
-		allowed = next == TxnStatusProcessing
-	case TxnStatusProcessing:
 		allowed = next == TxnStatusPaySuccess || next == TxnStatusFailed
 	case TxnStatusPaySuccess:
 		allowed = next == TxnStatusRecvSuccess || next == TxnStatusFailed

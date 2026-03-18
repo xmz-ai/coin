@@ -52,6 +52,9 @@ type perfConfig struct {
 	MaxBodyBytes        int64
 	WebhookPollInterval time.Duration
 	WebhookWaitTimeout  time.Duration
+	TxnRecoveryInterval time.Duration
+	TxnRecoveryStale    time.Duration
+	TxnRecoveryBatch    int
 }
 
 type resultRow struct {
@@ -182,6 +185,9 @@ func loadPerfConfig() (perfConfig, error) {
 	maxBodyBytes := getenvInt("PERF_MAX_BODY_BYTES", 1<<20)
 	webhookPollMs := getenvInt("PERF_WEBHOOK_POLL_INTERVAL_MS", 10)
 	webhookWaitTimeoutMs := getenvInt("PERF_WEBHOOK_WAIT_TIMEOUT_MS", 60000)
+	txnRecoveryIntervalMs := getenvInt("PERF_TXN_RECOVERY_INTERVAL_MS", 50)
+	txnRecoveryStaleMs := getenvInt("PERF_TXN_RECOVERY_STALE_MS", 200)
+	txnRecoveryBatch := getenvInt("PERF_TXN_RECOVERY_BATCH", 2000)
 
 	if durationSec <= 0 {
 		return perfConfig{}, fmt.Errorf("PERF_DURATION_SECONDS must be > 0")
@@ -197,6 +203,15 @@ func loadPerfConfig() (perfConfig, error) {
 	}
 	if webhookWaitTimeoutMs <= 0 {
 		return perfConfig{}, fmt.Errorf("PERF_WEBHOOK_WAIT_TIMEOUT_MS must be > 0")
+	}
+	if txnRecoveryIntervalMs <= 0 {
+		return perfConfig{}, fmt.Errorf("PERF_TXN_RECOVERY_INTERVAL_MS must be > 0")
+	}
+	if txnRecoveryStaleMs <= 0 {
+		return perfConfig{}, fmt.Errorf("PERF_TXN_RECOVERY_STALE_MS must be > 0")
+	}
+	if txnRecoveryBatch <= 0 {
+		return perfConfig{}, fmt.Errorf("PERF_TXN_RECOVERY_BATCH must be > 0")
 	}
 	if strings.TrimSpace(base.MerchantSecretPassphrase) == "" {
 		return perfConfig{}, fmt.Errorf("LOCAL_KMS_KEY_V1 is required")
@@ -216,6 +231,9 @@ func loadPerfConfig() (perfConfig, error) {
 		MaxBodyBytes:         int64(maxBodyBytes),
 		WebhookPollInterval:  time.Duration(webhookPollMs) * time.Millisecond,
 		WebhookWaitTimeout:   time.Duration(webhookWaitTimeoutMs) * time.Millisecond,
+		TxnRecoveryInterval:  time.Duration(txnRecoveryIntervalMs) * time.Millisecond,
+		TxnRecoveryStale:     time.Duration(txnRecoveryStaleMs) * time.Millisecond,
+		TxnRecoveryBatch:     txnRecoveryBatch,
 	}, nil
 }
 
@@ -251,6 +269,9 @@ func run(cfg perfConfig) error {
 		redisClient,
 		secretManager,
 		cfg.ProcessingTTLSeconds,
+		cfg.TxnRecoveryBatch,
+		cfg.TxnRecoveryInterval,
+		cfg.TxnRecoveryStale,
 		cfg.WebhookPollInterval,
 		cfg.MaxBodyBytes,
 	)
@@ -275,6 +296,7 @@ func run(cfg perfConfig) error {
 	fmt.Printf("[perf] duration=%s concurrency=%d warmup=%d timeout=%s\n",
 		cfg.Duration, cfg.Concurrency, cfg.WarmupRequests, cfg.RequestTimeout)
 	fmt.Printf("[perf] mode=webhook-e2e webhook_poll=%s webhook_wait_timeout=%s\n", cfg.WebhookPollInterval, cfg.WebhookWaitTimeout)
+	fmt.Printf("[perf] txn_recovery interval=%s stale=%s batch=%d\n", cfg.TxnRecoveryInterval, cfg.TxnRecoveryStale, cfg.TxnRecoveryBatch)
 
 	httpClient := &http.Client{Timeout: cfg.RequestTimeout}
 	const bookTransferExpireInDays = int64(30)
@@ -483,6 +505,9 @@ func setupPerfServer(
 	redisClient *goredis.Client,
 	secretManager *db.MerchantSecretManager,
 	processingTTLSeconds int,
+	txnRecoveryBatch int,
+	txnRecoveryInterval time.Duration,
+	txnRecoveryStale time.Duration,
 	webhookPollInterval time.Duration,
 	maxBodyBytes int64,
 ) (*perfRuntime, error) {
@@ -576,6 +601,8 @@ func setupPerfServer(
 
 	processingGuard := service.NewRedisProcessingGuard(redisClient, time.Duration(processingTTLSeconds)*time.Second)
 	asyncProcessor := service.NewTransferAsyncProcessorWithGuard(repo, processingGuard)
+	txnRecoveryWorker := service.NewTransferRecoveryWorkerWithStaleThreshold(repo, asyncProcessor, txnRecoveryBatch, txnRecoveryStale)
+	go txnRecoveryWorker.Start(ctx, txnRecoveryInterval)
 
 	sink := newWebhookSink()
 	webhookServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

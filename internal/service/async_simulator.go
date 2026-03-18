@@ -42,7 +42,7 @@ func (s *AsyncService) RecordStuckTxn(merchantNo, outTradeNo string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	txnNo := s.nextID()
-	s.txnStatus[txnNo] = TxnStatusProcessing
+	s.txnStatus[txnNo] = TxnStatusInit
 	s.outbox = append(s.outbox, OutboxEvent{EventID: s.nextID(), TxnNo: txnNo, MerchantNo: merchantNo, OutTradeNo: outTradeNo, Status: "PENDING"})
 	return txnNo
 }
@@ -111,7 +111,7 @@ func (s *AsyncService) RunTxnCompensation() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for txnNo, st := range s.txnStatus {
-		if st == TxnStatusProcessing || st == TxnStatusPaySuccess {
+		if st == TxnStatusInit || st == TxnStatusPaySuccess {
 			s.txnStatus[txnNo] = TxnStatusRecvSuccess
 		}
 	}
