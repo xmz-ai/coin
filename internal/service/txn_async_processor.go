@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"log"
 	"strings"
 	"sync"
 )
@@ -252,6 +253,7 @@ func (p *TransferAsyncProcessor) processStage(txnNo, expectedStatus string) erro
 		if txn.BizType == BizTypeRefund {
 			applied, err := p.repo.ApplyRefundCreditStage(txn.TxnNo, txn.CreditAccountNo, txn.Amount)
 			if err != nil {
+				log.Printf("warn: refund credit stage failed, txn_no=%s status=%s err=%v", txnNo, TxnStatusPaySuccess, err)
 				// Keep refund txn in PAY_SUCCESS to allow compensation retry
 				// when second-stage credit fails after debit has succeeded.
 				return err
