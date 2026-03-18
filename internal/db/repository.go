@@ -762,6 +762,16 @@ func (r *Repository) ApplyRefundDebitStage(refundTxnNo string, amount int64) (bo
 	if origin.MerchantNo != refund.MerchantNo {
 		return false, service.ErrTxnNotFound
 	}
+	originTxn, err := qtx.GetTransferTxnByNo(ctx, originTxnUUID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, service.ErrTxnNotFound
+	}
+	if err != nil {
+		return false, err
+	}
+	if originTxn.BizType != service.BizTypeTransfer || originTxn.Status != service.TxnStatusRecvSuccess {
+		return false, service.ErrTxnStatusInvalid
+	}
 	if origin.RefundableAmount < amount {
 		return false, service.ErrRefundAmountExceeded
 	}
