@@ -260,6 +260,79 @@ func TestTC8014WebhookWorkerRetryOnSecretUnavailable(t *testing.T) {
 	}
 }
 
+func TestTC8015OutboxClaimMarksProcessingAndPreventsDuplicateClaim(t *testing.T) {
+	repo, pool, _, _ := setupWebhookWorkerFixture(t)
+
+	now := time.Now().UTC().Add(24 * time.Hour)
+	first, err := repo.ClaimDueOutboxEvents(10, now)
+	if err != nil {
+		t.Fatalf("first claim events failed: %v", err)
+	}
+	if len(first) != 1 {
+		t.Fatalf("expected one claimed event, got %+v", first)
+	}
+
+	rows := queryOutboxEventsByTxnNo(t, pool, "01956f4e-9d22-73bc-8e11-3f5e9c7a8111")
+	if len(rows) != 1 {
+		t.Fatalf("expected one outbox row, got %+v", rows)
+	}
+	if rows[0].Status != "PROCESSING" {
+		t.Fatalf("expected outbox status PROCESSING after claim, got %s", rows[0].Status)
+	}
+
+	second, err := repo.ClaimDueOutboxEvents(10, now)
+	if err != nil {
+		t.Fatalf("second claim events failed: %v", err)
+	}
+	if len(second) != 0 {
+		t.Fatalf("expected duplicate claim blocked, got %+v", second)
+	}
+
+	if err := repo.MarkOutboxEventRetry(rows[0].EventID, 1, time.Now().UTC().Add(-time.Second), false); err != nil {
+		t.Fatalf("mark retry failed: %v", err)
+	}
+	third, err := repo.ClaimDueOutboxEvents(10, now)
+	if err != nil {
+		t.Fatalf("third claim events failed: %v", err)
+	}
+	if len(third) != 1 || third[0].RetryCount != 1 {
+		t.Fatalf("expected one re-claimed event with retry_count=1, got %+v", third)
+	}
+}
+
+func TestTC8016OutboxClaimRecoversStaleProcessingEvent(t *testing.T) {
+	repo, pool, _, _ := setupWebhookWorkerFixture(t)
+
+	rows := queryOutboxEventsByTxnNo(t, pool, "01956f4e-9d22-73bc-8e11-3f5e9c7a8111")
+	if len(rows) != 1 {
+		t.Fatalf("expected one outbox row, got %+v", rows)
+	}
+	if _, err := pool.Exec(context.Background(), `
+		UPDATE outbox_event
+		SET status = 'PROCESSING', updated_at = NOW() - INTERVAL '31 minutes'
+		WHERE event_id = $1::uuid
+	`, rows[0].EventID); err != nil {
+		t.Fatalf("set stale processing status failed: %v", err)
+	}
+
+	now := time.Now().UTC().Add(24 * time.Hour)
+	events, err := repo.ClaimDueOutboxEvents(10, now)
+	if err != nil {
+		t.Fatalf("claim events failed: %v", err)
+	}
+	if len(events) != 1 || events[0].EventID != rows[0].EventID {
+		t.Fatalf("expected stale processing event reclaimed, got %+v", events)
+	}
+
+	again, err := repo.ClaimDueOutboxEvents(10, now)
+	if err != nil {
+		t.Fatalf("claim events second round failed: %v", err)
+	}
+	if len(again) != 0 {
+		t.Fatalf("expected no duplicate claim after reclaim, got %+v", again)
+	}
+}
+
 func setupWebhookWorkerFixture(t *testing.T) (*db.Repository, *pgxpool.Pool, *db.MerchantSecretManager, string) {
 	t.Helper()
 

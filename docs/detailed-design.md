@@ -84,15 +84,13 @@
 ## 3.1 状态集合
 
 - `INIT`
-- `PROCESSING`
 - `PAY_SUCCESS`
 - `RECV_SUCCESS`（终态）
 - `FAILED`（终态）
 
 ## 3.2 合法迁移
 
-- `INIT -> PROCESSING`
-- `PROCESSING -> PAY_SUCCESS | FAILED`
+- `INIT -> PAY_SUCCESS | FAILED`
 - `PAY_SUCCESS -> RECV_SUCCESS | FAILED`
 
 任何越级更新均返回 `TXN_STATUS_INVALID`，并记录审计日志。
@@ -112,13 +110,13 @@ API
 Service
   -> IdempotencyRepo: check (merchant_no, out_trade_no)
   -> TxnRepo: insert txn(INIT)
-  -> TxnRepo: transit INIT->PROCESSING
+  -> TxnRepo: transit INIT->PAY_SUCCESS
   -> AccountingDomainService: apply debit/credit
 AccountingDomainService
   -> AccountRepo/BookRepo: lock and mutate balance
   -> LogRepo: write account_change_log / account_book_change_log
 Service
-  -> TxnRepo: transit PROCESSING->PAY_SUCCESS->RECV_SUCCESS
+  -> TxnRepo: transit PAY_SUCCESS->RECV_SUCCESS
   -> OutboxRepo: insert TxnSucceeded
   -> commit transaction
 Worker
@@ -244,7 +242,7 @@ Webhook 投递在异步事务中执行，不阻塞主交易提交。
 
 ## 8.1 交易补偿
 
-- 扫描滞留交易（`PROCESSING/PAY_SUCCESS`）
+- 扫描滞留交易（`INIT/PAY_SUCCESS`）
 - 根据日志与外部结果推进到可收敛终态
 
 ## 8.2 通知补偿

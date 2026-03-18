@@ -138,7 +138,8 @@ func (w *WebhookWorker) Enqueue(txnNo string) {
 	select {
 	case w.queue <- txnNo:
 	default:
-		w.DeliverTxn(context.Background(), txnNo)
+		// Avoid running delivery on request path when queue is saturated.
+		// Periodic polling and compensation will pick up pending events.
 	}
 }
 

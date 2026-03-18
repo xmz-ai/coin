@@ -1,0 +1,6 @@
+ALTER TABLE txn
+DROP CONSTRAINT IF EXISTS txn_status_check;
+
+ALTER TABLE txn
+ADD CONSTRAINT txn_status_check
+CHECK (status IN ('INIT', 'PAY_SUCCESS', 'RECV_SUCCESS', 'FAILED'));

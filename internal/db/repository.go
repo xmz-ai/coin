@@ -1166,6 +1166,10 @@ func buildRefundBookCreditParts(
 		return nil, service.ErrAccountResolveFailed
 	}
 
+	refundTxnUUID, err := parseUUID(refundTxnNo)
+	if err != nil {
+		return nil, service.ErrTxnNotFound
+	}
 	originTxnUUID, err := parseUUID(originTxnNo)
 	if err != nil {
 		return nil, service.ErrTxnNotFound
@@ -1198,7 +1202,8 @@ func buildRefundBookCreditParts(
 		return nil, service.ErrRefundOriginBookTraceMissing
 	}
 
-	refundDebits, err := q.ListRefundDebitsByOrigin(ctx, dbsqlc.ListRefundDebitsByOriginParams{
+	refundStats, err := q.GetRefundDebitStatsByOrigin(ctx, dbsqlc.GetRefundDebitStatsByOriginParams{
+		RefundTxnNo:           refundTxnUUID,
 		MerchantNo:            merchantNo,
 		OriginTxnNo:           originTxnUUID,
 		OriginCreditAccountNo: originCreditAccountNo,
@@ -1206,17 +1211,11 @@ func buildRefundBookCreditParts(
 	if err != nil {
 		return nil, err
 	}
-
-	priorDebited := int64(0)
-	foundCurrent := false
-	for _, item := range refundDebits {
-		if item.TxnNo == refundTxnNo {
-			foundCurrent = true
-			break
-		}
-		priorDebited += item.Amount
+	if refundStats.CurrentDebited <= 0 {
+		return nil, service.ErrRefundOriginBookTraceMissing
 	}
-	if !foundCurrent {
+	priorDebited := refundStats.TotalDebited - refundStats.CurrentDebited
+	if priorDebited < 0 {
 		return nil, service.ErrRefundOriginBookTraceMissing
 	}
 

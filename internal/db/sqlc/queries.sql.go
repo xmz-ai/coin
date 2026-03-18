@@ -25,23 +25,49 @@ func (q *Queries) AppliedChangeCount(ctx context.Context) (int64, error) {
 }
 
 const claimDueOutboxEvents = `-- name: ClaimDueOutboxEvents :many
+WITH picked AS (
+  SELECT
+    e.event_id,
+    e.created_at
+  FROM outbox_event e
+  WHERE (
+      e.status = 'PENDING'
+      AND (e.next_retry_at IS NULL OR e.next_retry_at <= $1::timestamptz)
+    ) OR (
+      e.status = 'PROCESSING'
+      AND e.updated_at <= NOW() - INTERVAL '30 minutes'
+    )
+  ORDER BY e.created_at ASC, e.event_id ASC
+  LIMIT $2
+  FOR UPDATE SKIP LOCKED
+),
+claimed AS (
+  UPDATE outbox_event e
+  SET status = 'PROCESSING',
+      updated_at = NOW()
+  FROM picked p
+  WHERE e.event_id = p.event_id
+  RETURNING
+    e.event_id,
+    e.txn_no,
+    e.merchant_no,
+    COALESCE(e.out_trade_no, '') AS out_trade_no,
+    e.retry_count,
+    p.created_at
+)
 SELECT
-  e.event_id::text AS event_id,
-  e.txn_no::text AS txn_no,
-  e.merchant_no,
-  COALESCE(e.out_trade_no, '') AS out_trade_no,
+  c.event_id::text AS event_id,
+  c.txn_no::text AS txn_no,
+  c.merchant_no,
+  c.out_trade_no,
   COALESCE(t.biz_type, '') AS biz_type,
   COALESCE(t.transfer_scene, '') AS transfer_scene,
   t.amount,
   COALESCE(t.status, '') AS status,
-  e.retry_count
-FROM outbox_event e
-JOIN txn t ON t.txn_no = e.txn_no
-WHERE e.status = 'PENDING'
-  AND (e.next_retry_at IS NULL OR e.next_retry_at <= $1::timestamptz)
-ORDER BY e.created_at ASC, e.event_id ASC
-LIMIT $2
-FOR UPDATE SKIP LOCKED
+  c.retry_count
+FROM claimed c
+JOIN txn t ON t.txn_no = c.txn_no
+ORDER BY c.created_at ASC, c.event_id ASC
 `
 
 type ClaimDueOutboxEventsParams struct {
@@ -92,24 +118,52 @@ func (q *Queries) ClaimDueOutboxEvents(ctx context.Context, arg ClaimDueOutboxEv
 }
 
 const claimDueOutboxEventsByTxnNo = `-- name: ClaimDueOutboxEventsByTxnNo :many
+WITH picked AS (
+  SELECT
+    e.event_id,
+    e.created_at
+  FROM outbox_event e
+  WHERE e.txn_no = $1::uuid
+    AND (
+      (
+        e.status = 'PENDING'
+        AND (e.next_retry_at IS NULL OR e.next_retry_at <= $2::timestamptz)
+      ) OR (
+        e.status = 'PROCESSING'
+        AND e.updated_at <= NOW() - INTERVAL '30 minutes'
+      )
+    )
+  ORDER BY e.created_at ASC, e.event_id ASC
+  LIMIT $3
+  FOR UPDATE SKIP LOCKED
+),
+claimed AS (
+  UPDATE outbox_event e
+  SET status = 'PROCESSING',
+      updated_at = NOW()
+  FROM picked p
+  WHERE e.event_id = p.event_id
+  RETURNING
+    e.event_id,
+    e.txn_no,
+    e.merchant_no,
+    COALESCE(e.out_trade_no, '') AS out_trade_no,
+    e.retry_count,
+    p.created_at
+)
 SELECT
-  e.event_id::text AS event_id,
-  e.txn_no::text AS txn_no,
-  e.merchant_no,
-  COALESCE(e.out_trade_no, '') AS out_trade_no,
+  c.event_id::text AS event_id,
+  c.txn_no::text AS txn_no,
+  c.merchant_no,
+  c.out_trade_no,
   COALESCE(t.biz_type, '') AS biz_type,
   COALESCE(t.transfer_scene, '') AS transfer_scene,
   t.amount,
   COALESCE(t.status, '') AS status,
-  e.retry_count
-FROM outbox_event e
-JOIN txn t ON t.txn_no = e.txn_no
-WHERE e.status = 'PENDING'
-  AND e.txn_no = $1::uuid
-  AND (e.next_retry_at IS NULL OR e.next_retry_at <= $2::timestamptz)
-ORDER BY e.created_at ASC, e.event_id ASC
-LIMIT $3
-FOR UPDATE SKIP LOCKED
+  c.retry_count
+FROM claimed c
+JOIN txn t ON t.txn_no = c.txn_no
+ORDER BY c.created_at ASC, c.event_id ASC
 `
 
 type ClaimDueOutboxEventsByTxnNoParams struct {
@@ -642,6 +696,44 @@ func (q *Queries) GetOriginTxnForUpdate(ctx context.Context, originTxnNo pgtype.
 	return i, err
 }
 
+const getRefundDebitStatsByOrigin = `-- name: GetRefundDebitStatsByOrigin :one
+SELECT
+  COALESCE(SUM(t.amount), 0)::bigint AS total_debited,
+  COALESCE(SUM(CASE WHEN t.txn_no = $1::uuid THEN t.amount ELSE 0 END), 0)::bigint AS current_debited
+FROM txn t
+JOIN account_change_log acl
+  ON acl.txn_no = t.txn_no
+WHERE t.merchant_no = $2
+  AND t.refund_of_txn_no = $3::uuid
+  AND t.biz_type = 'REFUND'
+  AND acl.account_no = $4
+  AND acl.delta < 0
+`
+
+type GetRefundDebitStatsByOriginParams struct {
+	RefundTxnNo           pgtype.UUID
+	MerchantNo            string
+	OriginTxnNo           pgtype.UUID
+	OriginCreditAccountNo string
+}
+
+type GetRefundDebitStatsByOriginRow struct {
+	TotalDebited   int64
+	CurrentDebited int64
+}
+
+func (q *Queries) GetRefundDebitStatsByOrigin(ctx context.Context, arg GetRefundDebitStatsByOriginParams) (GetRefundDebitStatsByOriginRow, error) {
+	row := q.db.QueryRow(ctx, getRefundDebitStatsByOrigin,
+		arg.RefundTxnNo,
+		arg.MerchantNo,
+		arg.OriginTxnNo,
+		arg.OriginCreditAccountNo,
+	)
+	var i GetRefundDebitStatsByOriginRow
+	err := row.Scan(&i.TotalDebited, &i.CurrentDebited)
+	return i, err
+}
+
 const getTransferTxnByNo = `-- name: GetTransferTxnByNo :one
 SELECT
   t.txn_no::text AS txn_no,
@@ -1170,52 +1262,6 @@ func (q *Queries) ListOriginDebitBookChanges(ctx context.Context, arg ListOrigin
 	for rows.Next() {
 		var i ListOriginDebitBookChangesRow
 		if err := rows.Scan(&i.Delta, &i.ExpireAt, &i.CreatedAt); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listRefundDebitsByOrigin = `-- name: ListRefundDebitsByOrigin :many
-SELECT
-  t.txn_no::text AS txn_no,
-  t.amount
-FROM txn t
-JOIN account_change_log acl
-  ON acl.txn_no = t.txn_no
-WHERE t.merchant_no = $1
-  AND t.refund_of_txn_no = $2::uuid
-  AND t.biz_type = 'REFUND'
-  AND acl.account_no = $3
-  AND acl.delta < 0
-ORDER BY acl.change_id ASC, t.txn_no ASC
-`
-
-type ListRefundDebitsByOriginParams struct {
-	MerchantNo            string
-	OriginTxnNo           pgtype.UUID
-	OriginCreditAccountNo string
-}
-
-type ListRefundDebitsByOriginRow struct {
-	TxnNo  string
-	Amount int64
-}
-
-func (q *Queries) ListRefundDebitsByOrigin(ctx context.Context, arg ListRefundDebitsByOriginParams) ([]ListRefundDebitsByOriginRow, error) {
-	rows, err := q.db.Query(ctx, listRefundDebitsByOrigin, arg.MerchantNo, arg.OriginTxnNo, arg.OriginCreditAccountNo)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListRefundDebitsByOriginRow
-	for rows.Next() {
-		var i ListRefundDebitsByOriginRow
-		if err := rows.Scan(&i.TxnNo, &i.Amount); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

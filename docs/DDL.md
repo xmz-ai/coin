@@ -125,7 +125,7 @@ CREATE TABLE IF NOT EXISTS txn (
   debit_account_no VARCHAR(19),
   credit_account_no VARCHAR(19),
   amount BIGINT NOT NULL CHECK (amount > 0),
-  status VARCHAR(24) NOT NULL CHECK (status IN ('INIT', 'PROCESSING', 'PAY_SUCCESS', 'RECV_SUCCESS', 'FAILED')),
+  status VARCHAR(24) NOT NULL CHECK (status IN ('INIT', 'PAY_SUCCESS', 'RECV_SUCCESS', 'FAILED')),
   refund_of_txn_no UUID,
   refundable_amount BIGINT NOT NULL DEFAULT 0 CHECK (refundable_amount >= 0),
   error_code VARCHAR(64),

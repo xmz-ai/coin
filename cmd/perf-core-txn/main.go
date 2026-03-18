@@ -35,6 +35,8 @@ import (
 const (
 	toBookTransferOutUser    = "u_perf_to_book"
 	toNonBookTransferOutUser = "u_perf_to_non_book"
+	progressBarWidth         = 24
+	progressTickInterval     = 500 * time.Millisecond
 )
 
 type perfConfig struct {
@@ -226,8 +228,8 @@ func loadPerfConfig() (perfConfig, error) {
 		Passphrase:           base.MerchantSecretPassphrase,
 		ProcessingTTLSeconds: max(base.ProcessingKeyTTLSeconds, 1),
 		TxnAsyncOpts: service.TransferAsyncProcessorOptions{
-			InitWorkers:       max(base.TxnAsyncStageWorkersInit, 1),
-			PaySuccessWorkers: max(base.TxnAsyncStageWorkersPaySuccess, 1),
+			InitWorkers:       max(base.TxnAsyncWorkersInit, 1),
+			PaySuccessWorkers: max(base.TxnAsyncWorkersPaySuccess, 1),
 			InitQueueSize:     max(base.TxnAsyncQueueSizeInit, 1),
 			PaySuccessQueue:   max(base.TxnAsyncQueueSizePaySuccess, 1),
 		},
@@ -386,7 +388,9 @@ func run(cfg perfConfig) error {
 				return fmt.Errorf("refund warmup failed: status=%d code=%s submit_ok=%t e2e_ok=%t origin_txn_no=%s transport_err=%s e2e_err=%s",
 					row.StatusCode, row.Code, row.SubmitOK, row.E2EOK, originTxnNo, row.TransportErr, row.E2EErr)
 			}
+			renderCountProgress("warmup", i+1, cfg.WarmupRequests)
 		}
+		fmt.Print("\n")
 		if err := assertBalances(repo,
 			runtimeEnv.TransferFromAccountNo,
 			runtimeEnv.TransferBookToAccount,
@@ -977,6 +981,23 @@ func runLoadDuration(
 	var idCounter uint64
 	start := time.Now()
 	deadline := start.Add(duration)
+	progressDone := make(chan struct{})
+	progressExited := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(progressTickInterval)
+		defer ticker.Stop()
+		defer close(progressExited)
+		for {
+			select {
+			case <-ticker.C:
+				renderDurationProgress(mode+" submit", time.Since(start), duration, int64(atomic.LoadUint64(&idCounter)))
+			case <-progressDone:
+				renderDurationProgress(mode+" submit", duration, duration, int64(atomic.LoadUint64(&idCounter)))
+				fmt.Print("\n")
+				return
+			}
+		}
+	}()
 
 	results := make(chan resultRow, concurrency*8)
 	var wg sync.WaitGroup
@@ -1010,11 +1031,22 @@ func runLoadDuration(
 			pending = append(pending, idx)
 		}
 	}
+	close(progressDone)
+	<-progressExited
 
 	submitElapsed := time.Since(start)
 	if requireWebhook {
-		for _, idx := range pending {
+		step := progressUpdateStep(len(pending))
+		for i, idx := range pending {
 			awaitWebhookResult(&rows[idx], webhookWaitTimeout)
+			done := i + 1
+			if done%step == 0 || done == len(pending) {
+				renderCountProgress(mode+" webhook", done, len(pending))
+			}
+		}
+		if len(pending) > 0 {
+			renderCountProgress(mode+" webhook", len(pending), len(pending))
+			fmt.Print("\n")
 		}
 	}
 
@@ -1072,17 +1104,35 @@ func runLoadByOriginTxnNos(
 
 	rows := make([]resultRow, 0, len(originTxnNos))
 	pending := make([]int, 0, len(originTxnNos))
+	step := progressUpdateStep(len(originTxnNos))
 	for row := range results {
 		idx := len(rows)
 		rows = append(rows, row)
 		if requireWebhook && row.SubmitOK && row.WebhookDone != nil {
 			pending = append(pending, idx)
 		}
+		done := len(rows)
+		if done%step == 0 || done == len(originTxnNos) {
+			renderCountProgress(mode+" submit", done, len(originTxnNos))
+		}
+	}
+	if len(originTxnNos) > 0 {
+		renderCountProgress(mode+" submit", len(originTxnNos), len(originTxnNos))
+		fmt.Print("\n")
 	}
 	submitElapsed := time.Since(start)
 	if requireWebhook {
-		for _, idx := range pending {
+		step = progressUpdateStep(len(pending))
+		for i, idx := range pending {
 			awaitWebhookResult(&rows[idx], webhookWaitTimeout)
+			done := i + 1
+			if done%step == 0 || done == len(pending) {
+				renderCountProgress(mode+" webhook", done, len(pending))
+			}
+		}
+		if len(pending) > 0 {
+			renderCountProgress(mode+" webhook", len(pending), len(pending))
+			fmt.Print("\n")
 		}
 	}
 	return aggregate(rows, submitElapsed, time.Since(start), mode)
@@ -1306,6 +1356,69 @@ func calcLatency(vals []time.Duration) latencyStats {
 		Max:   vals[len(vals)-1],
 		Avg:   time.Duration(int64(sum) / int64(len(vals))),
 	}
+}
+
+func progressUpdateStep(total int) int {
+	if total <= 0 {
+		return 1
+	}
+	step := total / 20
+	if step <= 0 {
+		return 1
+	}
+	return step
+}
+
+func renderCountProgress(label string, done, total int) {
+	if total <= 0 {
+		return
+	}
+	if done < 0 {
+		done = 0
+	}
+	if done > total {
+		done = total
+	}
+	ratio := float64(done) / float64(total)
+	bar := buildProgressBar(ratio, progressBarWidth)
+	percent := int(ratio*100 + 0.5)
+	fmt.Printf("\r[perf] progress=%s %s %3d%% (%d/%d)", label, bar, percent, done, total)
+}
+
+func renderDurationProgress(label string, elapsed, total time.Duration, processed int64) {
+	if total <= 0 {
+		return
+	}
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	if elapsed > total {
+		elapsed = total
+	}
+	ratio := float64(elapsed) / float64(total)
+	bar := buildProgressBar(ratio, progressBarWidth)
+	percent := int(ratio*100 + 0.5)
+	fmt.Printf("\r[perf] progress=%s %s %3d%% elapsed=%s/%s processed=%d", label, bar, percent, elapsed.Round(time.Second), total.Round(time.Second), processed)
+}
+
+func buildProgressBar(ratio float64, width int) string {
+	if width <= 0 {
+		width = progressBarWidth
+	}
+	if ratio < 0 {
+		ratio = 0
+	}
+	if ratio > 1 {
+		ratio = 1
+	}
+	filled := int(ratio*float64(width) + 0.5)
+	if filled > width {
+		filled = width
+	}
+	if filled < 0 {
+		filled = 0
+	}
+	return "[" + strings.Repeat("#", filled) + strings.Repeat("-", width-filled) + "]"
 }
 
 func percentile(vals []time.Duration, p int) time.Duration {

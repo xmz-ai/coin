@@ -433,10 +433,10 @@ WHERE txn_no = sqlc.arg(txn_no)::uuid
   AND delta < 0
 ORDER BY change_id ASC;
 
--- name: ListRefundDebitsByOrigin :many
+-- name: GetRefundDebitStatsByOrigin :one
 SELECT
-  t.txn_no::text AS txn_no,
-  t.amount
+  COALESCE(SUM(t.amount), 0)::bigint AS total_debited,
+  COALESCE(SUM(CASE WHEN t.txn_no = sqlc.arg(refund_txn_no)::uuid THEN t.amount ELSE 0 END), 0)::bigint AS current_debited
 FROM txn t
 JOIN account_change_log acl
   ON acl.txn_no = t.txn_no
@@ -444,8 +444,7 @@ WHERE t.merchant_no = sqlc.arg(merchant_no)
   AND t.refund_of_txn_no = sqlc.arg(origin_txn_no)::uuid
   AND t.biz_type = 'REFUND'
   AND acl.account_no = sqlc.arg(origin_credit_account_no)
-  AND acl.delta < 0
-ORDER BY acl.change_id ASC, t.txn_no ASC;
+  AND acl.delta < 0;
 
 -- name: TxnCount :one
 SELECT COUNT(*)::bigint AS txn_count
@@ -500,43 +499,97 @@ WHERE merchant_no = sqlc.arg(merchant_no)
 LIMIT 1;
 
 -- name: ClaimDueOutboxEvents :many
+WITH picked AS (
+  SELECT
+    e.event_id,
+    e.created_at
+  FROM outbox_event e
+  WHERE (
+      e.status = 'PENDING'
+      AND (e.next_retry_at IS NULL OR e.next_retry_at <= sqlc.arg(now_at)::timestamptz)
+    ) OR (
+      e.status = 'PROCESSING'
+      AND e.updated_at <= NOW() - INTERVAL '30 minutes'
+    )
+  ORDER BY e.created_at ASC, e.event_id ASC
+  LIMIT sqlc.arg(page_limit)
+  FOR UPDATE SKIP LOCKED
+),
+claimed AS (
+  UPDATE outbox_event e
+  SET status = 'PROCESSING',
+      updated_at = NOW()
+  FROM picked p
+  WHERE e.event_id = p.event_id
+  RETURNING
+    e.event_id,
+    e.txn_no,
+    e.merchant_no,
+    COALESCE(e.out_trade_no, '') AS out_trade_no,
+    e.retry_count,
+    p.created_at
+)
 SELECT
-  e.event_id::text AS event_id,
-  e.txn_no::text AS txn_no,
-  e.merchant_no,
-  COALESCE(e.out_trade_no, '') AS out_trade_no,
+  c.event_id::text AS event_id,
+  c.txn_no::text AS txn_no,
+  c.merchant_no,
+  c.out_trade_no,
   COALESCE(t.biz_type, '') AS biz_type,
   COALESCE(t.transfer_scene, '') AS transfer_scene,
   t.amount,
   COALESCE(t.status, '') AS status,
-  e.retry_count
-FROM outbox_event e
-JOIN txn t ON t.txn_no = e.txn_no
-WHERE e.status = 'PENDING'
-  AND (e.next_retry_at IS NULL OR e.next_retry_at <= sqlc.arg(now_at)::timestamptz)
-ORDER BY e.created_at ASC, e.event_id ASC
-LIMIT sqlc.arg(page_limit)
-FOR UPDATE SKIP LOCKED;
+  c.retry_count
+FROM claimed c
+JOIN txn t ON t.txn_no = c.txn_no
+ORDER BY c.created_at ASC, c.event_id ASC;
 
 -- name: ClaimDueOutboxEventsByTxnNo :many
+WITH picked AS (
+  SELECT
+    e.event_id,
+    e.created_at
+  FROM outbox_event e
+  WHERE e.txn_no = sqlc.arg(txn_no)::uuid
+    AND (
+      (
+        e.status = 'PENDING'
+        AND (e.next_retry_at IS NULL OR e.next_retry_at <= sqlc.arg(now_at)::timestamptz)
+      ) OR (
+        e.status = 'PROCESSING'
+        AND e.updated_at <= NOW() - INTERVAL '30 minutes'
+      )
+    )
+  ORDER BY e.created_at ASC, e.event_id ASC
+  LIMIT sqlc.arg(page_limit)
+  FOR UPDATE SKIP LOCKED
+),
+claimed AS (
+  UPDATE outbox_event e
+  SET status = 'PROCESSING',
+      updated_at = NOW()
+  FROM picked p
+  WHERE e.event_id = p.event_id
+  RETURNING
+    e.event_id,
+    e.txn_no,
+    e.merchant_no,
+    COALESCE(e.out_trade_no, '') AS out_trade_no,
+    e.retry_count,
+    p.created_at
+)
 SELECT
-  e.event_id::text AS event_id,
-  e.txn_no::text AS txn_no,
-  e.merchant_no,
-  COALESCE(e.out_trade_no, '') AS out_trade_no,
+  c.event_id::text AS event_id,
+  c.txn_no::text AS txn_no,
+  c.merchant_no,
+  c.out_trade_no,
   COALESCE(t.biz_type, '') AS biz_type,
   COALESCE(t.transfer_scene, '') AS transfer_scene,
   t.amount,
   COALESCE(t.status, '') AS status,
-  e.retry_count
-FROM outbox_event e
-JOIN txn t ON t.txn_no = e.txn_no
-WHERE e.status = 'PENDING'
-  AND e.txn_no = sqlc.arg(txn_no)::uuid
-  AND (e.next_retry_at IS NULL OR e.next_retry_at <= sqlc.arg(now_at)::timestamptz)
-ORDER BY e.created_at ASC, e.event_id ASC
-LIMIT sqlc.arg(page_limit)
-FOR UPDATE SKIP LOCKED;
+  c.retry_count
+FROM claimed c
+JOIN txn t ON t.txn_no = c.txn_no
+ORDER BY c.created_at ASC, c.event_id ASC;
 
 -- name: MarkOutboxEventSuccess :exec
 UPDATE outbox_event

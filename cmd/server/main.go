@@ -47,8 +47,8 @@ func main() {
 	}
 	processingGuard := service.NewRedisProcessingGuard(redisClient, guardTTL)
 	asyncTransferProcessor := service.NewTransferAsyncProcessorWithGuardAndOptions(repo, processingGuard, service.TransferAsyncProcessorOptions{
-		InitWorkers:       cfg.TxnAsyncStageWorkersInit,
-		PaySuccessWorkers: cfg.TxnAsyncStageWorkersPaySuccess,
+		InitWorkers:       cfg.TxnAsyncWorkersInit,
+		PaySuccessWorkers: cfg.TxnAsyncWorkersPaySuccess,
 		InitQueueSize:     cfg.TxnAsyncQueueSizeInit,
 		PaySuccessQueue:   cfg.TxnAsyncQueueSizePaySuccess,
 	})
@@ -65,9 +65,6 @@ func main() {
 	// Fallback recovery worker; main path is in-process async Enqueue on API submit.
 	go transferWorker.Start(ctx, time.Duration(cfg.TxnRecoveryIntervalMS)*time.Millisecond)
 	go webhookWorker.Start(ctx, time.Duration(cfg.WebhookWorkerIntervalMS)*time.Millisecond)
-
-	notifyCompWorker := service.NewWebhookWorker(repo, secretManager, cfg.WebhookMaxRetries, cfg.WebhookWorkerBatchSize, cfg.WebhookRetryBackoffMinute)
-	go notifyCompWorker.StartWithReport(ctx, time.Duration(cfg.NotifyCompensationIntervalMS)*time.Millisecond, service.NewWebhookReportHook())
 
 	authMiddleware := api.NewAuthMiddleware(api.AuthMiddlewareConfig{
 		SecretProvider: secretManager,
