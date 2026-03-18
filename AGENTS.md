@@ -12,11 +12,11 @@
 - `docs`: source-of-truth specs (`API.md`, `domain.md`, `DDL.md`, `CODE_RULES.md`).
 
 ## Build, Test, and Development Commands
-- `make test`: run full Go test suite (`go test ./...`).
-- `make smoke`: run baseline smoke cases from `scripts/test/smoke.sh`.
-- `make test-pg`: run PostgreSQL integration suite via Dockerized Postgres.
+- `make test`: run the repository test script (`scripts/test/test.sh`) for e2e + integration + unit.
+- `make perf`: run core transaction performance tests via `scripts/test/perf_core_txn_real.sh`.
 - `make sqlc`: regenerate typed DB access code from SQL (`sqlc.yaml`).
-- `scripts/test/perf_core_txn_real.sh`: run real-chain load test (Gin + PostgreSQL + Redis).
+- `scripts/test/test.sh`: standalone test entrypoint (can use Dockerized PostgreSQL if DSN not preset).
+- `scripts/test/perf_core_txn_real.sh`: real-chain load test (Gin + PostgreSQL + Redis), with database reset before each run.
 - Example targeted run: `go test -v ./tests/integration -run 'TestTC1101' -count=1`.
 
 ## Coding Style & Naming Conventions
