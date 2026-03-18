@@ -34,7 +34,7 @@ func (w *TransferRecoveryWorker) RunOnce() {
 		return
 	}
 
-	for _, status := range []string{TxnStatusInit, TxnStatusProcessing, TxnStatusPaySuccess} {
+	for _, status := range []string{TxnStatusInit, TxnStatusPaySuccess} {
 		txnNos, err := w.listTxnNosByStatus(status)
 		if err != nil {
 			continue
@@ -97,7 +97,7 @@ func (w *TransferRecoveryWorker) StartWithReport(ctx context.Context, interval t
 
 func (w *TransferRecoveryWorker) runOnceWithResult() (int, error) {
 	dispatched := 0
-	for _, status := range []string{TxnStatusInit, TxnStatusProcessing, TxnStatusPaySuccess} {
+	for _, status := range []string{TxnStatusInit, TxnStatusPaySuccess} {
 		txnNos, err := w.listTxnNosByStatus(status)
 		if err != nil {
 			return dispatched, err

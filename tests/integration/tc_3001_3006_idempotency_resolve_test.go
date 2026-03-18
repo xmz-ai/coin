@@ -126,10 +126,10 @@ func TestTC3005OutUserIDNotUsedForMerchantSystemAccount(t *testing.T) {
 
 func TestTC3006ProcessingKeyPreventsDuplicateExecution(t *testing.T) {
 	guard := service.NewProcessingGuard()
-	if ok := guard.TryBegin("txn_3006", "PROCESSING"); !ok {
+	if ok := guard.TryBegin("txn_3006", service.TxnStatusPaySuccess); !ok {
 		t.Fatalf("first begin should succeed")
 	}
-	if ok := guard.TryBegin("txn_3006", "PROCESSING"); ok {
+	if ok := guard.TryBegin("txn_3006", service.TxnStatusPaySuccess); ok {
 		t.Fatalf("second begin should be blocked by processing key")
 	}
 }

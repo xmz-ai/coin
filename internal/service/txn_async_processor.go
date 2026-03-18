@@ -7,25 +7,21 @@ import (
 
 const (
 	defaultAsyncInitWorkers       = 4
-	defaultAsyncProcessingWorkers = 4
 	defaultAsyncPaySuccessWorkers = 4
-	defaultAsyncInitQueueSize     = 256
-	defaultAsyncProcessingQueue   = 256
-	defaultAsyncPaySuccessQueue   = 256
+	defaultAsyncInitQueueSize     = 10240
+	defaultAsyncPaySuccessQueue   = 10240
 )
 
 // TransferAsyncProcessor processes transfer/refund transactions asynchronously
-// by stage queues: INIT -> PROCESSING -> PAY_SUCCESS.
+// by stage queues: INIT -> PAY_SUCCESS.
 type StageProcessingGuardWithError interface {
 	TryBeginWithError(txnNo, stage string) (bool, error)
 }
 
 type TransferAsyncProcessorOptions struct {
 	InitWorkers       int
-	ProcessingWorkers int
 	PaySuccessWorkers int
 	InitQueueSize     int
-	ProcessingQueue   int
 	PaySuccessQueue   int
 }
 
@@ -33,17 +29,11 @@ func (o TransferAsyncProcessorOptions) withDefaults() TransferAsyncProcessorOpti
 	if o.InitWorkers <= 0 {
 		o.InitWorkers = defaultAsyncInitWorkers
 	}
-	if o.ProcessingWorkers <= 0 {
-		o.ProcessingWorkers = defaultAsyncProcessingWorkers
-	}
 	if o.PaySuccessWorkers <= 0 {
 		o.PaySuccessWorkers = defaultAsyncPaySuccessWorkers
 	}
 	if o.InitQueueSize <= 0 {
 		o.InitQueueSize = defaultAsyncInitQueueSize
-	}
-	if o.ProcessingQueue <= 0 {
-		o.ProcessingQueue = defaultAsyncProcessingQueue
 	}
 	if o.PaySuccessQueue <= 0 {
 		o.PaySuccessQueue = defaultAsyncPaySuccessQueue
@@ -55,7 +45,6 @@ type TransferAsyncProcessor struct {
 	repo            Repository
 	guard           StageProcessingGuard
 	initQueue       chan string
-	processingQueue chan string
 	paySuccessQueue chan string
 }
 
@@ -76,11 +65,9 @@ func NewTransferAsyncProcessorWithGuardAndOptions(repo Repository, guard StagePr
 		repo:            repo,
 		guard:           guard,
 		initQueue:       make(chan string, opts.InitQueueSize),
-		processingQueue: make(chan string, opts.ProcessingQueue),
 		paySuccessQueue: make(chan string, opts.PaySuccessQueue),
 	}
 	p.startWorkers(TxnStatusInit, opts.InitWorkers, p.initQueue)
-	p.startWorkers(TxnStatusProcessing, opts.ProcessingWorkers, p.processingQueue)
 	p.startWorkers(TxnStatusPaySuccess, opts.PaySuccessWorkers, p.paySuccessQueue)
 	return p
 }
@@ -117,8 +104,6 @@ func (p *TransferAsyncProcessor) EnqueueByStatus(txnNo, status string) bool {
 	switch status {
 	case TxnStatusInit:
 		return enqueueTxn(p.initQueue, txnNo)
-	case TxnStatusProcessing:
-		return enqueueTxn(p.processingQueue, txnNo)
 	case TxnStatusPaySuccess:
 		return enqueueTxn(p.paySuccessQueue, txnNo)
 	case TxnStatusRecvSuccess, TxnStatusFailed:
@@ -194,22 +179,10 @@ func (p *TransferAsyncProcessor) processStage(txnNo, expectedStatus string) erro
 
 	switch expectedStatus {
 	case TxnStatusInit:
-		moved, err := p.transit(txn, TxnStatusProcessing, "", "")
-		if err != nil {
-			_ = p.fail(txnNo, TxnStatusInit, "STATUS_TRANSITION_FAILED", err.Error())
-			return err
-		}
-		if !moved {
-			p.enqueueByCurrentStatus(txnNo)
-			return nil
-		}
-		_ = p.EnqueueByStatus(txnNo, TxnStatusProcessing)
-		return nil
-	case TxnStatusProcessing:
 		if txn.BizType == BizTypeRefund {
 			applied, err := p.repo.ApplyRefundDebitStage(txn.TxnNo, txn.Amount)
 			if err != nil {
-				return p.handleStageError(txnNo, TxnStatusProcessing, p.refundDebitErrorCode(err), err)
+				return p.handleStageError(txnNo, TxnStatusInit, p.refundDebitErrorCode(err), err)
 			}
 			if !applied {
 				p.enqueueByCurrentStatus(txnNo)
@@ -220,7 +193,7 @@ func (p *TransferAsyncProcessor) processStage(txnNo, expectedStatus string) erro
 		}
 		applied, err := p.repo.ApplyTransferDebitStage(txn.TxnNo, txn.DebitAccountNo, txn.Amount)
 		if err != nil {
-			return p.handleStageError(txnNo, TxnStatusProcessing, "DEBIT_FAILED", err)
+			return p.handleStageError(txnNo, TxnStatusInit, "DEBIT_FAILED", err)
 		}
 		if !applied {
 			p.enqueueByCurrentStatus(txnNo)
@@ -261,17 +234,6 @@ func (p *TransferAsyncProcessor) enqueueByCurrentStatus(txnNo string) {
 		return
 	}
 	_ = p.EnqueueByStatus(txnNo, txn.Status)
-}
-
-func (p *TransferAsyncProcessor) transit(txn TransferTxn, nextStatus, errorCode, errorMsg string) (bool, error) {
-	if txn.Status == nextStatus {
-		return false, nil
-	}
-	sm := NewTxnStateMachine(txn.Status)
-	if err := sm.Transit(nextStatus); err != nil {
-		return false, err
-	}
-	return p.repo.TransitionTransferTxnStatus(txn.TxnNo, txn.Status, nextStatus, errorCode, errorMsg)
 }
 
 func (p *TransferAsyncProcessor) fail(txnNo, fromStatus, errorCode, errorMsg string) error {

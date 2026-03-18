@@ -48,16 +48,14 @@ func main() {
 	processingGuard := service.NewRedisProcessingGuard(redisClient, guardTTL)
 	asyncTransferProcessor := service.NewTransferAsyncProcessorWithGuardAndOptions(repo, processingGuard, service.TransferAsyncProcessorOptions{
 		InitWorkers:       cfg.TxnAsyncStageWorkersInit,
-		ProcessingWorkers: cfg.TxnAsyncStageWorkersProcessing,
 		PaySuccessWorkers: cfg.TxnAsyncStageWorkersPaySuccess,
 		InitQueueSize:     cfg.TxnAsyncQueueSizeInit,
-		ProcessingQueue:   cfg.TxnAsyncQueueSizeProcessing,
 		PaySuccessQueue:   cfg.TxnAsyncQueueSizePaySuccess,
 	})
 	transferWorker := service.NewTransferRecoveryWorkerWithStaleThreshold(
 		repo,
 		asyncTransferProcessor,
-		200,
+		cfg.TxnRecoveryBatchSize,
 		time.Duration(cfg.TxnRecoveryStaleMS)*time.Millisecond,
 	)
 	webhookWorker := service.NewWebhookWorker(repo, secretManager, cfg.WebhookMaxRetries, cfg.WebhookWorkerBatchSize, cfg.WebhookRetryBackoffMinute)
@@ -68,14 +66,7 @@ func main() {
 	go transferWorker.Start(ctx, time.Duration(cfg.TxnRecoveryIntervalMS)*time.Millisecond)
 	go webhookWorker.Start(ctx, time.Duration(cfg.WebhookWorkerIntervalMS)*time.Millisecond)
 
-	txnCompWorker := service.NewTransferRecoveryWorkerWithStaleThreshold(
-		repo,
-		asyncTransferProcessor,
-		200,
-		time.Duration(cfg.TxnRecoveryStaleMS)*time.Millisecond,
-	)
 	notifyCompWorker := service.NewWebhookWorker(repo, secretManager, cfg.WebhookMaxRetries, cfg.WebhookWorkerBatchSize, cfg.WebhookRetryBackoffMinute)
-	go txnCompWorker.StartWithReport(ctx, time.Duration(cfg.TxnCompensationIntervalMS)*time.Millisecond, service.NewCompensationReportHook())
 	go notifyCompWorker.StartWithReport(ctx, time.Duration(cfg.NotifyCompensationIntervalMS)*time.Millisecond, service.NewWebhookReportHook())
 
 	authMiddleware := api.NewAuthMiddleware(api.AuthMiddlewareConfig{

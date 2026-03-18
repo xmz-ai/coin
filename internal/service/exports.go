@@ -15,7 +15,6 @@ const (
 	SceneAdjust  = domain.SceneAdjust
 
 	TxnStatusInit        = domain.TxnStatusInit
-	TxnStatusProcessing  = domain.TxnStatusProcessing
 	TxnStatusPaySuccess  = domain.TxnStatusPaySuccess
 	TxnStatusRecvSuccess = domain.TxnStatusRecvSuccess
 	TxnStatusFailed      = domain.TxnStatusFailed

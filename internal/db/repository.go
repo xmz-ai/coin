@@ -617,7 +617,7 @@ func (r *Repository) ApplyTransferDebitStage(txnNo, debitAccountNo string, amoun
 	if err != nil {
 		return false, err
 	}
-	if stage.Status != service.TxnStatusProcessing {
+	if stage.Status != service.TxnStatusInit {
 		if err := tx.Commit(ctx); err != nil {
 			return false, err
 		}
@@ -738,7 +738,7 @@ func (r *Repository) ApplyRefundDebitStage(refundTxnNo string, amount int64) (bo
 	if err != nil {
 		return false, err
 	}
-	if refund.Status != service.TxnStatusProcessing {
+	if refund.Status != service.TxnStatusInit {
 		if err := tx.Commit(ctx); err != nil {
 			return false, err
 		}

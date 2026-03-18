@@ -166,11 +166,8 @@ func TestTC4008P2PToSideForbidTransferAllowed(t *testing.T) {
 
 func TestTC4009StateMachineValidTransitions(t *testing.T) {
 	sm := service.NewTxnStateMachine(service.TxnStatusInit)
-	if err := sm.Transit(service.TxnStatusProcessing); err != nil {
-		t.Fatalf("init->processing failed: %v", err)
-	}
 	if err := sm.Transit(service.TxnStatusPaySuccess); err != nil {
-		t.Fatalf("processing->pay_success failed: %v", err)
+		t.Fatalf("init->pay_success failed: %v", err)
 	}
 	if err := sm.Transit(service.TxnStatusRecvSuccess); err != nil {
 		t.Fatalf("pay_success->recv_success failed: %v", err)
