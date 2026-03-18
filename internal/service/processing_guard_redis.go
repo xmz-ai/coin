@@ -58,3 +58,16 @@ func (g *RedisProcessingGuard) TryBeginWithError(txnNo, stage string) (bool, err
 	}
 	return ok, nil
 }
+
+func (g *RedisProcessingGuard) End(txnNo, stage string) {
+	if g == nil || g.client == nil {
+		return
+	}
+	key := ProcessingKey(txnNo, stage)
+	if strings.TrimSpace(key) == "+" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	_ = g.client.Del(ctx, key).Err()
+}

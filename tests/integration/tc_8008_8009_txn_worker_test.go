@@ -49,13 +49,7 @@ func TestTC8008TransferWorkerProcessesInitTxn(t *testing.T) {
 	worker := service.NewTransferRecoveryWorker(repo, processor, 100)
 	worker.RunOnce()
 
-	got, ok := repo.GetTransferTxn(txn.TxnNo)
-	if !ok {
-		t.Fatalf("txn not found")
-	}
-	if got.Status != service.TxnStatusRecvSuccess {
-		t.Fatalf("expected txn status RECV_SUCCESS, got %s", got.Status)
-	}
+	waitTxnStatusRepo(t, repo, txn.TxnNo, service.TxnStatusRecvSuccess, 2*time.Second)
 
 	debit, _ := repo.GetAccount(debitAccountNo)
 	credit, _ := repo.GetAccount(creditAccountNo)
@@ -98,13 +92,7 @@ func TestTC8009TransferWorkerContinuesFromPaySuccess(t *testing.T) {
 	worker := service.NewTransferRecoveryWorker(repo, processor, 100)
 	worker.RunOnce()
 
-	got, ok := repo.GetTransferTxn("01956f4e-9d22-73bc-8e11-3f5e9c7a8809")
-	if !ok {
-		t.Fatalf("txn not found")
-	}
-	if got.Status != service.TxnStatusRecvSuccess {
-		t.Fatalf("expected txn status RECV_SUCCESS, got %s", got.Status)
-	}
+	waitTxnStatusRepo(t, repo, "01956f4e-9d22-73bc-8e11-3f5e9c7a8809", service.TxnStatusRecvSuccess, 2*time.Second)
 
 	credit, _ := repo.GetAccount(creditAccountNo)
 	if credit.Balance != 100 {
@@ -237,4 +225,39 @@ func setupWorkerTransferFixture(t *testing.T) (*db.Repository, *pgxpool.Pool, se
 	}
 
 	return repo, pool, merchant, debitAccountNo, creditAccountNo
+}
+
+func waitTxnStatusRepo(t *testing.T, repo *db.Repository, txnNo, wantStatus string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		txn, ok := repo.GetTransferTxn(txnNo)
+		if ok && txn.Status == wantStatus {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	txn, ok := repo.GetTransferTxn(txnNo)
+	if !ok {
+		t.Fatalf("txn not found while waiting status: txn_no=%s want=%s", txnNo, wantStatus)
+	}
+	t.Fatalf("txn status not reached in time: txn_no=%s got=%s want=%s", txnNo, txn.Status, wantStatus)
+}
+
+func waitTxnTerminalRepo(t *testing.T, repo *db.Repository, txnNo string, timeout time.Duration) service.TransferTxn {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		txn, ok := repo.GetTransferTxn(txnNo)
+		if ok && (txn.Status == service.TxnStatusRecvSuccess || txn.Status == service.TxnStatusFailed) {
+			return txn
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	txn, ok := repo.GetTransferTxn(txnNo)
+	if !ok {
+		t.Fatalf("txn not found while waiting terminal: txn_no=%s", txnNo)
+	}
+	t.Fatalf("txn did not reach terminal status in time: txn_no=%s status=%s", txnNo, txn.Status)
+	return service.TransferTxn{}
 }

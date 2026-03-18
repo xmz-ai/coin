@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -55,6 +57,14 @@ type pgOutboxEvent struct {
 	NextRetry  *time.Time
 }
 
+var (
+	autoPGOnce       sync.Once
+	autoPGDSN        string
+	autoPGContainer  string
+	autoPGStartedNow bool
+	autoPGErr        error
+)
+
 func loadMigrationSQL(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
@@ -88,7 +98,11 @@ func setupPostgresPool(t *testing.T) *pgxpool.Pool {
 
 	dsn := os.Getenv("COIN_TEST_POSTGRES_DSN")
 	if dsn == "" {
-		t.Skip("COIN_TEST_POSTGRES_DSN not set")
+		var err error
+		dsn, err = ensureAutoPostgresDSN()
+		if err != nil {
+			t.Fatalf("bootstrap postgres failed: %v", err)
+		}
 	}
 
 	adminPool, err := db.NewPool(context.Background(), dsn)
@@ -125,6 +139,126 @@ func setupPostgresPool(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("apply up migration failed: %v", err)
 	}
 	return pool
+}
+
+func ensureAutoPostgresDSN() (string, error) {
+	autoPGOnce.Do(func() {
+		dsn := strings.TrimSpace(os.Getenv("COIN_TEST_POSTGRES_DSN"))
+		if dsn != "" {
+			autoPGDSN = dsn
+			return
+		}
+
+		if _, err := exec.LookPath("docker"); err != nil {
+			autoPGErr = fmt.Errorf("COIN_TEST_POSTGRES_DSN not set and docker not found: %w", err)
+			return
+		}
+
+		container := getenvWithDefault("COIN_TEST_PG_CONTAINER", "coin-test-postgres")
+		port := getenvWithDefault("COIN_TEST_PG_PORT", "55432")
+		user := getenvWithDefault("COIN_TEST_PG_USER", "postgres")
+		password := getenvWithDefault("COIN_TEST_PG_PASSWORD", "postgres")
+		dbName := getenvWithDefault("COIN_TEST_PG_DB", "coin_test")
+		image := getenvWithDefault("COIN_TEST_PG_IMAGE", "postgres:16-alpine")
+		autoPGContainer = container
+
+		running, err := dockerContainerRunning(container)
+		if err != nil {
+			autoPGErr = err
+			return
+		}
+		if !running {
+			exists, err := dockerContainerExists(container)
+			if err != nil {
+				autoPGErr = err
+				return
+			}
+			if exists {
+				if out, err := exec.Command("docker", "rm", "-f", container).CombinedOutput(); err != nil {
+					autoPGErr = fmt.Errorf("docker rm stale container %s failed: %v output=%s", container, err, strings.TrimSpace(string(out)))
+					return
+				}
+			}
+			out, err := exec.Command(
+				"docker", "run", "-d", "--rm",
+				"--name", container,
+				"-e", "POSTGRES_USER="+user,
+				"-e", "POSTGRES_PASSWORD="+password,
+				"-e", "POSTGRES_DB="+dbName,
+				"-p", port+":5432",
+				image,
+			).CombinedOutput()
+			if err != nil {
+				autoPGErr = fmt.Errorf("docker run postgres failed: %v output=%s", err, strings.TrimSpace(string(out)))
+				return
+			}
+			autoPGStartedNow = true
+		}
+
+		if err := waitPostgresReady(container, user, dbName, 60*time.Second); err != nil {
+			autoPGErr = err
+			return
+		}
+
+		autoPGDSN = fmt.Sprintf("postgres://%s:%s@localhost:%s/%s?sslmode=disable", user, password, port, dbName)
+		_ = os.Setenv("COIN_TEST_POSTGRES_DSN", autoPGDSN)
+	})
+
+	if autoPGErr != nil {
+		return "", autoPGErr
+	}
+	return autoPGDSN, nil
+}
+
+func stopAutoPostgresContainer() {
+	if !autoPGStartedNow || strings.TrimSpace(autoPGContainer) == "" {
+		return
+	}
+	_, _ = exec.Command("docker", "stop", autoPGContainer).CombinedOutput()
+}
+
+func dockerContainerRunning(name string) (bool, error) {
+	out, err := exec.Command("docker", "ps", "--format", "{{.Names}}").CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("docker ps failed: %v output=%s", err, strings.TrimSpace(string(out)))
+	}
+	return hasExactLine(string(out), name), nil
+}
+
+func dockerContainerExists(name string) (bool, error) {
+	out, err := exec.Command("docker", "ps", "-a", "--format", "{{.Names}}").CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("docker ps -a failed: %v output=%s", err, strings.TrimSpace(string(out)))
+	}
+	return hasExactLine(string(out), name), nil
+}
+
+func waitPostgresReady(container, user, dbName string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if err := exec.Command("docker", "exec", container, "pg_isready", "-U", user, "-d", dbName).Run(); err == nil {
+			return nil
+		}
+		time.Sleep(1 * time.Second)
+	}
+	return fmt.Errorf("postgres container %s not ready before timeout", container)
+}
+
+func hasExactLine(output, name string) bool {
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		if strings.TrimSpace(line) == name {
+			return true
+		}
+	}
+	return false
+}
+
+func getenvWithDefault(key, fallback string) string {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	return v
 }
 
 func newPoolWithSearchPath(ctx context.Context, dsn, schemaName string) (*pgxpool.Pool, error) {

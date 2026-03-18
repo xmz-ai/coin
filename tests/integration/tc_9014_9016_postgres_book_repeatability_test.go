@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/xmz-ai/coin/internal/db"
@@ -15,9 +16,8 @@ func TestTC9014PostgresNonBookFlowDoesNotWriteBookTables(t *testing.T) {
 	repo, pool, _, debitAccountNo, creditAccountNo, txnNo := setupPostgresTransferFixture(t, service.TxnStatusInit, 160)
 
 	processor := service.NewTransferAsyncProcessor(repo)
-	if err := processor.Process(txnNo); err != nil {
-		t.Fatalf("process txn failed: %v", err)
-	}
+	processor.Enqueue(txnNo)
+	waitTxnStatusRepo(t, repo, txnNo, service.TxnStatusRecvSuccess, 2*time.Second)
 
 	accountBookCnt := queryCountBySQL(t, pool, `
 SELECT COUNT(*)

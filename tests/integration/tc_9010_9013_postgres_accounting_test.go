@@ -70,9 +70,8 @@ func TestTC9012PostgresAsyncProcessorWritesTwoLogsAndBalances(t *testing.T) {
 	repo, pool, _, debitAccountNo, creditAccountNo, txnNo := setupPostgresTransferFixture(t, service.TxnStatusInit, 150)
 
 	processor := service.NewTransferAsyncProcessor(repo)
-	if err := processor.Process(txnNo); err != nil {
-		t.Fatalf("process txn failed: %v", err)
-	}
+	processor.Enqueue(txnNo)
+	waitTxnStatusRepo(t, repo, txnNo, service.TxnStatusRecvSuccess, 2*time.Second)
 
 	txn, ok := repo.GetTransferTxn(txnNo)
 	if !ok || txn.Status != service.TxnStatusRecvSuccess {
@@ -150,9 +149,8 @@ func TestTC9013PostgresRefundWritesReverseLogsAndBalances(t *testing.T) {
 	}
 
 	processor := service.NewTransferAsyncProcessor(repo)
-	if err := processor.Process(refundTxnNo); err != nil {
-		t.Fatalf("process refund failed: %v", err)
-	}
+	processor.Enqueue(refundTxnNo)
+	waitTxnStatusRepo(t, repo, refundTxnNo, service.TxnStatusRecvSuccess, 2*time.Second)
 	refund, ok := repo.GetTransferTxn(refundTxnNo)
 	if !ok || refund.Status != service.TxnStatusRecvSuccess {
 		t.Fatalf("unexpected refund txn status: %+v ok=%v", refund, ok)
@@ -250,51 +248,21 @@ func TestTC9020PostgresConcurrentRefundCASNoOverRefund(t *testing.T) {
 		}
 	}
 
-	type result struct{ err error }
-	ch := make(chan result, 2)
+	processor := service.NewTransferAsyncProcessor(repo)
 	var wg sync.WaitGroup
 	for _, refundTxnNo := range []string{refundTxnA, refundTxnB} {
 		wg.Add(1)
 		go func(refundTxnNo string) {
 			defer wg.Done()
-			processor := service.NewTransferAsyncProcessor(repo)
-			err := processor.Process(refundTxnNo)
-			ch <- result{err: err}
+			processor.Enqueue(refundTxnNo)
 		}(refundTxnNo)
 	}
 	wg.Wait()
-	close(ch)
-
-	success := 0
-	exceeded := 0
-	for item := range ch {
-		if item.err == nil {
-			success++
-			continue
-		}
-		if item.err == service.ErrRefundAmountExceeded {
-			exceeded++
-		}
-	}
-	if success != 1 || exceeded != 1 {
-		t.Fatalf("expected one success and one ErrRefundAmountExceeded, got success=%d exceeded=%d", success, exceeded)
-	}
-
-	origin, ok := repo.GetTransferTxn(originTxnNo)
-	if !ok {
-		t.Fatalf("origin txn not found")
-	}
-	if origin.RefundableAmount != 20 {
-		t.Fatalf("expected origin refundable_amount=20, got %d", origin.RefundableAmount)
-	}
 
 	successByStatus := 0
 	exceededByStatus := 0
 	for _, refundTxnNo := range []string{refundTxnA, refundTxnB} {
-		refundTxn, ok := repo.GetTransferTxn(refundTxnNo)
-		if !ok {
-			t.Fatalf("refund txn not found: %s", refundTxnNo)
-		}
+		refundTxn := waitTxnTerminalRepo(t, repo, refundTxnNo, 2*time.Second)
 		if refundTxn.Status == service.TxnStatusRecvSuccess {
 			successByStatus++
 		}
@@ -305,5 +273,12 @@ func TestTC9020PostgresConcurrentRefundCASNoOverRefund(t *testing.T) {
 	if successByStatus != 1 || exceededByStatus != 1 {
 		t.Fatalf("expected refund status success=1 exceeded=1, got success=%d exceeded=%d", successByStatus, exceededByStatus)
 	}
-}
 
+	origin, ok := repo.GetTransferTxn(originTxnNo)
+	if !ok {
+		t.Fatalf("origin txn not found")
+	}
+	if origin.RefundableAmount != 20 {
+		t.Fatalf("expected origin refundable_amount=20, got %d", origin.RefundableAmount)
+	}
+}
