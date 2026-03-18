@@ -59,9 +59,10 @@ func main() {
 		time.Duration(cfg.TxnRecoveryStaleMS)*time.Millisecond,
 	)
 	webhookWorker := service.NewWebhookWorker(repo, secretManager, cfg.WebhookMaxRetries, cfg.WebhookWorkerBatchSize, cfg.WebhookRetryBackoffMinute)
+	asyncTransferProcessor.SetWebhookDispatcher(webhookWorker)
 	accountResolver := service.NewAccountResolver(repo, customerService)
 	queryService := service.NewTxnQueryService(repo)
-	businessHandler := api.NewBusinessHandler(transferService, repo, transferRoutingService, asyncTransferProcessor, webhookWorker, accountResolver, repo, queryService, repo, nil)
+	businessHandler := api.NewBusinessHandler(transferService, repo, transferRoutingService, asyncTransferProcessor, accountResolver, repo, queryService, repo, nil)
 	// Fallback recovery worker; main path is in-process async Enqueue on API submit.
 	go transferWorker.Start(ctx, time.Duration(cfg.TxnRecoveryIntervalMS)*time.Millisecond)
 	go webhookWorker.Start(ctx, time.Duration(cfg.WebhookWorkerIntervalMS)*time.Millisecond)

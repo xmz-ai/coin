@@ -20,6 +20,10 @@ type StageProcessingGuardWithError interface {
 	TryBeginWithError(txnNo, stage string) (bool, error)
 }
 
+type TxnNotifyDispatcher interface {
+	Enqueue(txnNo string)
+}
+
 type TransferAsyncProcessorOptions struct {
 	InitWorkers       int
 	PaySuccessWorkers int
@@ -44,10 +48,12 @@ func (o TransferAsyncProcessorOptions) withDefaults() TransferAsyncProcessorOpti
 }
 
 type TransferAsyncProcessor struct {
-	repo            Repository
-	guard           StageProcessingGuard
-	initQueue       *stageQueue
-	paySuccessQueue *stageQueue
+	repo               Repository
+	guard              StageProcessingGuard
+	initQueue          *stageQueue
+	paySuccessQueue    *stageQueue
+	webhookDispatcher  TxnNotifyDispatcher
+	webhookDispatcherM sync.RWMutex
 }
 
 type stageQueue struct {
@@ -124,6 +130,15 @@ func NewTransferAsyncProcessorWithGuardAndOptions(repo Repository, guard StagePr
 	p.startWorkers(TxnStatusInit, opts.InitWorkers, p.initQueue)
 	p.startWorkers(TxnStatusPaySuccess, opts.PaySuccessWorkers, p.paySuccessQueue)
 	return p
+}
+
+func (p *TransferAsyncProcessor) SetWebhookDispatcher(dispatcher TxnNotifyDispatcher) {
+	if p == nil {
+		return
+	}
+	p.webhookDispatcherM.Lock()
+	p.webhookDispatcher = dispatcher
+	p.webhookDispatcherM.Unlock()
 }
 
 func (p *TransferAsyncProcessor) startWorkers(stage string, workerCount int, queue *stageQueue) {
@@ -262,6 +277,7 @@ func (p *TransferAsyncProcessor) processStage(txnNo, expectedStatus string) erro
 				p.enqueueByCurrentStatus(txnNo)
 				return nil
 			}
+			p.notifyWebhook(txnNo)
 			return nil
 		}
 		applied, err := p.repo.ApplyTransferCreditStage(txn.TxnNo, txn.CreditAccountNo, txn.Amount)
@@ -272,6 +288,7 @@ func (p *TransferAsyncProcessor) processStage(txnNo, expectedStatus string) erro
 			p.enqueueByCurrentStatus(txnNo)
 			return nil
 		}
+		p.notifyWebhook(txnNo)
 		return nil
 	default:
 		_ = p.fail(txnNo, expectedStatus, "TXN_STATUS_INVALID", "unknown txn status")
@@ -285,6 +302,16 @@ func (p *TransferAsyncProcessor) enqueueByCurrentStatus(txnNo string) {
 		return
 	}
 	_ = p.EnqueueByStatus(txnNo, txn.Status)
+}
+
+func (p *TransferAsyncProcessor) notifyWebhook(txnNo string) {
+	p.webhookDispatcherM.RLock()
+	dispatcher := p.webhookDispatcher
+	p.webhookDispatcherM.RUnlock()
+	if dispatcher == nil {
+		return
+	}
+	dispatcher.Enqueue(txnNo)
 }
 
 func (p *TransferAsyncProcessor) fail(txnNo, fromStatus, errorCode, errorMsg string) error {

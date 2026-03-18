@@ -109,7 +109,6 @@ func newCoreTxnBenchmarkServer(b *testing.B) (*gin.Engine, string, string) {
 		repo,
 		transferRoutingSvc,
 		noopAsyncDispatcher{},
-		noopAsyncDispatcher{},
 		accountResolver,
 		repo,
 		querySvc,

@@ -29,10 +29,6 @@ type TransferAsyncDispatcher interface {
 	Enqueue(txnNo string)
 }
 
-type WebhookAsyncDispatcher interface {
-	Enqueue(txnNo string)
-}
-
 type CustomerAccountResolver interface {
 	ResolveCustomerAccount(merchantNo, accountNo, outUserID string) (string, error)
 	EnsureCustomerAccountForCredit(merchantNo, outUserID string) (string, error)
@@ -59,7 +55,6 @@ type BusinessHandler struct {
 	merchants       MerchantFinder
 	transferRouter  TransferRouter
 	asyncTransfer   TransferAsyncDispatcher
-	asyncWebhook    WebhookAsyncDispatcher
 	accountResolver CustomerAccountResolver
 	accounts        AccountFinder
 	query           TxnQueryStore
@@ -72,7 +67,6 @@ func NewBusinessHandler(
 	merchants MerchantFinder,
 	transferRouter TransferRouter,
 	asyncTransfer TransferAsyncDispatcher,
-	asyncWebhook WebhookAsyncDispatcher,
 	accountResolver CustomerAccountResolver,
 	accounts AccountFinder,
 	query TxnQueryStore,
@@ -87,7 +81,6 @@ func NewBusinessHandler(
 		merchants:       merchants,
 		transferRouter:  transferRouter,
 		asyncTransfer:   asyncTransfer,
-		asyncWebhook:    asyncWebhook,
 		accountResolver: accountResolver,
 		accounts:        accounts,
 		query:           query,
@@ -282,9 +275,6 @@ func (h *BusinessHandler) handleCredit(c *gin.Context) {
 		return
 	}
 	h.asyncTransfer.Enqueue(txn.TxnNo)
-	if h.asyncWebhook != nil {
-		h.asyncWebhook.Enqueue(txn.TxnNo)
-	}
 
 	writeCreated(c, gin.H{
 		"txn_no": txn.TxnNo,
@@ -410,9 +400,6 @@ func (h *BusinessHandler) handleDebit(c *gin.Context) {
 		return
 	}
 	h.asyncTransfer.Enqueue(txn.TxnNo)
-	if h.asyncWebhook != nil {
-		h.asyncWebhook.Enqueue(txn.TxnNo)
-	}
 
 	writeCreated(c, gin.H{
 		"txn_no": txn.TxnNo,
@@ -567,9 +554,6 @@ func (h *BusinessHandler) handleTransfer(c *gin.Context) {
 		return
 	}
 	h.asyncTransfer.Enqueue(txn.TxnNo)
-	if h.asyncWebhook != nil {
-		h.asyncWebhook.Enqueue(txn.TxnNo)
-	}
 
 	writeCreated(c, gin.H{
 		"txn_no": txn.TxnNo,
@@ -636,9 +620,6 @@ func (h *BusinessHandler) handleRefund(c *gin.Context) {
 		}
 		writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "submit refund failed")
 		return
-	}
-	if h.asyncWebhook != nil {
-		h.asyncWebhook.Enqueue(txn.TxnNo)
 	}
 	h.asyncTransfer.Enqueue(txn.TxnNo)
 

@@ -20,7 +20,7 @@ type WebhookSecretProvider interface {
 
 const (
 	webhookAsyncWorkers   = 4
-	webhookAsyncQueueSize = 512
+	webhookAsyncQueueSize = 65536
 )
 
 type WebhookWorker struct {
