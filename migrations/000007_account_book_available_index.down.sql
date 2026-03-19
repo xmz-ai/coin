@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_account_book_available_by_account_expire;

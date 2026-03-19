@@ -124,6 +124,10 @@ CREATE TABLE IF NOT EXISTS account_book (
   CHECK (account_no ~ '^[0-9]{19}$')
 );
 
+CREATE INDEX IF NOT EXISTS idx_account_book_available_by_account_expire
+ON account_book(account_no, expire_at)
+WHERE balance > 0;
+
 CREATE TABLE IF NOT EXISTS account_book_change_log (
   change_id BIGSERIAL PRIMARY KEY,
   txn_no UUID NOT NULL,

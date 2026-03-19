@@ -29,6 +29,10 @@ type TransferAsyncDispatcher interface {
 	Enqueue(txnNo string)
 }
 
+type transferAsyncStatusDispatcher interface {
+	EnqueueByStatus(txnNo, status string) bool
+}
+
 type CustomerAccountResolver interface {
 	ResolveCustomerAccount(merchantNo, accountNo, outUserID string) (string, error)
 	EnsureCustomerAccountForCredit(merchantNo, outUserID string) (string, error)
@@ -274,7 +278,7 @@ func (h *BusinessHandler) handleCredit(c *gin.Context) {
 		writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "submit transfer failed")
 		return
 	}
-	h.asyncTransfer.Enqueue(txn.TxnNo)
+	h.enqueueTxn(txn)
 
 	writeCreated(c, gin.H{
 		"txn_no": txn.TxnNo,
@@ -399,7 +403,7 @@ func (h *BusinessHandler) handleDebit(c *gin.Context) {
 		writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "submit transfer failed")
 		return
 	}
-	h.asyncTransfer.Enqueue(txn.TxnNo)
+	h.enqueueTxn(txn)
 
 	writeCreated(c, gin.H{
 		"txn_no": txn.TxnNo,
@@ -553,7 +557,7 @@ func (h *BusinessHandler) handleTransfer(c *gin.Context) {
 		writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "submit transfer failed")
 		return
 	}
-	h.asyncTransfer.Enqueue(txn.TxnNo)
+	h.enqueueTxn(txn)
 
 	writeCreated(c, gin.H{
 		"txn_no": txn.TxnNo,
@@ -621,7 +625,7 @@ func (h *BusinessHandler) handleRefund(c *gin.Context) {
 		writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "submit refund failed")
 		return
 	}
-	h.asyncTransfer.Enqueue(txn.TxnNo)
+	h.enqueueTxn(txn)
 
 	writeCreated(c, gin.H{
 		"txn_no": txn.TxnNo,
@@ -654,6 +658,17 @@ func (h *BusinessHandler) handleGetByTxnNo(c *gin.Context) {
 	}
 
 	writeSuccess(c, toTxnResponse(item))
+}
+
+func (h *BusinessHandler) enqueueTxn(txn service.TransferTxn) {
+	if h == nil || h.asyncTransfer == nil {
+		return
+	}
+	if dispatcher, ok := h.asyncTransfer.(transferAsyncStatusDispatcher); ok {
+		_ = dispatcher.EnqueueByStatus(txn.TxnNo, txn.Status)
+		return
+	}
+	h.asyncTransfer.Enqueue(txn.TxnNo)
 }
 
 func (h *BusinessHandler) handleGetByOutTradeNo(c *gin.Context) {
