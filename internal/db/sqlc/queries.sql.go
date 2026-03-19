@@ -404,6 +404,40 @@ func (q *Queries) DecreaseOriginTxnRefundable(ctx context.Context, arg DecreaseO
 	return err
 }
 
+const decreaseOriginTxnRefundableIfValid = `-- name: DecreaseOriginTxnRefundableIfValid :one
+UPDATE txn
+SET refundable_amount = refundable_amount - $1,
+    updated_at = NOW()
+WHERE txn_no = $2
+  AND merchant_no = $3
+  AND biz_type = 'TRANSFER'
+  AND status = 'RECV_SUCCESS'
+  AND refundable_amount >= $1
+RETURNING
+  COALESCE(debit_account_no, '') AS debit_account_no,
+  COALESCE(credit_account_no, '') AS credit_account_no,
+  refundable_amount
+`
+
+type DecreaseOriginTxnRefundableIfValidParams struct {
+	Amount      int64
+	OriginTxnNo pgtype.UUID
+	MerchantNo  string
+}
+
+type DecreaseOriginTxnRefundableIfValidRow struct {
+	DebitAccountNo   string
+	CreditAccountNo  string
+	RefundableAmount int64
+}
+
+func (q *Queries) DecreaseOriginTxnRefundableIfValid(ctx context.Context, arg DecreaseOriginTxnRefundableIfValidParams) (DecreaseOriginTxnRefundableIfValidRow, error) {
+	row := q.db.QueryRow(ctx, decreaseOriginTxnRefundableIfValid, arg.Amount, arg.OriginTxnNo, arg.MerchantNo)
+	var i DecreaseOriginTxnRefundableIfValidRow
+	err := row.Scan(&i.DebitAccountNo, &i.CreditAccountNo, &i.RefundableAmount)
+	return i, err
+}
+
 const getAccountByNo = `-- name: GetAccountByNo :one
 SELECT
   a.account_no,
@@ -1159,6 +1193,71 @@ func (q *Queries) LeaseCodeRange(ctx context.Context, arg LeaseCodeRangeParams) 
 	return i, err
 }
 
+const listAccountsForUpdateByNos = `-- name: ListAccountsForUpdateByNos :many
+SELECT
+  a.account_no,
+  a.merchant_no,
+  COALESCE(a.customer_no, '') AS customer_no,
+  a.account_type,
+  a.allow_overdraft,
+  a.max_overdraft_limit,
+  a.allow_debit_out,
+  a.allow_credit_in,
+  a.allow_transfer,
+  a.book_enabled,
+  a.balance
+FROM account a
+WHERE a.account_no = ANY($1::varchar[])
+ORDER BY a.account_no ASC
+FOR UPDATE OF a
+`
+
+type ListAccountsForUpdateByNosRow struct {
+	AccountNo         string
+	MerchantNo        string
+	CustomerNo        string
+	AccountType       string
+	AllowOverdraft    bool
+	MaxOverdraftLimit int64
+	AllowDebitOut     bool
+	AllowCreditIn     bool
+	AllowTransfer     bool
+	BookEnabled       bool
+	Balance           int64
+}
+
+func (q *Queries) ListAccountsForUpdateByNos(ctx context.Context, accountNos []string) ([]ListAccountsForUpdateByNosRow, error) {
+	rows, err := q.db.Query(ctx, listAccountsForUpdateByNos, accountNos)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAccountsForUpdateByNosRow
+	for rows.Next() {
+		var i ListAccountsForUpdateByNosRow
+		if err := rows.Scan(
+			&i.AccountNo,
+			&i.MerchantNo,
+			&i.CustomerNo,
+			&i.AccountType,
+			&i.AllowOverdraft,
+			&i.MaxOverdraftLimit,
+			&i.AllowDebitOut,
+			&i.AllowCreditIn,
+			&i.AllowTransfer,
+			&i.BookEnabled,
+			&i.Balance,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAvailableAccountBooksForUpdate = `-- name: ListAvailableAccountBooksForUpdate :many
 SELECT
   b.book_no,
@@ -1169,13 +1268,27 @@ FROM account_book b
 WHERE b.account_no = $1
   AND b.expire_at > $2::date
   AND b.balance > 0
-ORDER BY b.expire_at ASC
+  AND (
+    (
+      SELECT COALESCE(SUM(b2.balance), 0)::bigint
+      FROM account_book b2
+      WHERE b2.account_no = b.account_no
+        AND b2.expire_at > $2::date
+        AND b2.balance > 0
+        AND (
+          b2.expire_at < b.expire_at
+          OR (b2.expire_at = b.expire_at AND b2.book_no <= b.book_no)
+        )
+    ) - b.balance
+  ) < $3
+ORDER BY b.expire_at ASC, b.book_no ASC
 FOR UPDATE OF b
 `
 
 type ListAvailableAccountBooksForUpdateParams struct {
 	AccountNo string
 	NowUtc    pgtype.Date
+	Amount    int64
 }
 
 type ListAvailableAccountBooksForUpdateRow struct {
@@ -1186,7 +1299,7 @@ type ListAvailableAccountBooksForUpdateRow struct {
 }
 
 func (q *Queries) ListAvailableAccountBooksForUpdate(ctx context.Context, arg ListAvailableAccountBooksForUpdateParams) ([]ListAvailableAccountBooksForUpdateRow, error) {
-	rows, err := q.db.Query(ctx, listAvailableAccountBooksForUpdate, arg.AccountNo, arg.NowUtc)
+	rows, err := q.db.Query(ctx, listAvailableAccountBooksForUpdate, arg.AccountNo, arg.NowUtc, arg.Amount)
 	if err != nil {
 		return nil, err
 	}
@@ -1553,6 +1666,69 @@ func (q *Queries) SetCustomerDefaultAccountIfEmpty(ctx context.Context, arg SetC
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const tryCreditAccountBalanceNonBook = `-- name: TryCreditAccountBalanceNonBook :one
+UPDATE account a
+SET balance = a.balance + $1,
+    updated_at = NOW()
+WHERE a.account_no = $2
+  AND a.book_enabled = false
+  AND a.allow_credit_in = true
+RETURNING
+  a.account_no,
+  a.balance
+`
+
+type TryCreditAccountBalanceNonBookParams struct {
+	Amount    int64
+	AccountNo string
+}
+
+type TryCreditAccountBalanceNonBookRow struct {
+	AccountNo string
+	Balance   int64
+}
+
+func (q *Queries) TryCreditAccountBalanceNonBook(ctx context.Context, arg TryCreditAccountBalanceNonBookParams) (TryCreditAccountBalanceNonBookRow, error) {
+	row := q.db.QueryRow(ctx, tryCreditAccountBalanceNonBook, arg.Amount, arg.AccountNo)
+	var i TryCreditAccountBalanceNonBookRow
+	err := row.Scan(&i.AccountNo, &i.Balance)
+	return i, err
+}
+
+const tryDebitAccountBalanceNonBook = `-- name: TryDebitAccountBalanceNonBook :one
+UPDATE account a
+SET balance = a.balance - $1,
+    updated_at = NOW()
+WHERE a.account_no = $2
+  AND a.book_enabled = false
+  AND a.allow_debit_out = true
+  AND (
+    (a.allow_overdraft = false AND a.balance >= $1)
+    OR
+    (a.allow_overdraft = true AND (a.max_overdraft_limit = 0 OR a.balance + a.max_overdraft_limit >= $1))
+  )
+RETURNING
+  a.account_no,
+  a.balance
+`
+
+type TryDebitAccountBalanceNonBookParams struct {
+	Amount    int64
+	AccountNo string
+}
+
+type TryDebitAccountBalanceNonBookRow struct {
+	AccountNo string
+	Balance   int64
+}
+
+func (q *Queries) TryDebitAccountBalanceNonBook(ctx context.Context, arg TryDebitAccountBalanceNonBookParams) (TryDebitAccountBalanceNonBookRow, error) {
+	row := q.db.QueryRow(ctx, tryDebitAccountBalanceNonBook, arg.Amount, arg.AccountNo)
+	var i TryDebitAccountBalanceNonBookRow
+	err := row.Scan(&i.AccountNo, &i.Balance)
+	return i, err
 }
 
 const tryDecreaseTxnRefundable = `-- name: TryDecreaseTxnRefundable :one
