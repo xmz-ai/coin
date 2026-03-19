@@ -23,6 +23,31 @@ const (
 	webhookAsyncQueueSize = 65536
 )
 
+type WebhookWorkerOptions struct {
+	AsyncWorkers         int
+	AsyncQueueSize       int
+	ProfilingEnabled     bool
+	ProfilingLogInterval time.Duration
+}
+
+func (o WebhookWorkerOptions) withDefaults() WebhookWorkerOptions {
+	if o.AsyncWorkers <= 0 {
+		o.AsyncWorkers = webhookAsyncWorkers
+	}
+	if o.AsyncQueueSize <= 0 {
+		o.AsyncQueueSize = webhookAsyncQueueSize
+	}
+	if o.ProfilingEnabled && o.ProfilingLogInterval <= 0 {
+		o.ProfilingLogInterval = defaultAsyncProfileLogInterval
+	}
+	return o
+}
+
+type webhookQueueItem struct {
+	txnNo      string
+	enqueuedAt time.Time
+}
+
 type WebhookWorker struct {
 	repo       Repository
 	secrets    WebhookSecretProvider
@@ -31,16 +56,22 @@ type WebhookWorker struct {
 	batchSize  int
 	backoff    []time.Duration
 	nowFn      func() time.Time
-	queue      chan string
+	queue      chan webhookQueueItem
+	profiler   *webhookProfiler
 }
 
 func NewWebhookWorker(repo Repository, secrets WebhookSecretProvider, maxRetries, batchSize int, backoffMinutes []int) *WebhookWorker {
+	return NewWebhookWorkerWithOptions(repo, secrets, maxRetries, batchSize, backoffMinutes, WebhookWorkerOptions{})
+}
+
+func NewWebhookWorkerWithOptions(repo Repository, secrets WebhookSecretProvider, maxRetries, batchSize int, backoffMinutes []int, opts WebhookWorkerOptions) *WebhookWorker {
 	if maxRetries <= 0 {
 		maxRetries = 8
 	}
 	if batchSize <= 0 {
 		batchSize = 100
 	}
+	opts = opts.withDefaults()
 	w := &WebhookWorker{
 		repo:       repo,
 		secrets:    secrets,
@@ -51,12 +82,24 @@ func NewWebhookWorker(repo Repository, secrets WebhookSecretProvider, maxRetries
 		nowFn: func() time.Time {
 			return time.Now().UTC()
 		},
-		queue: make(chan string, webhookAsyncQueueSize),
+		queue: make(chan webhookQueueItem, opts.AsyncQueueSize),
 	}
-	for i := 0; i < webhookAsyncWorkers; i++ {
+	if opts.ProfilingEnabled {
+		w.profiler = newWebhookProfiler(opts.ProfilingLogInterval)
+		w.profiler.startLogger()
+	}
+	for i := 0; i < opts.AsyncWorkers; i++ {
 		go func() {
-			for txnNo := range w.queue {
-				w.DeliverTxn(context.Background(), txnNo)
+			for item := range w.queue {
+				if w.profiler != nil {
+					w.profiler.observeQueueWait(time.Since(item.enqueuedAt))
+					w.profiler.observeQueueDepth(len(w.queue))
+				}
+				startedAt := time.Now()
+				err := w.DeliverTxn(context.Background(), item.txnNo)
+				if w.profiler != nil {
+					w.profiler.observeDeliver(time.Since(startedAt), err != nil)
+				}
 			}
 		}()
 	}
@@ -136,20 +179,26 @@ func (w *WebhookWorker) Enqueue(txnNo string) {
 		return
 	}
 	select {
-	case w.queue <- txnNo:
+	case w.queue <- webhookQueueItem{txnNo: txnNo, enqueuedAt: time.Now()}:
+		if w.profiler != nil {
+			w.profiler.observeQueueDepth(len(w.queue))
+		}
 	default:
+		if w.profiler != nil {
+			w.profiler.observeDrop()
+		}
 		// Avoid running delivery on request path when queue is saturated.
 		// Periodic polling and compensation will pick up pending events.
 	}
 }
 
-func (w *WebhookWorker) DeliverTxn(ctx context.Context, txnNo string) {
+func (w *WebhookWorker) DeliverTxn(ctx context.Context, txnNo string) error {
 	if w == nil || w.repo == nil || w.secrets == nil {
-		return
+		return nil
 	}
 	txnNo = strings.TrimSpace(txnNo)
 	if txnNo == "" {
-		return
+		return nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -157,11 +206,12 @@ func (w *WebhookWorker) DeliverTxn(ctx context.Context, txnNo string) {
 
 	events, err := w.repo.ClaimDueOutboxEventsByTxnNo(txnNo, w.batchSize, w.nowFn())
 	if err != nil {
-		return
+		return err
 	}
 	for _, e := range events {
 		w.handleEvent(ctx, e)
 	}
+	return nil
 }
 
 func (w *WebhookWorker) RunOnce(ctx context.Context) {
@@ -256,6 +306,9 @@ func (w *WebhookWorker) markRetry(event OutboxEventDelivery) {
 		status = NotifyStatusDead
 	}
 	_ = w.repo.InsertNotifyLog(event.TxnNo, status, nextRetry)
+	if w.profiler != nil {
+		w.profiler.observeRetry()
+	}
 }
 
 func (w *WebhookWorker) retryDelay(retryCount int) time.Duration {

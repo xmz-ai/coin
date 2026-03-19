@@ -38,9 +38,9 @@ func TestWebhookWorkerEnqueueQueueFullDoesNotFallbackToSyncDeliver(t *testing.T)
 	worker := &WebhookWorker{
 		repo:    repo,
 		secrets: staticWebhookSecretProvider{},
-		queue:   make(chan string, 1),
+		queue:   make(chan webhookQueueItem, 1),
 	}
-	worker.queue <- "txn_existing"
+	worker.queue <- webhookQueueItem{txnNo: "txn_existing", enqueuedAt: time.Now()}
 
 	done := make(chan struct{})
 	go func() {
