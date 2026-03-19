@@ -450,17 +450,6 @@ WHERE t.merchant_no = sqlc.arg(merchant_no)
 SELECT COUNT(*)::bigint AS txn_count
 FROM txn;
 
--- name: IncAppliedChange :exec
-INSERT INTO applied_change_counter(id, value)
-VALUES (1, 1)
-ON CONFLICT (id)
-DO UPDATE SET value = applied_change_counter.value + 1;
-
--- name: AppliedChangeCount :one
-SELECT value
-FROM applied_change_counter
-WHERE id = 1;
-
 -- name: InsertOutboxEvent :exec
 INSERT INTO outbox_event (
   event_id, txn_no, merchant_no, out_trade_no, status, retry_count, next_retry_at, created_at, updated_at

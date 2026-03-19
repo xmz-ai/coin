@@ -73,7 +73,6 @@ func (s *TransferService) Submit(req TransferRequest) (TransferTxn, error) {
 	if err := s.repo.CreateTransferTxn(txn); err != nil {
 		return TransferTxn{}, err
 	}
-	s.repo.IncAppliedChange()
 	return txn, nil
 }
 

@@ -244,19 +244,6 @@ CREATE TABLE IF NOT EXISTS webhook_config (
 );
 ```
 
-## 2.12 applied_change_counter
-
-```sql
-CREATE TABLE IF NOT EXISTS applied_change_counter (
-  id SMALLINT PRIMARY KEY CHECK (id = 1),
-  value BIGINT NOT NULL DEFAULT 0
-);
-
-INSERT INTO applied_change_counter(id, value)
-VALUES (1, 0)
-ON CONFLICT (id) DO NOTHING;
-```
-
 ---
 
 ## 3. 与 domain.md 的一致性说明

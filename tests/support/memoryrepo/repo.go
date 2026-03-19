@@ -24,7 +24,6 @@ type Repo struct {
 	transferTxnByK   map[string]service.TransferTxn
 	transferTxnByNo  map[string]service.TransferTxn
 	accountChanges   []AccountChange
-	appliedChangeCt  int
 	webhookConfigs   map[string]service.WebhookConfig
 	featureConfigs   map[string]service.MerchantFeatureConfig
 	outboxByEventID  map[string]outboxRecord
@@ -808,18 +807,6 @@ func (r *Repo) ListNotifyLogs(txnNo string) []service.NotifyLog {
 	out := make([]service.NotifyLog, len(items))
 	copy(out, items)
 	return out
-}
-
-func (r *Repo) IncAppliedChange() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.appliedChangeCt++
-}
-
-func (r *Repo) AppliedChangeCount() int {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.appliedChangeCt
 }
 
 func (r *Repo) IncTxnCompensationRun() {

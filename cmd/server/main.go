@@ -17,7 +17,7 @@ func main() {
 	cfg := config.Load()
 	ctx := context.Background()
 
-	pg, err := db.NewPool(ctx, cfg.PostgresDSN)
+	pg, err := db.NewPoolWithMaxConns(ctx, cfg.PostgresDSN, cfg.PostgresMaxConns)
 	if err != nil {
 		log.Fatalf("postgres connect failed: %v", err)
 	}

@@ -73,10 +73,4 @@ func TestTC9001PostgresRepositoryCoreFlow(t *testing.T) {
 	if got := repo.TxnCount(); got != 1 {
 		t.Fatalf("expected txn count=1, got %d", got)
 	}
-
-	repo.IncAppliedChange()
-	repo.IncAppliedChange()
-	if got := repo.AppliedChangeCount(); got != 3 {
-		t.Fatalf("expected applied change count=3 (1 from transfer + 2 manual), got %d", got)
-	}
 }
