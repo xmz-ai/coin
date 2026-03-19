@@ -410,7 +410,9 @@ SELECT
   COALESCE(debit_account_no, '') AS debit_account_no,
   COALESCE(credit_account_no, '') AS credit_account_no,
   refundable_amount,
-  merchant_no
+  merchant_no,
+  COALESCE(biz_type, '') AS biz_type,
+  COALESCE(status, '') AS status
 FROM txn
 WHERE txn_no = sqlc.arg(origin_txn_no)
 FOR UPDATE

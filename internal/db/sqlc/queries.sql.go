@@ -657,7 +657,9 @@ SELECT
   COALESCE(debit_account_no, '') AS debit_account_no,
   COALESCE(credit_account_no, '') AS credit_account_no,
   refundable_amount,
-  merchant_no
+  merchant_no,
+  COALESCE(biz_type, '') AS biz_type,
+  COALESCE(status, '') AS status
 FROM txn
 WHERE txn_no = $1
 FOR UPDATE
@@ -669,6 +671,8 @@ type GetOriginTxnForUpdateRow struct {
 	CreditAccountNo  string
 	RefundableAmount int64
 	MerchantNo       string
+	BizType          string
+	Status           string
 }
 
 func (q *Queries) GetOriginTxnForUpdate(ctx context.Context, originTxnNo pgtype.UUID) (GetOriginTxnForUpdateRow, error) {
@@ -679,6 +683,8 @@ func (q *Queries) GetOriginTxnForUpdate(ctx context.Context, originTxnNo pgtype.
 		&i.CreditAccountNo,
 		&i.RefundableAmount,
 		&i.MerchantNo,
+		&i.BizType,
+		&i.Status,
 	)
 	return i, err
 }
