@@ -5,6 +5,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -25,10 +26,12 @@ type TxnNotifyDispatcher interface {
 }
 
 type TransferAsyncProcessorOptions struct {
-	InitWorkers       int
-	PaySuccessWorkers int
-	InitQueueSize     int
-	PaySuccessQueue   int
+	InitWorkers          int
+	PaySuccessWorkers    int
+	InitQueueSize        int
+	PaySuccessQueue      int
+	ProfilingEnabled     bool
+	ProfilingLogInterval time.Duration
 }
 
 func (o TransferAsyncProcessorOptions) withDefaults() TransferAsyncProcessorOptions {
@@ -44,6 +47,9 @@ func (o TransferAsyncProcessorOptions) withDefaults() TransferAsyncProcessorOpti
 	if o.PaySuccessQueue <= 0 {
 		o.PaySuccessQueue = defaultAsyncPaySuccessQueue
 	}
+	if o.ProfilingEnabled && o.ProfilingLogInterval <= 0 {
+		o.ProfilingLogInterval = defaultAsyncProfileLogInterval
+	}
 	return o
 }
 
@@ -52,12 +58,18 @@ type TransferAsyncProcessor struct {
 	guard              StageProcessingGuard
 	initQueue          *stageQueue
 	paySuccessQueue    *stageQueue
+	profiler           *asyncProcessorProfiler
 	webhookDispatcher  TxnNotifyDispatcher
 	webhookDispatcherM sync.RWMutex
 }
 
+type stageQueueItem struct {
+	txnNo      string
+	enqueuedAt time.Time
+}
+
 type stageQueue struct {
-	ch      chan string
+	ch      chan stageQueueItem
 	mu      sync.Mutex
 	pending map[string]struct{}
 }
@@ -67,7 +79,7 @@ func newStageQueue(size int) *stageQueue {
 		size = 1
 	}
 	return &stageQueue{
-		ch:      make(chan string, size),
+		ch:      make(chan stageQueueItem, size),
 		pending: map[string]struct{}{},
 	}
 }
@@ -87,7 +99,7 @@ func (q *stageQueue) Enqueue(txnNo string) bool {
 		return true
 	}
 	select {
-	case q.ch <- txnNo:
+	case q.ch <- stageQueueItem{txnNo: txnNo, enqueuedAt: time.Now()}:
 		q.pending[txnNo] = struct{}{}
 		return true
 	default:
@@ -127,6 +139,10 @@ func NewTransferAsyncProcessorWithGuardAndOptions(repo Repository, guard StagePr
 		initQueue:       newStageQueue(opts.InitQueueSize),
 		paySuccessQueue: newStageQueue(opts.PaySuccessQueue),
 	}
+	if opts.ProfilingEnabled {
+		p.profiler = newAsyncProcessorProfiler(opts.ProfilingLogInterval)
+		p.profiler.startLogger()
+	}
 	p.startWorkers(TxnStatusInit, opts.InitWorkers, p.initQueue)
 	p.startWorkers(TxnStatusPaySuccess, opts.PaySuccessWorkers, p.paySuccessQueue)
 	return p
@@ -147,10 +163,19 @@ func (p *TransferAsyncProcessor) startWorkers(stage string, workerCount int, que
 	}
 	for i := 0; i < workerCount; i++ {
 		go func(expectedStatus string, q *stageQueue) {
-			for txnNo := range q.ch {
+			for item := range q.ch {
+				txnNo := item.txnNo
+				if p.profiler != nil {
+					p.profiler.observeQueueWait(expectedStatus, time.Since(item.enqueuedAt))
+					p.profiler.observeQueueDepth(expectedStatus, len(q.ch))
+				}
 				func() {
 					defer q.Done(txnNo)
-					_ = p.processStage(txnNo, expectedStatus)
+					startedAt := time.Now()
+					err := p.processStage(txnNo, expectedStatus)
+					if p.profiler != nil {
+						p.profiler.observeExecute(expectedStatus, time.Since(startedAt), err != nil)
+					}
 				}()
 			}
 		}(stage, queue)
@@ -178,9 +203,25 @@ func (p *TransferAsyncProcessor) EnqueueByStatus(txnNo, status string) bool {
 
 	switch status {
 	case TxnStatusInit:
-		return p.initQueue.Enqueue(txnNo)
+		ok := p.initQueue.Enqueue(txnNo)
+		if p.profiler != nil {
+			if ok {
+				p.profiler.observeQueueDepth(TxnStatusInit, len(p.initQueue.ch))
+			} else {
+				p.profiler.observeDrop(TxnStatusInit)
+			}
+		}
+		return ok
 	case TxnStatusPaySuccess:
-		return p.paySuccessQueue.Enqueue(txnNo)
+		ok := p.paySuccessQueue.Enqueue(txnNo)
+		if p.profiler != nil {
+			if ok {
+				p.profiler.observeQueueDepth(TxnStatusPaySuccess, len(p.paySuccessQueue.ch))
+			} else {
+				p.profiler.observeDrop(TxnStatusPaySuccess)
+			}
+		}
+		return ok
 	case TxnStatusRecvSuccess, TxnStatusFailed:
 		return true
 	default:

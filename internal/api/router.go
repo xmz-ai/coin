@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/pprof"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -33,7 +34,16 @@ type MerchantCreator interface {
 	GetMerchantFeatureConfig(merchantNo string) (service.MerchantFeatureConfig, bool, error)
 }
 
-func NewRouter() *gin.Engine {
+type RouterOptions struct {
+	EnablePprof bool
+}
+
+func NewRouter(options ...RouterOptions) *gin.Engine {
+	var opts RouterOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
+
 	r := gin.New()
 	r.Use(RequestIDMiddleware())
 	r.Use(gin.Recovery())
@@ -41,8 +51,30 @@ func NewRouter() *gin.Engine {
 	r.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"code": "SUCCESS", "message": "ok", "request_id": getRequestID(c)})
 	})
+	if opts.EnablePprof {
+		registerPprofRoutes(r)
+	}
 
 	return r
+}
+
+func registerPprofRoutes(r *gin.Engine) {
+	if r == nil {
+		return
+	}
+	group := r.Group("/debug/pprof")
+	group.GET("/", gin.WrapF(pprof.Index))
+	group.GET("/cmdline", gin.WrapF(pprof.Cmdline))
+	group.GET("/profile", gin.WrapF(pprof.Profile))
+	group.GET("/symbol", gin.WrapF(pprof.Symbol))
+	group.POST("/symbol", gin.WrapF(pprof.Symbol))
+	group.GET("/trace", gin.WrapF(pprof.Trace))
+	group.GET("/allocs", gin.WrapH(pprof.Handler("allocs")))
+	group.GET("/block", gin.WrapH(pprof.Handler("block")))
+	group.GET("/goroutine", gin.WrapH(pprof.Handler("goroutine")))
+	group.GET("/heap", gin.WrapH(pprof.Handler("heap")))
+	group.GET("/mutex", gin.WrapH(pprof.Handler("mutex")))
+	group.GET("/threadcreate", gin.WrapH(pprof.Handler("threadcreate")))
 }
 
 func RegisterProtectedRoutes(r *gin.Engine, opts ProtectedRoutesOptions) {

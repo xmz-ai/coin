@@ -46,11 +46,14 @@ func main() {
 		guardTTL = time.Duration(cfg.ProcessingKeyTTLSeconds) * time.Second
 	}
 	processingGuard := service.NewRedisProcessingGuard(redisClient, guardTTL)
+	asyncProfileLogInterval := time.Duration(cfg.TxnAsyncProfileLogIntervalMS) * time.Millisecond
 	asyncTransferProcessor := service.NewTransferAsyncProcessorWithGuardAndOptions(repo, processingGuard, service.TransferAsyncProcessorOptions{
-		InitWorkers:       cfg.TxnAsyncWorkersInit,
-		PaySuccessWorkers: cfg.TxnAsyncWorkersPaySuccess,
-		InitQueueSize:     cfg.TxnAsyncQueueSizeInit,
-		PaySuccessQueue:   cfg.TxnAsyncQueueSizePaySuccess,
+		InitWorkers:          cfg.TxnAsyncWorkersInit,
+		PaySuccessWorkers:    cfg.TxnAsyncWorkersPaySuccess,
+		InitQueueSize:        cfg.TxnAsyncQueueSizeInit,
+		PaySuccessQueue:      cfg.TxnAsyncQueueSizePaySuccess,
+		ProfilingEnabled:     cfg.TxnAsyncProfileEnabled,
+		ProfilingLogInterval: asyncProfileLogInterval,
 	})
 	transferWorker := service.NewTransferRecoveryWorkerWithStaleThreshold(
 		repo,
@@ -58,7 +61,12 @@ func main() {
 		cfg.TxnRecoveryBatchSize,
 		time.Duration(cfg.TxnRecoveryStaleMS)*time.Millisecond,
 	)
-	webhookWorker := service.NewWebhookWorker(repo, secretManager, cfg.WebhookMaxRetries, cfg.WebhookWorkerBatchSize, cfg.WebhookRetryBackoffMinute)
+	webhookWorker := service.NewWebhookWorkerWithOptions(repo, secretManager, cfg.WebhookMaxRetries, cfg.WebhookWorkerBatchSize, cfg.WebhookRetryBackoffMinute, service.WebhookWorkerOptions{
+		AsyncWorkers:         cfg.WebhookAsyncWorkers,
+		AsyncQueueSize:       cfg.WebhookAsyncQueueSize,
+		ProfilingEnabled:     cfg.TxnAsyncProfileEnabled,
+		ProfilingLogInterval: asyncProfileLogInterval,
+	})
 	asyncTransferProcessor.SetWebhookDispatcher(webhookWorker)
 	accountResolver := service.NewAccountResolver(repo, customerService)
 	queryService := service.NewTxnQueryService(repo)
@@ -72,7 +80,9 @@ func main() {
 		TimeWindow:     time.Duration(cfg.AuthWindowSeconds) * time.Second,
 	})
 
-	r := api.NewRouter()
+	r := api.NewRouter(api.RouterOptions{
+		EnablePprof: cfg.PprofEnabled,
+	})
 	api.RegisterProtectedRoutes(r, api.ProtectedRoutesOptions{
 		AuthMiddleware:  authMiddleware,
 		SecretRotator:   secretManager,

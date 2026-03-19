@@ -48,6 +48,7 @@ type perfConfig struct {
 	Passphrase           string
 	ProcessingTTLSeconds int
 	TxnAsyncOpts         service.TransferAsyncProcessorOptions
+	WebhookAsyncOpts     service.WebhookWorkerOptions
 
 	Duration            time.Duration
 	Concurrency         int
@@ -233,10 +234,18 @@ func loadPerfConfig() (perfConfig, error) {
 		Passphrase:           base.MerchantSecretPassphrase,
 		ProcessingTTLSeconds: max(base.ProcessingKeyTTLSeconds, 1),
 		TxnAsyncOpts: service.TransferAsyncProcessorOptions{
-			InitWorkers:       max(base.TxnAsyncWorkersInit, 1),
-			PaySuccessWorkers: max(base.TxnAsyncWorkersPaySuccess, 1),
-			InitQueueSize:     max(base.TxnAsyncQueueSizeInit, 1),
-			PaySuccessQueue:   max(base.TxnAsyncQueueSizePaySuccess, 1),
+			InitWorkers:          max(base.TxnAsyncWorkersInit, 1),
+			PaySuccessWorkers:    max(base.TxnAsyncWorkersPaySuccess, 1),
+			InitQueueSize:        max(base.TxnAsyncQueueSizeInit, 1),
+			PaySuccessQueue:      max(base.TxnAsyncQueueSizePaySuccess, 1),
+			ProfilingEnabled:     base.TxnAsyncProfileEnabled,
+			ProfilingLogInterval: time.Duration(base.TxnAsyncProfileLogIntervalMS) * time.Millisecond,
+		},
+		WebhookAsyncOpts: service.WebhookWorkerOptions{
+			AsyncWorkers:         max(base.WebhookAsyncWorkers, 1),
+			AsyncQueueSize:       max(base.WebhookAsyncQueueSize, 1),
+			ProfilingEnabled:     base.TxnAsyncProfileEnabled,
+			ProfilingLogInterval: time.Duration(base.TxnAsyncProfileLogIntervalMS) * time.Millisecond,
 		},
 		Duration:            time.Duration(durationSec) * time.Second,
 		Concurrency:         concurrency,
@@ -284,6 +293,7 @@ func run(cfg perfConfig) error {
 		secretManager,
 		cfg.ProcessingTTLSeconds,
 		cfg.TxnAsyncOpts,
+		cfg.WebhookAsyncOpts,
 		cfg.TxnRecoveryBatch,
 		cfg.TxnRecoveryInterval,
 		cfg.TxnRecoveryStale,
@@ -313,6 +323,8 @@ func run(cfg perfConfig) error {
 	fmt.Printf("[perf] mode=webhook-e2e webhook_poll=%s webhook_wait_timeout=%s\n", cfg.WebhookPollInterval, cfg.WebhookWaitTimeout)
 	fmt.Printf("[perf] txn_async init_workers=%d pay_success_workers=%d init_queue=%d pay_success_queue=%d\n",
 		cfg.TxnAsyncOpts.InitWorkers, cfg.TxnAsyncOpts.PaySuccessWorkers, cfg.TxnAsyncOpts.InitQueueSize, cfg.TxnAsyncOpts.PaySuccessQueue)
+	fmt.Printf("[perf] webhook_async workers=%d queue=%d\n", cfg.WebhookAsyncOpts.AsyncWorkers, cfg.WebhookAsyncOpts.AsyncQueueSize)
+	fmt.Printf("[perf] async_profile enabled=%t log_interval=%s\n", cfg.TxnAsyncOpts.ProfilingEnabled, cfg.TxnAsyncOpts.ProfilingLogInterval)
 	fmt.Printf("[perf] txn_recovery interval=%s stale=%s batch=%d\n", cfg.TxnRecoveryInterval, cfg.TxnRecoveryStale, cfg.TxnRecoveryBatch)
 
 	httpClient := &http.Client{Timeout: cfg.RequestTimeout}
@@ -812,6 +824,7 @@ func setupPerfServer(
 	secretManager *db.MerchantSecretManager,
 	processingTTLSeconds int,
 	txnAsyncOpts service.TransferAsyncProcessorOptions,
+	webhookAsyncOpts service.WebhookWorkerOptions,
 	txnRecoveryBatch int,
 	txnRecoveryInterval time.Duration,
 	txnRecoveryStale time.Duration,
@@ -934,7 +947,7 @@ func setupPerfServer(
 		webhookServer.Close()
 		return nil, fmt.Errorf("upsert webhook config: %w", err)
 	}
-	webhookWorker := service.NewWebhookWorker(repo, secretManager, 8, 500, []int{1})
+	webhookWorker := service.NewWebhookWorkerWithOptions(repo, secretManager, 8, 500, []int{1}, webhookAsyncOpts)
 	asyncProcessor.SetWebhookDispatcher(webhookWorker)
 	go txnRecoveryWorker.Start(ctx, txnRecoveryInterval)
 	go webhookWorker.Start(ctx, webhookPollInterval)

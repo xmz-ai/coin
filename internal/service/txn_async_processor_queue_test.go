@@ -19,8 +19,8 @@ func TestStageQueueDeduplicatesPendingTxn(t *testing.T) {
 	}
 
 	first := <-q.ch
-	if first != "txn_1" {
-		t.Fatalf("unexpected first txn: %s", first)
+	if first.txnNo != "txn_1" {
+		t.Fatalf("unexpected first txn: %s", first.txnNo)
 	}
 
 	// Duplicate should still be blocked until the current item is marked done.
@@ -29,7 +29,7 @@ func TestStageQueueDeduplicatesPendingTxn(t *testing.T) {
 	}
 	select {
 	case dup := <-q.ch:
-		t.Fatalf("duplicate was re-enqueued unexpectedly: %s", dup)
+		t.Fatalf("duplicate was re-enqueued unexpectedly: %s", dup.txnNo)
 	default:
 	}
 
@@ -38,7 +38,7 @@ func TestStageQueueDeduplicatesPendingTxn(t *testing.T) {
 		t.Fatalf("enqueue should succeed after done")
 	}
 	next := <-q.ch
-	if next != "txn_1" {
-		t.Fatalf("unexpected re-enqueued txn: %s", next)
+	if next.txnNo != "txn_1" {
+		t.Fatalf("unexpected re-enqueued txn: %s", next.txnNo)
 	}
 }
