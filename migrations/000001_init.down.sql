@@ -9,5 +9,4 @@ DROP TABLE IF EXISTS account;
 DROP TABLE IF EXISTS customer;
 DROP TABLE IF EXISTS code_sequence;
 DROP TABLE IF EXISTS merchant_api_credential;
-DROP TABLE IF EXISTS applied_change_counter;
 DROP TABLE IF EXISTS merchant;

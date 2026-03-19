@@ -12,6 +12,7 @@ const (
 type Config struct {
 	HTTPAddr                    string
 	PostgresDSN                 string
+	PostgresMaxConns            int
 	RedisAddr                   string
 	RedisPassword               string
 	RedisDB                     int
@@ -34,6 +35,7 @@ type Config struct {
 
 func Load() Config {
 	redisDB, _ := strconv.Atoi(getenv("REDIS_DB", "0"))
+	postgresMaxConns, _ := strconv.Atoi(getenv("POSTGRES_MAX_CONNS", "10"))
 	authWindowSeconds, _ := strconv.Atoi(getenv("AUTH_WINDOW_SECONDS", "300"))
 	processingKeyTTLSeconds, _ := strconv.Atoi(getenv("PROCESSING_KEY_TTL_SECONDS", "300"))
 	txnProcessingGuardTTLMS, _ := strconv.Atoi(getenv("TXN_PROCESSING_GUARD_TTL_MS", "300000"))
@@ -50,6 +52,7 @@ func Load() Config {
 	return Config{
 		HTTPAddr:                    getenv("HTTP_ADDR", ":8080"),
 		PostgresDSN:                 getenv("POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"),
+		PostgresMaxConns:            postgresMaxConns,
 		RedisAddr:                   getenv("REDIS_ADDR", "localhost:6379"),
 		RedisPassword:               getenv("REDIS_PASSWORD", ""),
 		RedisDB:                     redisDB,

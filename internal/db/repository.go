@@ -702,11 +702,7 @@ func (r *Repository) ApplyTransferCreditStage(txnNo, creditAccountNo string, amo
 	}); err != nil {
 		return false, err
 	}
-	txnRow, err := qtx.GetTransferTxnByNo(ctx, txnUUID)
-	if err != nil {
-		return false, err
-	}
-	if err := insertOutboxEventTx(ctx, tx, txnUUID, txnRow.MerchantNo, txnRow.OutTradeNo); err != nil {
+	if err := insertOutboxEventTx(ctx, tx, txnUUID, stage.MerchantNo, stage.OutTradeNo); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -881,11 +877,7 @@ func (r *Repository) ApplyRefundCreditStage(refundTxnNo, creditAccountNo string,
 	}); err != nil {
 		return false, err
 	}
-	refundTxnRow, err := qtx.GetTransferTxnByNo(ctx, refundTxnUUID)
-	if err != nil {
-		return false, err
-	}
-	if err := insertOutboxEventTx(ctx, tx, refundTxnUUID, refundTxnRow.MerchantNo, refundTxnRow.OutTradeNo); err != nil {
+	if err := insertOutboxEventTx(ctx, tx, refundTxnUUID, refund.MerchantNo, refund.OutTradeNo); err != nil {
 		return false, err
 	}
 
@@ -1120,23 +1112,6 @@ func (r *Repository) TxnCount() int {
 	defer cancel()
 
 	n, err := r.queries.TxnCount(ctx)
-	if err != nil {
-		return 0
-	}
-	return int(n)
-}
-
-func (r *Repository) IncAppliedChange() {
-	ctx, cancel := r.withTimeout()
-	defer cancel()
-	_ = r.queries.IncAppliedChange(ctx)
-}
-
-func (r *Repository) AppliedChangeCount() int {
-	ctx, cancel := r.withTimeout()
-	defer cancel()
-
-	n, err := r.queries.AppliedChangeCount(ctx)
 	if err != nil {
 		return 0
 	}

@@ -11,19 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const appliedChangeCount = `-- name: AppliedChangeCount :one
-SELECT value
-FROM applied_change_counter
-WHERE id = 1
-`
-
-func (q *Queries) AppliedChangeCount(ctx context.Context) (int64, error) {
-	row := q.db.QueryRow(ctx, appliedChangeCount)
-	var value int64
-	err := row.Scan(&value)
-	return value, err
-}
-
 const claimDueOutboxEvents = `-- name: ClaimDueOutboxEvents :many
 WITH picked AS (
   SELECT
@@ -933,18 +920,6 @@ func (q *Queries) GetWebhookConfig(ctx context.Context, merchantNo string) (Webh
 		&i.UpdatedAt,
 	)
 	return i, err
-}
-
-const incAppliedChange = `-- name: IncAppliedChange :exec
-INSERT INTO applied_change_counter(id, value)
-VALUES (1, 1)
-ON CONFLICT (id)
-DO UPDATE SET value = applied_change_counter.value + 1
-`
-
-func (q *Queries) IncAppliedChange(ctx context.Context) error {
-	_, err := q.db.Exec(ctx, incAppliedChange)
-	return err
 }
 
 const initCodeSequence = `-- name: InitCodeSequence :exec

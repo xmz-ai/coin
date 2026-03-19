@@ -41,6 +41,7 @@ const (
 
 type perfConfig struct {
 	PostgresDSN          string
+	PostgresMaxConns     int
 	RedisAddr            string
 	RedisPassword        string
 	RedisDB              int
@@ -225,6 +226,7 @@ func loadPerfConfig() (perfConfig, error) {
 
 	return perfConfig{
 		PostgresDSN:          base.PostgresDSN,
+		PostgresMaxConns:     max(base.PostgresMaxConns, 1),
 		RedisAddr:            base.RedisAddr,
 		RedisPassword:        base.RedisPassword,
 		RedisDB:              base.RedisDB,
@@ -252,7 +254,7 @@ func loadPerfConfig() (perfConfig, error) {
 func run(cfg perfConfig) error {
 	ctx := context.Background()
 
-	pool, err := db.NewPool(ctx, cfg.PostgresDSN)
+	pool, err := db.NewPoolWithMaxConns(ctx, cfg.PostgresDSN, cfg.PostgresMaxConns)
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
 	}

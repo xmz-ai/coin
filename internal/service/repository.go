@@ -69,8 +69,6 @@ type Repository interface {
 	MarkOutboxEventRetry(eventID string, retryCount int, nextRetryAt time.Time, dead bool) error
 	InsertNotifyLog(txnNo, status string, retries int) error
 
-	IncAppliedChange()
-	AppliedChangeCount() int
 	IncTxnCompensationRun()
 	IncNotifyCompensationRun()
 }

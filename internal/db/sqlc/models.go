@@ -52,11 +52,6 @@ type AccountChangeLog struct {
 	CreatedAt    pgtype.Timestamptz
 }
 
-type AppliedChangeCounter struct {
-	ID    int16
-	Value int64
-}
-
 type CodeSequence struct {
 	CodeType  string
 	ScopeKey  string

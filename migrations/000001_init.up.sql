@@ -171,12 +171,3 @@ CREATE TABLE IF NOT EXISTS webhook_config (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CHECK (merchant_no ~ '^[0-9]{16}$')
 );
-
-CREATE TABLE IF NOT EXISTS applied_change_counter (
-  id SMALLINT PRIMARY KEY CHECK (id = 1),
-  value BIGINT NOT NULL DEFAULT 0
-);
-
-INSERT INTO applied_change_counter(id, value)
-VALUES (1, 0)
-ON CONFLICT (id) DO NOTHING;
