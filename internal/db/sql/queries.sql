@@ -333,6 +333,51 @@ WHERE a.account_no = sqlc.arg(account_no)
 FOR UPDATE OF a
 LIMIT 1;
 
+-- name: ListAccountsForUpdateByNos :many
+SELECT
+  a.account_no,
+  a.merchant_no,
+  COALESCE(a.customer_no, '') AS customer_no,
+  a.account_type,
+  a.allow_overdraft,
+  a.max_overdraft_limit,
+  a.allow_debit_out,
+  a.allow_credit_in,
+  a.allow_transfer,
+  a.book_enabled,
+  a.balance
+FROM account a
+WHERE a.account_no = ANY(sqlc.arg(account_nos)::varchar[])
+ORDER BY a.account_no ASC
+FOR UPDATE OF a;
+
+-- name: TryDebitAccountBalanceNonBook :one
+UPDATE account a
+SET balance = a.balance - sqlc.arg(amount),
+    updated_at = NOW()
+WHERE a.account_no = sqlc.arg(account_no)
+  AND a.book_enabled = false
+  AND a.allow_debit_out = true
+  AND (
+    (a.allow_overdraft = false AND a.balance >= sqlc.arg(amount))
+    OR
+    (a.allow_overdraft = true AND (a.max_overdraft_limit = 0 OR a.balance + a.max_overdraft_limit >= sqlc.arg(amount)))
+  )
+RETURNING
+  a.account_no,
+  a.balance;
+
+-- name: TryCreditAccountBalanceNonBook :one
+UPDATE account a
+SET balance = a.balance + sqlc.arg(amount),
+    updated_at = NOW()
+WHERE a.account_no = sqlc.arg(account_no)
+  AND a.book_enabled = false
+  AND a.allow_credit_in = true
+RETURNING
+  a.account_no,
+  a.balance;
+
 -- name: UpdateAccountBalance :exec
 UPDATE account
 SET balance = sqlc.arg(balance),
@@ -374,7 +419,20 @@ FROM account_book b
 WHERE b.account_no = sqlc.arg(account_no)
   AND b.expire_at > sqlc.arg(now_utc)::date
   AND b.balance > 0
-ORDER BY b.expire_at ASC
+  AND (
+    (
+      SELECT COALESCE(SUM(b2.balance), 0)::bigint
+      FROM account_book b2
+      WHERE b2.account_no = b.account_no
+        AND b2.expire_at > sqlc.arg(now_utc)::date
+        AND b2.balance > 0
+        AND (
+          b2.expire_at < b.expire_at
+          OR (b2.expire_at = b.expire_at AND b2.book_no <= b.book_no)
+        )
+    ) - b.balance
+  ) < sqlc.arg(amount)
+ORDER BY b.expire_at ASC, b.book_no ASC
 FOR UPDATE OF b;
 
 -- name: UpsertAccountBookBalance :one
@@ -423,6 +481,20 @@ UPDATE txn
 SET refundable_amount = refundable_amount - sqlc.arg(amount),
     updated_at = NOW()
 WHERE txn_no = sqlc.arg(origin_txn_no);
+
+-- name: DecreaseOriginTxnRefundableIfValid :one
+UPDATE txn
+SET refundable_amount = refundable_amount - sqlc.arg(amount),
+    updated_at = NOW()
+WHERE txn_no = sqlc.arg(origin_txn_no)
+  AND merchant_no = sqlc.arg(merchant_no)
+  AND biz_type = 'TRANSFER'
+  AND status = 'RECV_SUCCESS'
+  AND refundable_amount >= sqlc.arg(amount)
+RETURNING
+  COALESCE(debit_account_no, '') AS debit_account_no,
+  COALESCE(credit_account_no, '') AS credit_account_no,
+  refundable_amount;
 
 -- name: ListOriginDebitBookChanges :many
 SELECT

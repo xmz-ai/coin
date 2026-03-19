@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -748,31 +749,27 @@ func (r *Repository) ApplyRefundDebitStage(refundTxnNo string, amount int64) (bo
 	if err != nil {
 		return false, service.ErrTxnNotFound
 	}
-	origin, err := qtx.GetOriginTxnForUpdate(ctx, originTxnUUID)
+	origin, err := qtx.DecreaseOriginTxnRefundableIfValid(ctx, dbsqlc.DecreaseOriginTxnRefundableIfValidParams{
+		Amount:      amount,
+		OriginTxnNo: originTxnUUID,
+		MerchantNo:  refund.MerchantNo,
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, service.ErrTxnNotFound
+		classifiedErr := classifyOriginRefundDecreaseMiss(ctx, qtx, originTxnUUID, refund.MerchantNo, amount)
+		if classifiedErr != nil {
+			return false, classifiedErr
+		}
+		return false, service.ErrRefundAmountExceeded
 	}
 	if err != nil {
 		return false, err
 	}
-	if origin.MerchantNo != refund.MerchantNo {
-		return false, service.ErrTxnNotFound
-	}
-	if origin.BizType != service.BizTypeTransfer || origin.Status != service.TxnStatusRecvSuccess {
-		return false, service.ErrTxnStatusInvalid
-	}
-	if origin.RefundableAmount < amount {
-		return false, service.ErrRefundAmountExceeded
-	}
-	if err := qtx.DecreaseOriginTxnRefundable(ctx, dbsqlc.DecreaseOriginTxnRefundableParams{
-		Amount:      amount,
-		OriginTxnNo: originTxnUUID,
-	}); err != nil {
-		return false, err
-	}
 
-	refundDebit := origin.CreditAccountNo
-	refundCredit := origin.DebitAccountNo
+	refundDebit := strings.TrimSpace(origin.CreditAccountNo)
+	refundCredit := strings.TrimSpace(origin.DebitAccountNo)
+	if refundDebit == "" || refundCredit == "" {
+		return false, service.ErrAccountResolveFailed
+	}
 	if err := qtx.UpdateTransferTxnParties(ctx, dbsqlc.UpdateTransferTxnPartiesParams{
 		DebitAccountNo:  textValue(refundDebit),
 		CreditAccountNo: textValue(refundCredit),
@@ -953,6 +950,27 @@ func (r *Repository) ApplyRefund(refundTxnNo, originTxnNo string, amount int64) 
 		return 0, false, err
 	}
 	return left, true, nil
+}
+
+func classifyOriginRefundDecreaseMiss(ctx context.Context, q *dbsqlc.Queries, originTxnUUID pgtype.UUID, expectedMerchantNo string, amount int64) error {
+	origin, err := q.GetTransferTxnByNo(ctx, originTxnUUID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return service.ErrTxnNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if expectedMerchantNo != "" && origin.MerchantNo != expectedMerchantNo {
+		return service.ErrTxnNotFound
+	}
+	if origin.BizType != service.BizTypeTransfer || origin.Status != service.TxnStatusRecvSuccess {
+		return service.ErrTxnStatusInvalid
+	}
+	if origin.RefundableAmount < amount {
+		return service.ErrRefundAmountExceeded
+	}
+	// Concurrent refunds can consume the quota between condition check and update.
+	return service.ErrRefundAmountExceeded
 }
 
 func (r *Repository) UpsertWebhookConfig(merchantNo, url string, enabled bool) error {
@@ -1349,6 +1367,64 @@ func applyAccountTransferTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgty
 		return service.ErrAccountResolveFailed
 	}
 
+	if debitAccountNo != creditAccountNo {
+		lockedRows, err := q.ListAccountsForUpdateByNos(ctx, sortedAccountNos(debitAccountNo, creditAccountNo))
+		if err != nil {
+			return err
+		}
+		if len(lockedRows) < 2 {
+			return service.ErrAccountResolveFailed
+		}
+		lockedByNo := make(map[string]dbsqlc.ListAccountsForUpdateByNosRow, len(lockedRows))
+		for _, row := range lockedRows {
+			lockedByNo[row.AccountNo] = row
+		}
+
+		debitRow, debitOK := lockedByNo[debitAccountNo]
+		creditRow, creditOK := lockedByNo[creditAccountNo]
+		if !debitOK || !creditOK {
+			return service.ErrAccountResolveFailed
+		}
+
+		debit := accountFromListAccountsForUpdateByNosRow(debitRow)
+		credit := accountFromListAccountsForUpdateByNosRow(creditRow)
+		if !debit.BookEnabled && !credit.BookEnabled {
+			if err := domain.Account(debit).CanDebit(amount); err != nil {
+				return err
+			}
+			if !credit.AllowCreditIn {
+				return service.ErrAccountForbidCredit
+			}
+
+			debitAfter := debit.Balance - amount
+			creditAfter := credit.Balance + amount
+			if err := q.UpdateAccountBalance(ctx, dbsqlc.UpdateAccountBalanceParams{
+				Balance:   debitAfter,
+				AccountNo: debit.AccountNo,
+			}); err != nil {
+				return err
+			}
+			if err := q.UpdateAccountBalance(ctx, dbsqlc.UpdateAccountBalanceParams{
+				Balance:   creditAfter,
+				AccountNo: credit.AccountNo,
+			}); err != nil {
+				return err
+			}
+			if err := q.InsertAccountChangePair(ctx, dbsqlc.InsertAccountChangePairParams{
+				TxnNo:              txnUUID,
+				DebitAccountNo:     debit.AccountNo,
+				DebitDelta:         -amount,
+				DebitBalanceAfter:  debitAfter,
+				CreditAccountNo:    credit.AccountNo,
+				CreditDelta:        amount,
+				CreditBalanceAfter: creditAfter,
+			}); err != nil {
+				return err
+			}
+			return nil
+		}
+	}
+
 	if err := applyAccountDebitTx(ctx, q, txnUUID, debitAccountNo, amount); err != nil {
 		return err
 	}
@@ -1361,6 +1437,22 @@ func applyAccountTransferTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgty
 func applyAccountDebitTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype.UUID, debitAccountNo string, amount int64) error {
 	if debitAccountNo == "" || amount <= 0 {
 		return service.ErrAccountResolveFailed
+	}
+
+	debitFast, err := q.TryDebitAccountBalanceNonBook(ctx, dbsqlc.TryDebitAccountBalanceNonBookParams{
+		Amount:    amount,
+		AccountNo: debitAccountNo,
+	})
+	if err == nil {
+		return q.InsertAccountChange(ctx, dbsqlc.InsertAccountChangeParams{
+			TxnNo:        txnUUID,
+			AccountNo:    debitFast.AccountNo,
+			Delta:        -amount,
+			BalanceAfter: debitFast.Balance,
+		})
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return err
 	}
 
 	debitRow, err := q.GetAccountForUpdateByNo(ctx, debitAccountNo)
@@ -1380,6 +1472,7 @@ func applyAccountDebitTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype.
 		books, err := q.ListAvailableAccountBooksForUpdate(ctx, dbsqlc.ListAvailableAccountBooksForUpdateParams{
 			AccountNo: debit.AccountNo,
 			NowUtc:    toPGDate(time.Now().UTC()),
+			Amount:    amount,
 		})
 		if err != nil {
 			return err
@@ -1482,6 +1575,22 @@ func applyAccountCreditTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype
 		return service.ErrAccountResolveFailed
 	}
 
+	creditFast, err := q.TryCreditAccountBalanceNonBook(ctx, dbsqlc.TryCreditAccountBalanceNonBookParams{
+		Amount:    amount,
+		AccountNo: creditAccountNo,
+	})
+	if err == nil {
+		return q.InsertAccountChange(ctx, dbsqlc.InsertAccountChangeParams{
+			TxnNo:        txnUUID,
+			AccountNo:    creditFast.AccountNo,
+			Delta:        amount,
+			BalanceAfter: creditFast.Balance,
+		})
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+
 	creditRow, err := q.GetAccountForUpdateByNo(ctx, creditAccountNo)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return service.ErrAccountResolveFailed
@@ -1547,6 +1656,10 @@ func applyAccountCreditTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype
 		return nil
 	}
 
+	if !credit.AllowCreditIn {
+		return service.ErrAccountForbidCredit
+	}
+
 	creditAfter := credit.Balance + amount
 	if err := q.UpdateAccountBalance(ctx, dbsqlc.UpdateAccountBalanceParams{
 		Balance:   creditAfter,
@@ -1563,6 +1676,12 @@ func applyAccountCreditTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype
 		return err
 	}
 	return nil
+}
+
+func sortedAccountNos(a, b string) []string {
+	nos := []string{a, b}
+	sort.Strings(nos)
+	return nos
 }
 
 func accountFromGetAccountRow(row dbsqlc.GetAccountByNoRow) service.Account {
@@ -1582,6 +1701,22 @@ func accountFromGetAccountRow(row dbsqlc.GetAccountByNoRow) service.Account {
 }
 
 func accountFromGetAccountForUpdateRow(row dbsqlc.GetAccountForUpdateByNoRow) service.Account {
+	return service.Account{
+		AccountNo:         row.AccountNo,
+		MerchantNo:        row.MerchantNo,
+		CustomerNo:        row.CustomerNo,
+		AccountType:       row.AccountType,
+		AllowOverdraft:    row.AllowOverdraft,
+		MaxOverdraftLimit: row.MaxOverdraftLimit,
+		AllowDebitOut:     row.AllowDebitOut,
+		AllowCreditIn:     row.AllowCreditIn,
+		AllowTransfer:     row.AllowTransfer,
+		BookEnabled:       row.BookEnabled,
+		Balance:           row.Balance,
+	}
+}
+
+func accountFromListAccountsForUpdateByNosRow(row dbsqlc.ListAccountsForUpdateByNosRow) service.Account {
 	return service.Account{
 		AccountNo:         row.AccountNo,
 		MerchantNo:        row.MerchantNo,
