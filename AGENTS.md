@@ -17,6 +17,13 @@
 - `make sqlc`: regenerate typed DB access code from SQL (`sqlc.yaml`).
 - `scripts/test/test.sh`: standalone test entrypoint (can use Dockerized PostgreSQL if DSN not preset).
 - `scripts/test/perf_core_txn_real.sh`: real-chain load test (Gin + PostgreSQL + Redis), with database reset before each run.
+- Regenerate ordered SQL trace doc (`core_sqls.md`):
+  - Run perf with SQL debug trace and single request:
+    - ``/bin/zsh -lc "COIN_SQL_DEBUG_TRACE=1 COIN_SQL_DEBUG_SLOW_MS=1 PERF_REQUESTS=1 PERF_CONCURRENCY=1 PERF_WARMUP=0 scripts/test/perf_core_txn_real.sh > /tmp/perf_sql_debug.log 2>&1"``
+  - Verify 6 sampled scenarios:
+    - ``rg -n "\[sql-debug\] sampled scenario=" /tmp/perf_sql_debug.log``
+  - Generate markdown (scenario-ordered, no merge, keep execution order, include per-SQL elapsed):
+    - ``scripts/test/gen_core_sqls_from_sql_debug_log.pl /tmp/perf_sql_debug.log core_sqls.md``
 - Example targeted run: `go test -v ./tests/integration -run 'TestTC1101' -count=1`.
 
 ## Coding Style & Naming Conventions
