@@ -626,6 +626,18 @@ func (h *BusinessHandler) handleRefund(c *gin.Context) {
 			writeError(c, http.StatusConflict, "DUPLICATE_OUT_TRADE_NO", "duplicate out_trade_no")
 			return
 		}
+		if errors.Is(err, service.ErrTxnNotFound) {
+			writeError(c, http.StatusNotFound, "REFUND_ORIGIN_NOT_FOUND", "origin txn not found")
+			return
+		}
+		if errors.Is(err, service.ErrTxnStatusInvalid) || errors.Is(err, service.ErrAccountResolveFailed) {
+			writeError(c, http.StatusConflict, "REFUND_ORIGIN_INVALID", "origin txn invalid for refund")
+			return
+		}
+		if errors.Is(err, service.ErrRefundAmountExceeded) {
+			writeError(c, http.StatusConflict, "REFUND_AMOUNT_EXCEEDED", "refund amount exceeded")
+			return
+		}
 		writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "submit refund failed")
 		return
 	}

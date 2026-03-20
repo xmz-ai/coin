@@ -21,28 +21,23 @@ const (
 	sqlDebugSlowMSEnv         = "COIN_SQL_DEBUG_SLOW_MS"
 	defaultSQLDebugSlowMS     = 20
 	maxSQLDebugSummaryEntries = 100
-)
-
-type sampledTxnFlow string
-
-const (
-	sampledTxnFlowNone    sampledTxnFlow = ""
-	sampledTxnFlowForward sampledTxnFlow = "forward"
-	sampledTxnFlowReverse sampledTxnFlow = "reverse"
+	maxSQLDebugTrackedTxns    = 10000
 )
 
 type sampledTxnSQLTracer struct {
 	slowThreshold time.Duration
 
 	mu        sync.Mutex
-	connFlow  map[*pgx.Conn]sampledTxnFlow
+	connTxnNo map[*pgx.Conn]string
 	connInTxn map[*pgx.Conn]bool
-	forward   sampledTxnFlowState
-	reverse   sampledTxnFlowState
+	txnState  map[string]*sampledTxnState
+	txnAlias  map[string]string
 }
 
-type sampledTxnFlowState struct {
+type sampledTxnState struct {
+	scenario    string
 	txnNo       string
+	outTradeNo  string
 	originTxnNo string
 	outboxSeen  bool
 	summarized  bool
@@ -62,7 +57,7 @@ type sqlDebugTraceStateKey struct{}
 type sqlDebugTraceState struct {
 	start     time.Time
 	conn      *pgx.Conn
-	flow      sampledTxnFlow
+	scenario  string
 	txnNo     string
 	queryName string
 	sql       string
@@ -83,14 +78,10 @@ func newTxnSQLDebugTracerFromEnv() *sampledTxnSQLTracer {
 
 	tracer := &sampledTxnSQLTracer{
 		slowThreshold: time.Duration(slowMS) * time.Millisecond,
-		connFlow:      map[*pgx.Conn]sampledTxnFlow{},
+		connTxnNo:     map[*pgx.Conn]string{},
 		connInTxn:     map[*pgx.Conn]bool{},
-		forward: sampledTxnFlowState{
-			stats: map[string]*queryTimingStat{},
-		},
-		reverse: sampledTxnFlowState{
-			stats: map[string]*queryTimingStat{},
-		},
+		txnState:      map[string]*sampledTxnState{},
+		txnAlias:      map[string]string{},
 	}
 	log.Printf("[sql-debug] enabled env=%s slow_ms=%d", sqlDebugTraceEnv, slowMS)
 	return tracer
@@ -115,29 +106,46 @@ func (t *sampledTxnSQLTracer) TraceQueryStart(ctx context.Context, conn *pgx.Con
 	}
 	t.captureSampleTargetsLocked(sqlLower, data.Args)
 
-	flow, txnNo := t.matchFlowByTxnNosLocked(argTxnNos)
-	if flow != sampledTxnFlowNone && t.connInTxn[conn] {
-		t.connFlow[conn] = flow
-	}
-	if flow == sampledTxnFlowNone && t.connInTxn[conn] {
-		if connFlow, ok := t.connFlow[conn]; ok {
-			flow = connFlow
-			txnNo = t.flowTxnNoLocked(connFlow)
+	if matched := t.matchTxnStateByTxnNosLocked(argTxnNos); matched != nil {
+		state.scenario = matched.scenario
+		state.txnNo = matched.txnNo
+		if t.connInTxn[conn] {
+			t.connTxnNo[conn] = matched.txnNo
 		}
-	}
-	if isTxnEnd && t.connInTxn[conn] {
-		if connFlow, ok := t.connFlow[conn]; ok {
-			flow = connFlow
-			txnNo = t.flowTxnNoLocked(connFlow)
-		}
-		state.clearConn = true
 	}
 
-	state.flow = flow
-	state.txnNo = txnNo
+	if state.txnNo == "" && t.connInTxn[conn] {
+		if connTxnNo, ok := t.connTxnNo[conn]; ok {
+			state.txnNo = connTxnNo
+			if txnState, ok := t.txnState[connTxnNo]; ok {
+				state.scenario = txnState.scenario
+			}
+		}
+	}
+
+	if state.txnNo != "" {
+		if _, ok := t.txnState[state.txnNo]; !ok {
+			state.scenario = ""
+			state.txnNo = ""
+			delete(t.connTxnNo, conn)
+		}
+	}
+
+	if isTxnEnd && t.connInTxn[conn] {
+		state.clearConn = true
+		if state.txnNo == "" {
+			if connTxnNo, ok := t.connTxnNo[conn]; ok {
+				if txnState, ok := t.txnState[connTxnNo]; ok {
+					state.scenario = txnState.scenario
+					state.txnNo = connTxnNo
+				}
+			}
+		}
+	}
+
 	t.mu.Unlock()
 
-	if state.flow == sampledTxnFlowNone {
+	if state.scenario == "" {
 		return ctx
 	}
 	return context.WithValue(ctx, sqlDebugTraceStateKey{}, state)
@@ -146,7 +154,16 @@ func (t *sampledTxnSQLTracer) TraceQueryStart(ctx context.Context, conn *pgx.Con
 func (t *sampledTxnSQLTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
 	rawState := ctx.Value(sqlDebugTraceStateKey{})
 	state, ok := rawState.(sqlDebugTraceState)
-	if !ok || state.flow == sampledTxnFlowNone {
+	if !ok {
+		return
+	}
+	if state.scenario == "" {
+		if state.clearConn {
+			t.mu.Lock()
+			delete(t.connTxnNo, state.conn)
+			delete(t.connInTxn, state.conn)
+			t.mu.Unlock()
+		}
 		return
 	}
 
@@ -155,23 +172,28 @@ func (t *sampledTxnSQLTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, da
 
 	var summaryLines []string
 	t.mu.Lock()
-	t.recordTimingLocked(state.flow, state.queryName, state.sql, elapsed)
-	if state.isOutbox {
-		t.markOutboxSeenLocked(state.flow)
-	}
-	if state.clearConn {
-		delete(t.connFlow, state.conn)
+	if txnState, ok := t.txnState[state.txnNo]; ok {
+		t.recordTimingLocked(txnState, state.queryName, state.sql, elapsed)
+		if state.isOutbox {
+			t.markOutboxSeenLocked(txnState)
+		}
+		if state.clearConn {
+			delete(t.connTxnNo, state.conn)
+			delete(t.connInTxn, state.conn)
+			summaryLines = t.buildSummaryIfReadyLocked(txnState)
+		}
+	} else if state.clearConn {
+		delete(t.connTxnNo, state.conn)
 		delete(t.connInTxn, state.conn)
-		summaryLines = t.buildSummaryIfReadyLocked(state.flow)
 	}
 	t.mu.Unlock()
 
 	if data.Err != nil {
-		log.Printf("[sql-debug] flow=%s txn_no=%s elapsed_ms=%.3f slow=%t query=%s sql=%q err=%v",
-			state.flow, state.txnNo, elapsed.Seconds()*1000, slow, queryDisplayName(state.queryName, state.sql), state.sql, data.Err)
+		log.Printf("[sql-debug] scenario=%s txn_no=%s elapsed_ms=%.3f slow=%t query=%s sql=%q err=%v",
+			state.scenario, state.txnNo, elapsed.Seconds()*1000, slow, queryDisplayName(state.queryName, state.sql), state.sql, data.Err)
 	} else {
-		log.Printf("[sql-debug] flow=%s txn_no=%s elapsed_ms=%.3f slow=%t query=%s sql=%q",
-			state.flow, state.txnNo, elapsed.Seconds()*1000, slow, queryDisplayName(state.queryName, state.sql), state.sql)
+		log.Printf("[sql-debug] scenario=%s txn_no=%s elapsed_ms=%.3f slow=%t query=%s sql=%q",
+			state.scenario, state.txnNo, elapsed.Seconds()*1000, slow, queryDisplayName(state.queryName, state.sql), state.sql)
 	}
 	for _, line := range summaryLines {
 		log.Print(line)
@@ -186,77 +208,76 @@ func (t *sampledTxnSQLTracer) captureSampleTargetsLocked(sqlLower string, args [
 	if txnNo == "" {
 		return
 	}
+	outTradeNo := stringFromArgAt(args, 2)
+	scenario := scenarioFromOutTradeNo(outTradeNo)
+	if scenario == "" {
+		return
+	}
 	refundOfTxnNo := uuidFromArgAt(args, 10)
-	if refundOfTxnNo == "" {
-		if t.forward.txnNo == "" {
-			t.forward.txnNo = txnNo
-			log.Printf("[sql-debug] sampled forward txn_no=%s", txnNo)
+	if _, exists := t.txnState[txnNo]; exists {
+		t.txnAlias[txnNo] = txnNo
+		if refundOfTxnNo != "" {
+			t.txnAlias[refundOfTxnNo] = txnNo
 		}
 		return
 	}
-	if t.reverse.txnNo == "" {
-		t.reverse.txnNo = txnNo
-		t.reverse.originTxnNo = refundOfTxnNo
-		log.Printf("[sql-debug] sampled reverse txn_no=%s origin_txn_no=%s", txnNo, refundOfTxnNo)
+
+	if len(t.txnState) >= maxSQLDebugTrackedTxns {
+		return
 	}
+
+	t.txnState[txnNo] = &sampledTxnState{
+		scenario:    scenario,
+		txnNo:       txnNo,
+		outTradeNo:  outTradeNo,
+		originTxnNo: refundOfTxnNo,
+		stats:       map[string]*queryTimingStat{},
+	}
+	t.txnAlias[txnNo] = txnNo
+	if refundOfTxnNo != "" {
+		t.txnAlias[refundOfTxnNo] = txnNo
+		log.Printf("[sql-debug] sampled scenario=%s txn_no=%s origin_txn_no=%s out_trade_no=%s", scenario, txnNo, refundOfTxnNo, outTradeNo)
+		return
+	}
+	log.Printf("[sql-debug] sampled scenario=%s txn_no=%s out_trade_no=%s", scenario, txnNo, outTradeNo)
 }
 
-func (t *sampledTxnSQLTracer) matchFlowByTxnNosLocked(argTxnNos []string) (sampledTxnFlow, string) {
+func (t *sampledTxnSQLTracer) matchTxnStateByTxnNosLocked(argTxnNos []string) *sampledTxnState {
 	if len(argTxnNos) == 0 {
-		return sampledTxnFlowNone, ""
-	}
-
-	// Reverse flow takes precedence because it touches both refund txn_no and origin txn_no.
-	if !t.reverse.summarized && t.reverse.txnNo != "" && (containsString(argTxnNos, t.reverse.txnNo) || containsString(argTxnNos, t.reverse.originTxnNo)) {
-		return sampledTxnFlowReverse, t.reverse.txnNo
-	}
-	if !t.forward.summarized && t.forward.txnNo != "" && containsString(argTxnNos, t.forward.txnNo) {
-		return sampledTxnFlowForward, t.forward.txnNo
-	}
-	return sampledTxnFlowNone, ""
-}
-
-func (t *sampledTxnSQLTracer) flowTxnNoLocked(flow sampledTxnFlow) string {
-	switch flow {
-	case sampledTxnFlowForward:
-		return t.forward.txnNo
-	case sampledTxnFlowReverse:
-		return t.reverse.txnNo
-	default:
-		return ""
-	}
-}
-
-func (t *sampledTxnSQLTracer) flowStateLocked(flow sampledTxnFlow) *sampledTxnFlowState {
-	switch flow {
-	case sampledTxnFlowForward:
-		return &t.forward
-	case sampledTxnFlowReverse:
-		return &t.reverse
-	default:
 		return nil
 	}
+	for _, argTxnNo := range argTxnNos {
+		primaryTxnNo := t.txnAlias[argTxnNo]
+		if primaryTxnNo == "" {
+			primaryTxnNo = argTxnNo
+		}
+		txnState := t.txnState[primaryTxnNo]
+		if txnState == nil || txnState.summarized {
+			continue
+		}
+		return txnState
+	}
+	return nil
 }
 
-func (t *sampledTxnSQLTracer) recordTimingLocked(flow sampledTxnFlow, queryName, sql string, elapsed time.Duration) {
-	flowState := t.flowStateLocked(flow)
-	if flowState == nil {
+func (t *sampledTxnSQLTracer) recordTimingLocked(txnState *sampledTxnState, queryName, sql string, elapsed time.Duration) {
+	if txnState == nil {
 		return
 	}
 	key := queryName
 	if key == "" {
 		key = sql
 	}
-	if flowState.stats == nil {
-		flowState.stats = map[string]*queryTimingStat{}
+	if txnState.stats == nil {
+		txnState.stats = map[string]*queryTimingStat{}
 	}
-	stat, ok := flowState.stats[key]
+	stat, ok := txnState.stats[key]
 	if !ok {
 		stat = &queryTimingStat{
 			queryName: queryName,
 			sql:       sql,
 		}
-		flowState.stats[key] = stat
+		txnState.stats[key] = stat
 	}
 	stat.count++
 	stat.total += elapsed
@@ -265,23 +286,21 @@ func (t *sampledTxnSQLTracer) recordTimingLocked(flow sampledTxnFlow, queryName,
 	}
 }
 
-func (t *sampledTxnSQLTracer) markOutboxSeenLocked(flow sampledTxnFlow) {
-	flowState := t.flowStateLocked(flow)
-	if flowState == nil {
+func (t *sampledTxnSQLTracer) markOutboxSeenLocked(txnState *sampledTxnState) {
+	if txnState == nil {
 		return
 	}
-	flowState.outboxSeen = true
+	txnState.outboxSeen = true
 }
 
-func (t *sampledTxnSQLTracer) buildSummaryIfReadyLocked(flow sampledTxnFlow) []string {
-	flowState := t.flowStateLocked(flow)
-	if flowState == nil || flowState.summarized || !flowState.outboxSeen || flowState.txnNo == "" {
+func (t *sampledTxnSQLTracer) buildSummaryIfReadyLocked(txnState *sampledTxnState) []string {
+	if txnState == nil || txnState.summarized || !txnState.outboxSeen || txnState.txnNo == "" {
 		return nil
 	}
-	flowState.summarized = true
+	txnState.summarized = true
 
-	stats := make([]*queryTimingStat, 0, len(flowState.stats))
-	for _, stat := range flowState.stats {
+	stats := make([]*queryTimingStat, 0, len(txnState.stats))
+	for _, stat := range txnState.stats {
 		stats = append(stats, stat)
 	}
 	sort.Slice(stats, func(i, j int) bool {
@@ -294,9 +313,15 @@ func (t *sampledTxnSQLTracer) buildSummaryIfReadyLocked(flow sampledTxnFlow) []s
 		stats = stats[:maxSQLDebugSummaryEntries]
 	}
 
-	lines := []string{
-		fmt.Sprintf("[sql-debug][summary] flow=%s txn_no=%s sql_count=%d", flow, flowState.txnNo, len(stats)),
+	lines := []string{}
+	if txnState.originTxnNo != "" {
+		lines = append(lines, fmt.Sprintf("[sql-debug][summary] scenario=%s txn_no=%s origin_txn_no=%s out_trade_no=%s sql_count=%d",
+			txnState.scenario, txnState.txnNo, txnState.originTxnNo, txnState.outTradeNo, len(stats)))
+	} else {
+		lines = append(lines, fmt.Sprintf("[sql-debug][summary] scenario=%s txn_no=%s out_trade_no=%s sql_count=%d",
+			txnState.scenario, txnState.txnNo, txnState.outTradeNo, len(stats)))
 	}
+
 	for _, stat := range stats {
 		avg := time.Duration(0)
 		if stat.count > 0 {
@@ -304,8 +329,9 @@ func (t *sampledTxnSQLTracer) buildSummaryIfReadyLocked(flow sampledTxnFlow) []s
 		}
 		label := queryDisplayName(stat.queryName, stat.sql)
 		lines = append(lines, fmt.Sprintf(
-			"[sql-debug][summary] flow=%s query=%s count=%d total_ms=%.3f avg_ms=%.3f max_ms=%.3f sql=%q",
-			flow,
+			"[sql-debug][summary] scenario=%s txn_no=%s query=%s count=%d total_ms=%.3f avg_ms=%.3f max_ms=%.3f sql=%q",
+			txnState.scenario,
+			txnState.txnNo,
 			label,
 			stat.count,
 			stat.total.Seconds()*1000,
@@ -315,6 +341,26 @@ func (t *sampledTxnSQLTracer) buildSummaryIfReadyLocked(flow sampledTxnFlow) []s
 		))
 	}
 	return lines
+}
+
+func scenarioFromOutTradeNo(outTradeNo string) string {
+	outTradeNo = strings.TrimSpace(outTradeNo)
+	switch {
+	case strings.HasPrefix(outTradeNo, "ord_perf_book_to_book_transfer_"):
+		return "book_to_book_transfer"
+	case strings.HasPrefix(outTradeNo, "ord_perf_book_to_book_refund_"):
+		return "book_to_book_refund"
+	case strings.HasPrefix(outTradeNo, "ord_perf_book_transfer_"):
+		return "book_transfer"
+	case strings.HasPrefix(outTradeNo, "ord_perf_book_refund_"):
+		return "book_refund"
+	case strings.HasPrefix(outTradeNo, "ord_perf_transfer_"):
+		return "transfer"
+	case strings.HasPrefix(outTradeNo, "ord_perf_refund_"):
+		return "refund"
+	default:
+		return ""
+	}
 }
 
 func queryDisplayName(queryName, sql string) string {
@@ -389,6 +435,36 @@ func uuidFromArgAt(args []any, idx int) string {
 		return ""
 	}
 	return uuidFromAny(args[idx])
+}
+
+func stringFromArgAt(args []any, idx int) string {
+	if idx < 0 || idx >= len(args) {
+		return ""
+	}
+	return stringFromAny(args[idx])
+}
+
+func stringFromAny(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(t)
+	case []byte:
+		return strings.TrimSpace(string(t))
+	case pgtype.Text:
+		if !t.Valid {
+			return ""
+		}
+		return strings.TrimSpace(t.String)
+	case *pgtype.Text:
+		if t == nil || !t.Valid {
+			return ""
+		}
+		return strings.TrimSpace(t.String)
+	default:
+		return ""
+	}
 }
 
 func uuidFromAny(v any) string {

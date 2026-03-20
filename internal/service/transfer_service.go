@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -69,6 +70,29 @@ func (s *TransferService) Submit(req TransferRequest) (TransferTxn, error) {
 	}
 	if req.CreditExpireAt != nil {
 		txn.CreditExpireAt = req.CreditExpireAt.UTC()
+	}
+	if bizType == BizTypeRefund {
+		originTxnNo := strings.TrimSpace(req.RefundOfTxnNo)
+		origin, ok := s.repo.GetTransferTxn(originTxnNo)
+		if !ok {
+			return TransferTxn{}, ErrTxnNotFound
+		}
+		if strings.TrimSpace(origin.MerchantNo) != strings.TrimSpace(req.MerchantNo) {
+			return TransferTxn{}, ErrTxnNotFound
+		}
+		if strings.TrimSpace(origin.BizType) != BizTypeTransfer || strings.TrimSpace(origin.Status) != TxnStatusRecvSuccess {
+			return TransferTxn{}, ErrTxnStatusInvalid
+		}
+		if origin.RefundableAmount < req.Amount {
+			return TransferTxn{}, ErrRefundAmountExceeded
+		}
+		refundDebit := strings.TrimSpace(origin.CreditAccountNo)
+		refundCredit := strings.TrimSpace(origin.DebitAccountNo)
+		if refundDebit == "" || refundCredit == "" {
+			return TransferTxn{}, ErrAccountResolveFailed
+		}
+		txn.DebitAccountNo = refundDebit
+		txn.CreditAccountNo = refundCredit
 	}
 	if err := s.repo.CreateTransferTxn(txn); err != nil {
 		return TransferTxn{}, err

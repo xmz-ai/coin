@@ -577,33 +577,19 @@ func TestTC1110APIRefundAmountExceeded(t *testing.T) {
 	})
 	refundResp := httptest.NewRecorder()
 	r.ServeHTTP(refundResp, refundReq)
-	if refundResp.Code != http.StatusCreated {
-		t.Fatalf("refund submit expected 201, got %d body=%s", refundResp.Code, refundResp.Body.String())
+	if refundResp.Code != http.StatusConflict {
+		t.Fatalf("refund submit expected 409, got %d body=%s", refundResp.Code, refundResp.Body.String())
 	}
 	refundBody := decodeJSONMap(t, refundResp.Body.Bytes())
-	refundData := refundBody["data"].(map[string]any)
-	refundTxnNo, _ := refundData["txn_no"].(string)
-	if refundTxnNo == "" {
-		t.Fatalf("expected refund txn_no")
+	if refundBody["code"] != "REFUND_AMOUNT_EXCEEDED" {
+		t.Fatalf("expected REFUND_AMOUNT_EXCEEDED, got %v", refundBody["code"])
 	}
-	if refundData["status"] != service.TxnStatusInit {
-		t.Fatalf("expected refund submit status INIT, got %v", refundData["status"])
-	}
-	waitTxnStatus(t, r, merchantNo, secret, refundTxnNo, service.TxnStatusFailed)
 
-	queryReq := signedAPIRequest(t, http.MethodGet, "/api/v1/transactions/"+refundTxnNo, merchantNo, secret, "nonce-1110-query", nil)
+	queryReq := signedAPIRequest(t, http.MethodGet, "/api/v1/transactions/by-out-trade-no/ord_1110_refund", merchantNo, secret, "nonce-1110-query", nil)
 	queryResp := httptest.NewRecorder()
 	r.ServeHTTP(queryResp, queryReq)
-	if queryResp.Code != http.StatusOK {
-		t.Fatalf("query expected 200, got %d body=%s", queryResp.Code, queryResp.Body.String())
-	}
-	body := decodeJSONMap(t, queryResp.Body.Bytes())
-	data := body["data"].(map[string]any)
-	if data["status"] != service.TxnStatusFailed {
-		t.Fatalf("expected FAILED status, got %v", data["status"])
-	}
-	if data["error_code"] != "REFUND_AMOUNT_EXCEEDED" {
-		t.Fatalf("expected REFUND_AMOUNT_EXCEEDED, got %v", data["error_code"])
+	if queryResp.Code != http.StatusNotFound {
+		t.Fatalf("query expected 404, got %d body=%s", queryResp.Code, queryResp.Body.String())
 	}
 
 	originTxn, ok := repo.GetTransferTxn(originTxnNo)
@@ -612,13 +598,6 @@ func TestTC1110APIRefundAmountExceeded(t *testing.T) {
 	}
 	if originTxn.RefundableAmount != 30 {
 		t.Fatalf("expected origin refundable_amount=30, got %d", originTxn.RefundableAmount)
-	}
-	events, err := repo.ClaimDueOutboxEventsByTxnNo(refundTxnNo, 10, time.Now().UTC().Add(time.Hour))
-	if err != nil {
-		t.Fatalf("claim refund outbox events failed: %v", err)
-	}
-	if len(events) != 0 {
-		t.Fatalf("expected 0 refund outbox event on failed refund, got %+v", events)
 	}
 }
 
@@ -771,39 +750,19 @@ func TestTC1113APIRefundCrossMerchantOriginRejected(t *testing.T) {
 	})
 	refundResp := httptest.NewRecorder()
 	r.ServeHTTP(refundResp, refundReq)
-	if refundResp.Code != http.StatusCreated {
-		t.Fatalf("refund submit expected 201, got %d body=%s", refundResp.Code, refundResp.Body.String())
+	if refundResp.Code != http.StatusNotFound {
+		t.Fatalf("refund submit expected 404, got %d body=%s", refundResp.Code, refundResp.Body.String())
 	}
 	refundBody := decodeJSONMap(t, refundResp.Body.Bytes())
-	refundData := refundBody["data"].(map[string]any)
-	refundTxnNo, _ := refundData["txn_no"].(string)
-	if refundTxnNo == "" {
-		t.Fatalf("expected refund txn_no")
+	if refundBody["code"] != "REFUND_ORIGIN_NOT_FOUND" {
+		t.Fatalf("expected REFUND_ORIGIN_NOT_FOUND, got %v", refundBody["code"])
 	}
-	if refundData["status"] != service.TxnStatusInit {
-		t.Fatalf("expected refund submit status INIT, got %v", refundData["status"])
-	}
-	waitTxnStatus(t, r, merchantNo, secret, refundTxnNo, service.TxnStatusFailed)
 
-	queryReq := signedAPIRequest(t, http.MethodGet, "/api/v1/transactions/"+refundTxnNo, merchantNo, secret, "nonce-1113-query", nil)
+	queryReq := signedAPIRequest(t, http.MethodGet, "/api/v1/transactions/by-out-trade-no/ord_1113_refund", merchantNo, secret, "nonce-1113-query", nil)
 	queryResp := httptest.NewRecorder()
 	r.ServeHTTP(queryResp, queryReq)
-	if queryResp.Code != http.StatusOK {
-		t.Fatalf("query expected 200, got %d body=%s", queryResp.Code, queryResp.Body.String())
-	}
-	data := decodeJSONMap(t, queryResp.Body.Bytes())["data"].(map[string]any)
-	if data["status"] != service.TxnStatusFailed {
-		t.Fatalf("expected FAILED status, got %v", data["status"])
-	}
-	if data["error_code"] != "REFUND_ORIGIN_NOT_FOUND" {
-		t.Fatalf("expected REFUND_ORIGIN_NOT_FOUND, got %v", data["error_code"])
-	}
-	events, err := repo.ClaimDueOutboxEventsByTxnNo(refundTxnNo, 10, time.Now().UTC().Add(time.Hour))
-	if err != nil {
-		t.Fatalf("claim refund outbox events failed: %v", err)
-	}
-	if len(events) != 0 {
-		t.Fatalf("expected 0 refund outbox event on failed refund, got %+v", events)
+	if queryResp.Code != http.StatusNotFound {
+		t.Fatalf("query expected 404, got %d body=%s", queryResp.Code, queryResp.Body.String())
 	}
 }
 

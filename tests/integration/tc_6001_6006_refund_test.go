@@ -11,17 +11,19 @@ import (
 )
 
 func TestTC6001OriginTxnNotFoundRejected(t *testing.T) {
-	repo, _, processor, merchantNo, _, _, _ := setupRefundAsyncFixture(t)
+	repo, _, processor, merchantNo, _, debitAccountNo, creditAccountNo := setupRefundAsyncFixture(t)
 
 	refundTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a6001"
 	if err := repo.CreateTransferTxn(service.TransferTxn{
-		TxnNo:         refundTxnNo,
-		MerchantNo:    merchantNo,
-		OutTradeNo:    "ord_6001_refund",
-		BizType:       service.BizTypeRefund,
-		RefundOfTxnNo: "01956f4e-9d22-73bc-8e11-3f5e9c7a6fff",
-		Amount:        10,
-		Status:        service.TxnStatusInit,
+		TxnNo:           refundTxnNo,
+		MerchantNo:      merchantNo,
+		OutTradeNo:      "ord_6001_refund",
+		BizType:         service.BizTypeRefund,
+		DebitAccountNo:  creditAccountNo,
+		CreditAccountNo: debitAccountNo,
+		RefundOfTxnNo:   "01956f4e-9d22-73bc-8e11-3f5e9c7a6fff",
+		Amount:          10,
+		Status:          service.TxnStatusInit,
 	}); err != nil {
 		t.Fatalf("create refund txn failed: %v", err)
 	}
@@ -49,17 +51,19 @@ func TestTC6001OriginTxnNotFoundRejected(t *testing.T) {
 }
 
 func TestTC6002RefundAmountExceededRejected(t *testing.T) {
-	repo, _, processor, merchantNo, originTxnNo, _, _ := setupRefundAsyncFixture(t)
+	repo, _, processor, merchantNo, originTxnNo, debitAccountNo, creditAccountNo := setupRefundAsyncFixture(t)
 
 	refundTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a6002"
 	if err := repo.CreateTransferTxn(service.TransferTxn{
-		TxnNo:         refundTxnNo,
-		MerchantNo:    merchantNo,
-		OutTradeNo:    "ord_6002_refund",
-		BizType:       service.BizTypeRefund,
-		RefundOfTxnNo: originTxnNo,
-		Amount:        120,
-		Status:        service.TxnStatusInit,
+		TxnNo:           refundTxnNo,
+		MerchantNo:      merchantNo,
+		OutTradeNo:      "ord_6002_refund",
+		BizType:         service.BizTypeRefund,
+		DebitAccountNo:  creditAccountNo,
+		CreditAccountNo: debitAccountNo,
+		RefundOfTxnNo:   originTxnNo,
+		Amount:          120,
+		Status:          service.TxnStatusInit,
 	}); err != nil {
 		t.Fatalf("create refund txn failed: %v", err)
 	}
@@ -99,13 +103,15 @@ func TestTC6003RefundStagesToRecvSuccess(t *testing.T) {
 
 	refundTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a6003"
 	if err := repo.CreateTransferTxn(service.TransferTxn{
-		TxnNo:         refundTxnNo,
-		MerchantNo:    merchantNo,
-		OutTradeNo:    "ord_6003_refund",
-		BizType:       service.BizTypeRefund,
-		RefundOfTxnNo: originTxnNo,
-		Amount:        30,
-		Status:        service.TxnStatusInit,
+		TxnNo:           refundTxnNo,
+		MerchantNo:      merchantNo,
+		OutTradeNo:      "ord_6003_refund",
+		BizType:         service.BizTypeRefund,
+		DebitAccountNo:  creditAccountNo,
+		CreditAccountNo: debitAccountNo,
+		RefundOfTxnNo:   originTxnNo,
+		Amount:          30,
+		Status:          service.TxnStatusInit,
 	}); err != nil {
 		t.Fatalf("create refund txn failed: %v", err)
 	}
@@ -142,7 +148,7 @@ func TestTC6003RefundStagesToRecvSuccess(t *testing.T) {
 }
 
 func TestTC6004RefundCrossMerchantOriginRejected(t *testing.T) {
-	repo, _, processor, merchantNo, _, _, _ := setupRefundAsyncFixture(t)
+	repo, _, processor, merchantNo, _, debitAccountNo, creditAccountNo := setupRefundAsyncFixture(t)
 
 	otherOriginTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a6400"
 	if err := repo.CreateTransferTxn(service.TransferTxn{
@@ -162,13 +168,15 @@ func TestTC6004RefundCrossMerchantOriginRejected(t *testing.T) {
 
 	refundTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a6004"
 	if err := repo.CreateTransferTxn(service.TransferTxn{
-		TxnNo:         refundTxnNo,
-		MerchantNo:    merchantNo,
-		OutTradeNo:    "ord_6004_refund",
-		BizType:       service.BizTypeRefund,
-		RefundOfTxnNo: otherOriginTxnNo,
-		Amount:        10,
-		Status:        service.TxnStatusInit,
+		TxnNo:           refundTxnNo,
+		MerchantNo:      merchantNo,
+		OutTradeNo:      "ord_6004_refund",
+		BizType:         service.BizTypeRefund,
+		DebitAccountNo:  creditAccountNo,
+		CreditAccountNo: debitAccountNo,
+		RefundOfTxnNo:   otherOriginTxnNo,
+		Amount:          10,
+		Status:          service.TxnStatusInit,
 	}); err != nil {
 		t.Fatalf("create refund txn failed: %v", err)
 	}
@@ -196,7 +204,7 @@ func TestTC6004RefundCrossMerchantOriginRejected(t *testing.T) {
 }
 
 func TestTC6007RefundOriginStatusInvalidRejected(t *testing.T) {
-	repo, _, processor, merchantNo, originTxnNo, _, _ := setupRefundAsyncFixture(t)
+	repo, _, processor, merchantNo, originTxnNo, debitAccountNo, creditAccountNo := setupRefundAsyncFixture(t)
 
 	if err := repo.UpdateTransferTxnStatus(originTxnNo, service.TxnStatusPaySuccess, "", ""); err != nil {
 		t.Fatalf("set origin status failed: %v", err)
@@ -204,13 +212,15 @@ func TestTC6007RefundOriginStatusInvalidRejected(t *testing.T) {
 
 	refundTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a6007"
 	if err := repo.CreateTransferTxn(service.TransferTxn{
-		TxnNo:         refundTxnNo,
-		MerchantNo:    merchantNo,
-		OutTradeNo:    "ord_6007_refund",
-		BizType:       service.BizTypeRefund,
-		RefundOfTxnNo: originTxnNo,
-		Amount:        10,
-		Status:        service.TxnStatusInit,
+		TxnNo:           refundTxnNo,
+		MerchantNo:      merchantNo,
+		OutTradeNo:      "ord_6007_refund",
+		BizType:         service.BizTypeRefund,
+		DebitAccountNo:  creditAccountNo,
+		CreditAccountNo: debitAccountNo,
+		RefundOfTxnNo:   originTxnNo,
+		Amount:          10,
+		Status:          service.TxnStatusInit,
 	}); err != nil {
 		t.Fatalf("create refund txn failed: %v", err)
 	}
@@ -266,13 +276,15 @@ func TestTC6008RefundOriginBizTypeInvalidRejected(t *testing.T) {
 
 	refundTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a6009"
 	if err := repo.CreateTransferTxn(service.TransferTxn{
-		TxnNo:         refundTxnNo,
-		MerchantNo:    merchantNo,
-		OutTradeNo:    "ord_6008_refund",
-		BizType:       service.BizTypeRefund,
-		RefundOfTxnNo: invalidOriginTxnNo,
-		Amount:        10,
-		Status:        service.TxnStatusInit,
+		TxnNo:           refundTxnNo,
+		MerchantNo:      merchantNo,
+		OutTradeNo:      "ord_6008_refund",
+		BizType:         service.BizTypeRefund,
+		DebitAccountNo:  creditAccountNo,
+		CreditAccountNo: debitAccountNo,
+		RefundOfTxnNo:   invalidOriginTxnNo,
+		Amount:          10,
+		Status:          service.TxnStatusInit,
 	}); err != nil {
 		t.Fatalf("create refund txn failed: %v", err)
 	}
@@ -308,28 +320,32 @@ func TestTC6008RefundOriginBizTypeInvalidRejected(t *testing.T) {
 }
 
 func TestTC6005ConcurrentRefundDoesNotExceed(t *testing.T) {
-	repo, _, _, merchantNo, originTxnNo, _, _ := setupRefundAsyncFixture(t)
+	repo, _, _, merchantNo, originTxnNo, debitAccountNo, creditAccountNo := setupRefundAsyncFixture(t)
 
 	refundTxnA := "01956f4e-9d22-73bc-8e11-3f5e9c7a6501"
 	refundTxnB := "01956f4e-9d22-73bc-8e11-3f5e9c7a6502"
 	for _, item := range []service.TransferTxn{
 		{
-			TxnNo:         refundTxnA,
-			MerchantNo:    merchantNo,
-			OutTradeNo:    "ord_6005_refund_a",
-			BizType:       service.BizTypeRefund,
-			RefundOfTxnNo: originTxnNo,
-			Amount:        80,
-			Status:        service.TxnStatusInit,
+			TxnNo:           refundTxnA,
+			MerchantNo:      merchantNo,
+			OutTradeNo:      "ord_6005_refund_a",
+			BizType:         service.BizTypeRefund,
+			DebitAccountNo:  creditAccountNo,
+			CreditAccountNo: debitAccountNo,
+			RefundOfTxnNo:   originTxnNo,
+			Amount:          80,
+			Status:          service.TxnStatusInit,
 		},
 		{
-			TxnNo:         refundTxnB,
-			MerchantNo:    merchantNo,
-			OutTradeNo:    "ord_6005_refund_b",
-			BizType:       service.BizTypeRefund,
-			RefundOfTxnNo: originTxnNo,
-			Amount:        80,
-			Status:        service.TxnStatusInit,
+			TxnNo:           refundTxnB,
+			MerchantNo:      merchantNo,
+			OutTradeNo:      "ord_6005_refund_b",
+			BizType:         service.BizTypeRefund,
+			DebitAccountNo:  creditAccountNo,
+			CreditAccountNo: debitAccountNo,
+			RefundOfTxnNo:   originTxnNo,
+			Amount:          80,
+			Status:          service.TxnStatusInit,
 		},
 	} {
 		if err := repo.CreateTransferTxn(item); err != nil {
@@ -377,13 +393,15 @@ func TestTC6006RefundReverseAccounting(t *testing.T) {
 
 	refundTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a6006"
 	if err := repo.CreateTransferTxn(service.TransferTxn{
-		TxnNo:         refundTxnNo,
-		MerchantNo:    merchantNo,
-		OutTradeNo:    "ord_6006_refund",
-		BizType:       service.BizTypeRefund,
-		RefundOfTxnNo: originTxnNo,
-		Amount:        30,
-		Status:        service.TxnStatusInit,
+		TxnNo:           refundTxnNo,
+		MerchantNo:      merchantNo,
+		OutTradeNo:      "ord_6006_refund",
+		BizType:         service.BizTypeRefund,
+		DebitAccountNo:  creditAccountNo,
+		CreditAccountNo: debitAccountNo,
+		RefundOfTxnNo:   originTxnNo,
+		Amount:          30,
+		Status:          service.TxnStatusInit,
 	}); err != nil {
 		t.Fatalf("create refund txn failed: %v", err)
 	}

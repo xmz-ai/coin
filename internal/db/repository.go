@@ -650,7 +650,7 @@ func (r *Repository) ApplyTxnStage(txnNo, expectedStatus string) (service.TxnSta
 				return result, service.ErrTxnStatusInvalid
 			}
 			originTxnUUID := stage.RefundOfTxnNo
-			origin, err := qtx.DecreaseOriginTxnRefundableIfValid(ctx, dbsqlc.DecreaseOriginTxnRefundableIfValidParams{
+			_, err = qtx.DecreaseOriginTxnRefundableIfValid(ctx, dbsqlc.DecreaseOriginTxnRefundableIfValidParams{
 				Amount:      stage.Amount,
 				OriginTxnNo: originTxnUUID,
 				MerchantNo:  stage.MerchantNo,
@@ -666,23 +666,14 @@ func (r *Repository) ApplyTxnStage(txnNo, expectedStatus string) (service.TxnSta
 				return result, err
 			}
 
-			refundDebit := strings.TrimSpace(origin.CreditAccountNo)
-			refundCredit := strings.TrimSpace(origin.DebitAccountNo)
+			refundDebit := strings.TrimSpace(result.DebitAccountNo)
+			refundCredit := strings.TrimSpace(result.CreditAccountNo)
 			if refundDebit == "" || refundCredit == "" {
 				return result, service.ErrAccountResolveFailed
-			}
-			if err := qtx.UpdateTransferTxnParties(ctx, dbsqlc.UpdateTransferTxnPartiesParams{
-				DebitAccountNo:  textValue(refundDebit),
-				CreditAccountNo: textValue(refundCredit),
-				TxnNo:           txnUUID,
-			}); err != nil {
-				return result, err
 			}
 			if err := applyAccountDebitTx(ctx, qtx, txnUUID, refundDebit, stage.Amount); err != nil {
 				return result, err
 			}
-			result.DebitAccountNo = refundDebit
-			result.CreditAccountNo = refundCredit
 		default:
 			return result, service.ErrTxnStatusInvalid
 		}
@@ -905,7 +896,7 @@ func (r *Repository) ApplyRefundDebitStage(refundTxnNo string, amount int64) (bo
 	}
 
 	originTxnUUID := refund.RefundOfTxnNo
-	origin, err := qtx.DecreaseOriginTxnRefundableIfValid(ctx, dbsqlc.DecreaseOriginTxnRefundableIfValidParams{
+	_, err = qtx.DecreaseOriginTxnRefundableIfValid(ctx, dbsqlc.DecreaseOriginTxnRefundableIfValidParams{
 		Amount:      amount,
 		OriginTxnNo: originTxnUUID,
 		MerchantNo:  refund.MerchantNo,
@@ -921,17 +912,10 @@ func (r *Repository) ApplyRefundDebitStage(refundTxnNo string, amount int64) (bo
 		return false, err
 	}
 
-	refundDebit := strings.TrimSpace(origin.CreditAccountNo)
-	refundCredit := strings.TrimSpace(origin.DebitAccountNo)
+	refundDebit := strings.TrimSpace(refund.DebitAccountNo)
+	refundCredit := strings.TrimSpace(refund.CreditAccountNo)
 	if refundDebit == "" || refundCredit == "" {
 		return false, service.ErrAccountResolveFailed
-	}
-	if err := qtx.UpdateTransferTxnParties(ctx, dbsqlc.UpdateTransferTxnPartiesParams{
-		DebitAccountNo:  textValue(refundDebit),
-		CreditAccountNo: textValue(refundCredit),
-		TxnNo:           refundTxnUUID,
-	}); err != nil {
-		return false, err
 	}
 	if err := applyAccountDebitTx(ctx, qtx, refundTxnUUID, refundDebit, amount); err != nil {
 		return false, err
