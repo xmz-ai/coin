@@ -142,10 +142,29 @@ export PERF_REQUEST_TIMEOUT_MS="${PERF_REQUEST_TIMEOUT_MS:-3000}"
 export PERF_MAX_BODY_BYTES="${PERF_MAX_BODY_BYTES:-1048576}"
 export PERF_WEBHOOK_POLL_INTERVAL_MS="${PERF_WEBHOOK_POLL_INTERVAL_MS:-10}"
 export PERF_WEBHOOK_WAIT_TIMEOUT_MS="${PERF_WEBHOOK_WAIT_TIMEOUT_MS:-360000}"
+export PERF_CPU_PROFILE_ENABLED="${PERF_CPU_PROFILE_ENABLED:-0}"
+export PERF_CPU_PROFILE_PATH="${PERF_CPU_PROFILE_PATH:-perf-cpu.pprof}"
+PERF_CPU_FLAMEGRAPH_PATH="${PERF_CPU_FLAMEGRAPH_PATH:-perf-cpu.svg}"
 
-printf '[perf-core-txn-real] go=%s requests=%s concurrency=%s warmup=%s timeout_ms=%s webhook_poll_ms=%s webhook_wait_timeout_ms=%s txn_recovery_interval_ms=%s txn_recovery_stale_ms=%s txn_recovery_batch=%s\n' \
-  "$GO_BIN" "$PERF_REQUESTS" "$PERF_CONCURRENCY" "$PERF_WARMUP" "$PERF_REQUEST_TIMEOUT_MS" "$PERF_WEBHOOK_POLL_INTERVAL_MS" "$PERF_WEBHOOK_WAIT_TIMEOUT_MS" "${PERF_TXN_RECOVERY_INTERVAL_MS:-default}" "${PERF_TXN_RECOVERY_STALE_MS:-default}" "${PERF_TXN_RECOVERY_BATCH:-default}"
+printf '[perf-core-txn-real] go=%s requests=%s concurrency=%s warmup=%s timeout_ms=%s webhook_poll_ms=%s webhook_wait_timeout_ms=%s txn_recovery_interval_ms=%s txn_recovery_stale_ms=%s txn_recovery_batch=%s cpu_profile_enabled=%s cpu_profile_path=%s\n' \
+  "$GO_BIN" "$PERF_REQUESTS" "$PERF_CONCURRENCY" "$PERF_WARMUP" "$PERF_REQUEST_TIMEOUT_MS" "$PERF_WEBHOOK_POLL_INTERVAL_MS" "$PERF_WEBHOOK_WAIT_TIMEOUT_MS" "${PERF_TXN_RECOVERY_INTERVAL_MS:-default}" "${PERF_TXN_RECOVERY_STALE_MS:-default}" "${PERF_TXN_RECOVERY_BATCH:-default}" "$PERF_CPU_PROFILE_ENABLED" "$PERF_CPU_PROFILE_PATH"
+
+if [[ "$PERF_CPU_PROFILE_ENABLED" == "1" ]]; then
+  rm -f "$PERF_CPU_PROFILE_PATH" "$PERF_CPU_FLAMEGRAPH_PATH"
+fi
 
 GOCACHE="$GOCACHE" "$GO_BIN" run ./cmd/perf-core-txn
+
+if [[ "$PERF_CPU_PROFILE_ENABLED" == "1" ]]; then
+  if [[ ! -s "$PERF_CPU_PROFILE_PATH" ]]; then
+    echo "[perf-core-txn-real] cpu profile file missing or empty: $PERF_CPU_PROFILE_PATH"
+  elif ! command -v dot >/dev/null 2>&1; then
+    echo "[perf-core-txn-real] graphviz 'dot' not found, skipped flamegraph svg; profile: $PERF_CPU_PROFILE_PATH"
+  elif "$GO_BIN" tool pprof -svg -output "$PERF_CPU_FLAMEGRAPH_PATH" "$PERF_CPU_PROFILE_PATH" >/dev/null 2>&1; then
+    echo "[perf-core-txn-real] cpu flamegraph generated: $PERF_CPU_FLAMEGRAPH_PATH"
+  else
+    echo "[perf-core-txn-real] failed to generate flamegraph svg from profile: $PERF_CPU_PROFILE_PATH"
+  fi
+fi
 
 echo "[perf-core-txn-real] done (containers are kept running; perf data is preserved)"

@@ -380,3 +380,272 @@ WHERE account_no = $1
 		t.Fatalf("expected no account_book_change_log on blocked refund credit, got %d", len(bookLogs))
 	}
 }
+
+func TestTC9023PostgresTransferBookToBookWritesBidirectionalBookLogs(t *testing.T) {
+	repo, pool, _, debitAccountNo, creditAccountNo, txnNo := setupPostgresTransferFixture(t, service.TxnStatusInit, 120)
+
+	today := time.Now().UTC()
+	debitExpire1 := time.Date(today.Year(), today.Month(), today.Day()+1, 0, 0, 0, 0, time.UTC)
+	debitExpire2 := time.Date(today.Year(), today.Month(), today.Day()+2, 0, 0, 0, 0, time.UTC)
+	creditSeedExpire := time.Date(today.Year(), today.Month(), today.Day()+3, 0, 0, 0, 0, time.UTC)
+	creditExpire := time.Date(today.Year(), today.Month(), today.Day()+9, 0, 0, 0, 0, time.UTC)
+
+	if _, err := pool.Exec(context.Background(), `
+UPDATE account
+SET book_enabled = true, balance = 160
+WHERE account_no = $1
+`, debitAccountNo); err != nil {
+		t.Fatalf("enable debit book account failed: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO account_book (book_no, account_no, expire_at, balance)
+VALUES
+  ('01956f4e-9223-7923-8923-922392239231'::uuid, $1, $2::date, 70),
+  ('01956f4e-9223-7923-8923-922392239232'::uuid, $1, $3::date, 90)
+`, debitAccountNo, debitExpire1, debitExpire2); err != nil {
+		t.Fatalf("seed debit account books failed: %v", err)
+	}
+
+	if _, err := pool.Exec(context.Background(), `
+UPDATE account
+SET book_enabled = true, balance = 50
+WHERE account_no = $1
+`, creditAccountNo); err != nil {
+		t.Fatalf("enable credit book account failed: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO account_book (book_no, account_no, expire_at, balance)
+VALUES ('01956f4e-9223-7923-8923-922392239233'::uuid, $1, $2::date, 50)
+`, creditAccountNo, creditSeedExpire); err != nil {
+		t.Fatalf("seed credit account books failed: %v", err)
+	}
+
+	if _, err := pool.Exec(context.Background(), `
+UPDATE txn
+SET credit_expire_at = $1::date
+WHERE txn_no = $2::uuid
+`, creditExpire, txnNo); err != nil {
+		t.Fatalf("set txn credit_expire_at failed: %v", err)
+	}
+
+	processor := service.NewTransferAsyncProcessor(repo)
+	processor.Enqueue(txnNo)
+	waitTxnStatusRepo(t, repo, txnNo, service.TxnStatusRecvSuccess, 2*time.Second)
+
+	debit, _ := repo.GetAccount(debitAccountNo)
+	credit, _ := repo.GetAccount(creditAccountNo)
+	if debit.Balance != 40 {
+		t.Fatalf("unexpected debit balance: %d", debit.Balance)
+	}
+	if credit.Balance != 170 {
+		t.Fatalf("unexpected credit balance: %d", credit.Balance)
+	}
+
+	debitBooks := queryAccountBooksByAccount(t, pool, debitAccountNo)
+	if len(debitBooks) != 2 {
+		t.Fatalf("expected 2 debit account_book rows, got %d", len(debitBooks))
+	}
+	if debitBooks[0].Balance != 0 || debitBooks[1].Balance != 40 {
+		t.Fatalf("unexpected debit account_book balances: %+v", debitBooks)
+	}
+	if !debitBooks[0].ExpireAt.Equal(debitExpire1) || !debitBooks[1].ExpireAt.Equal(debitExpire2) {
+		t.Fatalf("unexpected debit account_book expire_at: %+v", debitBooks)
+	}
+
+	creditBooks := queryAccountBooksByAccount(t, pool, creditAccountNo)
+	if len(creditBooks) != 2 {
+		t.Fatalf("expected 2 credit account_book rows, got %d", len(creditBooks))
+	}
+	if creditBooks[0].Balance != 50 || creditBooks[1].Balance != 120 {
+		t.Fatalf("unexpected credit account_book balances: %+v", creditBooks)
+	}
+	if !creditBooks[0].ExpireAt.Equal(creditSeedExpire) || !creditBooks[1].ExpireAt.Equal(creditExpire) {
+		t.Fatalf("unexpected credit account_book expire_at: %+v", creditBooks)
+	}
+
+	bookLogs := queryBookChangesByTxnNo(t, pool, txnNo)
+	if len(bookLogs) != 3 {
+		t.Fatalf("expected 3 account_book_change_log rows, got %d", len(bookLogs))
+	}
+
+	var debitBookDelta, creditBookDelta int64
+	var debitBookRows, creditBookRows int
+	for _, item := range bookLogs {
+		if item.AccountNo == debitAccountNo {
+			debitBookRows++
+			debitBookDelta += item.Delta
+			continue
+		}
+		if item.AccountNo == creditAccountNo {
+			creditBookRows++
+			creditBookDelta += item.Delta
+		}
+	}
+	if debitBookRows != 2 || debitBookDelta != -120 {
+		t.Fatalf("unexpected debit book logs rows=%d delta=%d logs=%+v", debitBookRows, debitBookDelta, bookLogs)
+	}
+	if creditBookRows != 1 || creditBookDelta != 120 {
+		t.Fatalf("unexpected credit book logs rows=%d delta=%d logs=%+v", creditBookRows, creditBookDelta, bookLogs)
+	}
+}
+
+func TestTC9024PostgresRefundBookToBookWritesBidirectionalBookLogs(t *testing.T) {
+	repo, pool, merchant, debitAccountNo, creditAccountNo, _ := setupPostgresTransferFixture(t, service.TxnStatusInit, 120)
+
+	today := time.Now().UTC()
+	originDebitExpire := time.Date(today.Year(), today.Month(), today.Day()+5, 0, 0, 0, 0, time.UTC)
+	refundDebitExpire := time.Date(today.Year(), today.Month(), today.Day()+3, 0, 0, 0, 0, time.UTC)
+	originCreditExpire := time.Date(today.Year(), today.Month(), today.Day()+7, 0, 0, 0, 0, time.UTC)
+
+	if _, err := pool.Exec(context.Background(), `
+UPDATE account
+SET book_enabled = true, balance = 200
+WHERE account_no = $1
+`, debitAccountNo); err != nil {
+		t.Fatalf("enable debit account book failed: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO account_book (book_no, account_no, expire_at, balance)
+VALUES ('01956f4e-9224-7924-8924-922492249241'::uuid, $1, $2::date, 200)
+`, debitAccountNo, originDebitExpire); err != nil {
+		t.Fatalf("seed debit account book failed: %v", err)
+	}
+
+	if _, err := pool.Exec(context.Background(), `
+UPDATE account
+SET book_enabled = true, balance = 40
+WHERE account_no = $1
+`, creditAccountNo); err != nil {
+		t.Fatalf("enable credit account book failed: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO account_book (book_no, account_no, expire_at, balance)
+VALUES ('01956f4e-9224-7924-8924-922492249242'::uuid, $1, $2::date, 40)
+`, creditAccountNo, refundDebitExpire); err != nil {
+		t.Fatalf("seed credit account book failed: %v", err)
+	}
+
+	originTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a9225"
+	if err := repo.CreateTransferTxn(service.TransferTxn{
+		TxnNo:            originTxnNo,
+		MerchantNo:       merchant.MerchantNo,
+		OutTradeNo:       "ord_9024_origin",
+		BizType:          service.BizTypeTransfer,
+		TransferScene:    service.SceneP2P,
+		DebitAccountNo:   debitAccountNo,
+		CreditAccountNo:  creditAccountNo,
+		Amount:           120,
+		RefundableAmount: 120,
+		Status:           service.TxnStatusInit,
+	}); err != nil {
+		t.Fatalf("create origin txn failed: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+UPDATE txn
+SET credit_expire_at = $1::date
+WHERE txn_no = $2::uuid
+`, originCreditExpire, originTxnNo); err != nil {
+		t.Fatalf("set origin credit_expire_at failed: %v", err)
+	}
+
+	applied, err := repo.ApplyTransferDebitStage(originTxnNo, debitAccountNo, 120)
+	if err != nil || !applied {
+		t.Fatalf("apply origin debit stage failed: applied=%v err=%v", applied, err)
+	}
+	applied, err = repo.ApplyTransferCreditStage(originTxnNo, creditAccountNo, 120)
+	if err != nil || !applied {
+		t.Fatalf("apply origin credit stage failed: applied=%v err=%v", applied, err)
+	}
+
+	originDebitAt := time.Date(today.Year(), today.Month(), today.Day()-2, 13, 0, 0, 0, time.UTC)
+	originDebitLogExpire := time.Date(today.Year(), today.Month(), today.Day()+3, 0, 0, 0, 0, time.UTC)
+	if _, err := pool.Exec(context.Background(), `
+UPDATE account_book_change_log
+SET created_at = $1::timestamptz, expire_at = $2::date
+WHERE txn_no = $3::uuid
+  AND account_no = $4
+  AND delta < 0
+`, originDebitAt, originDebitLogExpire, originTxnNo, debitAccountNo); err != nil {
+		t.Fatalf("override origin debit book trace failed: %v", err)
+	}
+
+	refundTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a9226"
+	if err := repo.CreateTransferTxn(service.TransferTxn{
+		TxnNo:            refundTxnNo,
+		MerchantNo:       merchant.MerchantNo,
+		OutTradeNo:       "ord_9024_refund",
+		BizType:          service.BizTypeRefund,
+		TransferScene:    "",
+		Amount:           70,
+		RefundOfTxnNo:    originTxnNo,
+		RefundableAmount: 0,
+		Status:           service.TxnStatusInit,
+	}); err != nil {
+		t.Fatalf("create refund txn failed: %v", err)
+	}
+
+	processor := service.NewTransferAsyncProcessor(repo)
+	processor.Enqueue(refundTxnNo)
+	waitTxnStatusRepo(t, repo, refundTxnNo, service.TxnStatusRecvSuccess, 2*time.Second)
+
+	refund, ok := repo.GetTransferTxn(refundTxnNo)
+	if !ok {
+		t.Fatalf("refund txn not found")
+	}
+	if refund.Status != service.TxnStatusRecvSuccess {
+		t.Fatalf("expected RECV_SUCCESS, got %s", refund.Status)
+	}
+
+	origin, ok := repo.GetTransferTxn(originTxnNo)
+	if !ok {
+		t.Fatalf("origin txn not found")
+	}
+	if origin.RefundableAmount != 50 {
+		t.Fatalf("expected origin refundable_amount=50, got %d", origin.RefundableAmount)
+	}
+
+	debit, _ := repo.GetAccount(debitAccountNo)
+	credit, _ := repo.GetAccount(creditAccountNo)
+	if debit.Balance != 150 {
+		t.Fatalf("unexpected debit balance after refund: %d", debit.Balance)
+	}
+	if credit.Balance != 90 {
+		t.Fatalf("unexpected credit balance after refund: %d", credit.Balance)
+	}
+
+	bookLogs := queryBookChangesByTxnNo(t, pool, refundTxnNo)
+	if len(bookLogs) < 2 {
+		t.Fatalf("expected refund to write both-side book logs, got %d", len(bookLogs))
+	}
+
+	var debitBookDelta, creditBookDelta int64
+	var debitBookRows, creditBookRows int
+	var debitCreditExpireAt time.Time
+	for _, item := range bookLogs {
+		if item.AccountNo == debitAccountNo {
+			debitBookRows++
+			debitBookDelta += item.Delta
+			debitCreditExpireAt = item.ExpireAt
+			continue
+		}
+		if item.AccountNo == creditAccountNo {
+			creditBookRows++
+			creditBookDelta += item.Delta
+		}
+	}
+	if debitBookRows == 0 || debitBookDelta != 70 {
+		t.Fatalf("unexpected refund credit-side book logs rows=%d delta=%d logs=%+v", debitBookRows, debitBookDelta, bookLogs)
+	}
+	if creditBookRows == 0 || creditBookDelta != -70 {
+		t.Fatalf("unexpected refund debit-side book logs rows=%d delta=%d logs=%+v", creditBookRows, creditBookDelta, bookLogs)
+	}
+
+	remainingDays := int64(originDebitLogExpire.Sub(time.Date(originDebitAt.Year(), originDebitAt.Month(), originDebitAt.Day(), 0, 0, 0, 0, time.UTC)) / (24 * time.Hour))
+	if remainingDays <= 0 {
+		t.Fatalf("test setup invalid remainingDays=%d", remainingDays)
+	}
+	wantExpireAt := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, time.UTC).Add(time.Duration(remainingDays) * 24 * time.Hour)
+	if !debitCreditExpireAt.Equal(wantExpireAt) {
+		t.Fatalf("unexpected refund credit expire_at: got=%s want=%s", debitCreditExpireAt.UTC(), wantExpireAt.UTC())
+	}
+}
