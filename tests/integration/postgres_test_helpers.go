@@ -65,7 +65,7 @@ var (
 	autoPGErr        error
 )
 
-func loadMigrationSQL(t *testing.T) string {
+func loadMigrationSQL(t testing.TB) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
@@ -93,7 +93,7 @@ func loadMigrationSQL(t *testing.T) string {
 	return sql.String()
 }
 
-func setupPostgresPool(t *testing.T) *pgxpool.Pool {
+func setupPostgresPool(t testing.TB) *pgxpool.Pool {
 	t.Helper()
 
 	dsn := os.Getenv("COIN_TEST_POSTGRES_DSN")
@@ -309,7 +309,7 @@ func testSchemaName(testName string) string {
 	return "it_" + safe + "_" + strconv.FormatInt(time.Now().UnixNano(), 10)
 }
 
-func setupPostgresTransferFixture(t *testing.T, txnStatus string, amount int64) (*db.Repository, *pgxpool.Pool, service.Merchant, string, string, string) {
+func setupPostgresTransferFixture(t testing.TB, txnStatus string, amount int64) (*db.Repository, *pgxpool.Pool, service.Merchant, string, string, string) {
 	t.Helper()
 
 	pool := setupPostgresPool(t)
