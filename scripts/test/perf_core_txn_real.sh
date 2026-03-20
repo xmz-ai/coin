@@ -135,7 +135,7 @@ else
   exit 1
 fi
 
-export PERF_DURATION_SECONDS="${PERF_DURATION_SECONDS:-15}"
+export PERF_REQUESTS="${PERF_REQUESTS:-10000}"
 export PERF_CONCURRENCY="${PERF_CONCURRENCY:-50}"
 export PERF_WARMUP="${PERF_WARMUP:-200}"
 export PERF_REQUEST_TIMEOUT_MS="${PERF_REQUEST_TIMEOUT_MS:-3000}"
@@ -143,8 +143,8 @@ export PERF_MAX_BODY_BYTES="${PERF_MAX_BODY_BYTES:-1048576}"
 export PERF_WEBHOOK_POLL_INTERVAL_MS="${PERF_WEBHOOK_POLL_INTERVAL_MS:-10}"
 export PERF_WEBHOOK_WAIT_TIMEOUT_MS="${PERF_WEBHOOK_WAIT_TIMEOUT_MS:-360000}"
 
-printf '[perf-core-txn-real] go=%s duration=%ss concurrency=%s warmup=%s timeout_ms=%s webhook_poll_ms=%s webhook_wait_timeout_ms=%s txn_recovery_interval_ms=%s txn_recovery_stale_ms=%s txn_recovery_batch=%s\n' \
-  "$GO_BIN" "$PERF_DURATION_SECONDS" "$PERF_CONCURRENCY" "$PERF_WARMUP" "$PERF_REQUEST_TIMEOUT_MS" "$PERF_WEBHOOK_POLL_INTERVAL_MS" "$PERF_WEBHOOK_WAIT_TIMEOUT_MS" "${PERF_TXN_RECOVERY_INTERVAL_MS:-default}" "${PERF_TXN_RECOVERY_STALE_MS:-default}" "${PERF_TXN_RECOVERY_BATCH:-default}"
+printf '[perf-core-txn-real] go=%s requests=%s concurrency=%s warmup=%s timeout_ms=%s webhook_poll_ms=%s webhook_wait_timeout_ms=%s txn_recovery_interval_ms=%s txn_recovery_stale_ms=%s txn_recovery_batch=%s\n' \
+  "$GO_BIN" "$PERF_REQUESTS" "$PERF_CONCURRENCY" "$PERF_WARMUP" "$PERF_REQUEST_TIMEOUT_MS" "$PERF_WEBHOOK_POLL_INTERVAL_MS" "$PERF_WEBHOOK_WAIT_TIMEOUT_MS" "${PERF_TXN_RECOVERY_INTERVAL_MS:-default}" "${PERF_TXN_RECOVERY_STALE_MS:-default}" "${PERF_TXN_RECOVERY_BATCH:-default}"
 
 GOCACHE="$GOCACHE" "$GO_BIN" run ./cmd/perf-core-txn
 
