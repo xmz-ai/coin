@@ -35,6 +35,8 @@ const (
 	toBookTransferOutUser    = "u_perf_to_book"
 	toNonBookTransferOutUser = "u_perf_to_non_book"
 	progressBarWidth         = 24
+	submitProgressPercent    = 5
+	webhookProgressPercent   = 1
 )
 
 type perfConfig struct {
@@ -1035,7 +1037,7 @@ func runLoadByRequestCount(
 
 	rows := make([]resultRow, 0, 1024)
 	pending := make([]int, 0, 1024)
-	step := progressUpdateStep(requestCount)
+	step := progressUpdateStep(requestCount, submitProgressPercent)
 	for r := range results {
 		idx := len(rows)
 		rows = append(rows, r)
@@ -1052,7 +1054,7 @@ func runLoadByRequestCount(
 
 	submitElapsed := time.Since(start)
 	if requireWebhook {
-		step = progressUpdateStep(len(pending))
+		step = progressUpdateStep(len(pending), webhookProgressPercent)
 		for i, idx := range pending {
 			awaitWebhookResult(&rows[idx], webhookWaitTimeout)
 			done := i + 1
@@ -1120,7 +1122,7 @@ func runLoadByOriginTxnNos(
 
 	rows := make([]resultRow, 0, len(originTxnNos))
 	pending := make([]int, 0, len(originTxnNos))
-	step := progressUpdateStep(len(originTxnNos))
+	step := progressUpdateStep(len(originTxnNos), submitProgressPercent)
 	for row := range results {
 		idx := len(rows)
 		rows = append(rows, row)
@@ -1138,7 +1140,7 @@ func runLoadByOriginTxnNos(
 	}
 	submitElapsed := time.Since(start)
 	if requireWebhook {
-		step = progressUpdateStep(len(pending))
+		step = progressUpdateStep(len(pending), webhookProgressPercent)
 		for i, idx := range pending {
 			awaitWebhookResult(&rows[idx], webhookWaitTimeout)
 			done := i + 1
@@ -1374,11 +1376,17 @@ func calcLatency(vals []time.Duration) latencyStats {
 	}
 }
 
-func progressUpdateStep(total int) int {
+func progressUpdateStep(total, percent int) int {
 	if total <= 0 {
 		return 1
 	}
-	step := total / 20
+	if percent <= 0 {
+		percent = submitProgressPercent
+	}
+	if percent > 100 {
+		percent = 100
+	}
+	step := (total * percent) / 100
 	if step <= 0 {
 		return 1
 	}

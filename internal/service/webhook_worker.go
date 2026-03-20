@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,13 +22,16 @@ type WebhookSecretProvider interface {
 const (
 	webhookAsyncWorkers   = 4
 	webhookAsyncQueueSize = 65536
+	webhookCacheTTL       = time.Minute
 )
 
 type WebhookWorkerOptions struct {
-	AsyncWorkers         int
-	AsyncQueueSize       int
-	ProfilingEnabled     bool
-	ProfilingLogInterval time.Duration
+	AsyncWorkers           int
+	AsyncQueueSize         int
+	ProfilingEnabled       bool
+	ProfilingLogInterval   time.Duration
+	MerchantConfigCacheTTL time.Duration
+	MerchantSecretCacheTTL time.Duration
 }
 
 func (o WebhookWorkerOptions) withDefaults() WebhookWorkerOptions {
@@ -40,6 +44,12 @@ func (o WebhookWorkerOptions) withDefaults() WebhookWorkerOptions {
 	if o.ProfilingEnabled && o.ProfilingLogInterval <= 0 {
 		o.ProfilingLogInterval = defaultAsyncProfileLogInterval
 	}
+	if o.MerchantConfigCacheTTL <= 0 {
+		o.MerchantConfigCacheTTL = webhookCacheTTL
+	}
+	if o.MerchantSecretCacheTTL <= 0 {
+		o.MerchantSecretCacheTTL = webhookCacheTTL
+	}
 	return o
 }
 
@@ -49,15 +59,29 @@ type webhookQueueItem struct {
 }
 
 type WebhookWorker struct {
-	repo       Repository
-	secrets    WebhookSecretProvider
-	client     *http.Client
-	maxRetries int
-	batchSize  int
-	backoff    []time.Duration
-	nowFn      func() time.Time
-	queue      chan webhookQueueItem
-	profiler   *webhookProfiler
+	repo           Repository
+	secrets        WebhookSecretProvider
+	client         *http.Client
+	maxRetries     int
+	batchSize      int
+	backoff        []time.Duration
+	nowFn          func() time.Time
+	queue          chan webhookQueueItem
+	profiler       *webhookProfiler
+	configCache    sync.Map
+	secretCache    sync.Map
+	configCacheTTL time.Duration
+	secretCacheTTL time.Duration
+}
+
+type webhookConfigCacheEntry struct {
+	cfg      WebhookConfig
+	expireAt time.Time
+}
+
+type webhookSecretCacheEntry struct {
+	secret   string
+	expireAt time.Time
 }
 
 func NewWebhookWorker(repo Repository, secrets WebhookSecretProvider, maxRetries, batchSize int, backoffMinutes []int) *WebhookWorker {
@@ -82,7 +106,9 @@ func NewWebhookWorkerWithOptions(repo Repository, secrets WebhookSecretProvider,
 		nowFn: func() time.Time {
 			return time.Now().UTC()
 		},
-		queue: make(chan webhookQueueItem, opts.AsyncQueueSize),
+		queue:          make(chan webhookQueueItem, opts.AsyncQueueSize),
+		configCacheTTL: opts.MerchantConfigCacheTTL,
+		secretCacheTTL: opts.MerchantSecretCacheTTL,
 	}
 	if opts.ProfilingEnabled {
 		w.profiler = newWebhookProfiler(opts.ProfilingLogInterval)
@@ -232,7 +258,7 @@ func (w *WebhookWorker) RunOnce(ctx context.Context) {
 }
 
 func (w *WebhookWorker) handleEvent(ctx context.Context, event OutboxEventDelivery) {
-	cfg, found, err := w.repo.GetWebhookConfig(event.MerchantNo)
+	cfg, found, err := w.getWebhookConfig(event.MerchantNo)
 	if err != nil {
 		w.markRetry(event)
 		return
@@ -243,7 +269,7 @@ func (w *WebhookWorker) handleEvent(ctx context.Context, event OutboxEventDelive
 		return
 	}
 
-	secret, ok, err := w.secrets.GetActiveSecret(ctx, event.MerchantNo)
+	secret, ok, err := w.getActiveSecret(ctx, event.MerchantNo)
 	if err != nil || !ok || strings.TrimSpace(secret) == "" {
 		w.markRetry(event)
 		return
@@ -255,6 +281,59 @@ func (w *WebhookWorker) handleEvent(ctx context.Context, event OutboxEventDelive
 		return
 	}
 	w.markRetry(event)
+}
+
+func (w *WebhookWorker) getWebhookConfig(merchantNo string) (WebhookConfig, bool, error) {
+	now := w.nowFn().UTC()
+	if w.configCacheTTL > 0 {
+		if v, ok := w.configCache.Load(merchantNo); ok {
+			entry, valid := v.(webhookConfigCacheEntry)
+			if valid && !now.After(entry.expireAt) {
+				return entry.cfg, true, nil
+			}
+			w.configCache.Delete(merchantNo)
+		}
+	}
+
+	cfg, found, err := w.repo.GetWebhookConfig(merchantNo)
+	if err != nil || !found {
+		return cfg, found, err
+	}
+	if !cfg.Enabled || strings.TrimSpace(cfg.URL) == "" {
+		return cfg, found, nil
+	}
+	if w.configCacheTTL > 0 {
+		w.configCache.Store(merchantNo, webhookConfigCacheEntry{
+			cfg:      cfg,
+			expireAt: now.Add(w.configCacheTTL),
+		})
+	}
+	return cfg, true, nil
+}
+
+func (w *WebhookWorker) getActiveSecret(ctx context.Context, merchantNo string) (string, bool, error) {
+	now := w.nowFn().UTC()
+	if w.secretCacheTTL > 0 {
+		if v, ok := w.secretCache.Load(merchantNo); ok {
+			entry, valid := v.(webhookSecretCacheEntry)
+			if valid && !now.After(entry.expireAt) {
+				return entry.secret, true, nil
+			}
+			w.secretCache.Delete(merchantNo)
+		}
+	}
+
+	secret, ok, err := w.secrets.GetActiveSecret(ctx, merchantNo)
+	if err != nil || !ok || strings.TrimSpace(secret) == "" {
+		return secret, ok, err
+	}
+	if w.secretCacheTTL > 0 {
+		w.secretCache.Store(merchantNo, webhookSecretCacheEntry{
+			secret:   secret,
+			expireAt: now.Add(w.secretCacheTTL),
+		})
+	}
+	return secret, true, nil
 }
 
 func (w *WebhookWorker) deliver(ctx context.Context, url string, event OutboxEventDelivery, secret string) bool {
