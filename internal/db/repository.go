@@ -595,6 +595,180 @@ func (r *Repository) TryDecreaseTxnRefundable(txnNo string, amount int64) (left 
 	return left, true, nil
 }
 
+func (r *Repository) ApplyTxnStage(txnNo, expectedStatus string) (service.TxnStageApplyResult, error) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	var result service.TxnStageApplyResult
+	txnUUID, err := parseUUID(txnNo)
+	if err != nil {
+		return result, service.ErrTxnNotFound
+	}
+
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return result, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	qtx := r.queries.WithTx(tx)
+	stage, err := qtx.GetTransferTxnStageForUpdate(ctx, txnUUID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return result, service.ErrTxnNotFound
+	}
+	if err != nil {
+		return result, err
+	}
+
+	result.BizType = strings.TrimSpace(stage.BizType)
+	result.CurrentStatus = strings.TrimSpace(stage.Status)
+	result.DebitAccountNo = strings.TrimSpace(stage.DebitAccountNo)
+	result.CreditAccountNo = strings.TrimSpace(stage.CreditAccountNo)
+	if result.BizType != service.BizTypeTransfer && result.BizType != service.BizTypeRefund {
+		if err := tx.Commit(ctx); err != nil {
+			return result, err
+		}
+		return result, nil
+	}
+	if result.CurrentStatus != expectedStatus {
+		if err := tx.Commit(ctx); err != nil {
+			return result, err
+		}
+		return result, nil
+	}
+
+	switch expectedStatus {
+	case service.TxnStatusInit:
+		switch result.BizType {
+		case service.BizTypeTransfer:
+			if result.DebitAccountNo == "" {
+				return result, service.ErrAccountResolveFailed
+			}
+			if err := applyAccountDebitTx(ctx, qtx, txnUUID, result.DebitAccountNo, stage.Amount); err != nil {
+				return result, err
+			}
+		case service.BizTypeRefund:
+			refundOfTxnNo := strings.TrimSpace(stage.RefundOfTxnNo)
+			if refundOfTxnNo == "" {
+				return result, service.ErrTxnStatusInvalid
+			}
+			originTxnUUID, err := parseUUID(refundOfTxnNo)
+			if err != nil {
+				return result, service.ErrTxnNotFound
+			}
+			origin, err := qtx.DecreaseOriginTxnRefundableIfValid(ctx, dbsqlc.DecreaseOriginTxnRefundableIfValidParams{
+				Amount:      stage.Amount,
+				OriginTxnNo: originTxnUUID,
+				MerchantNo:  stage.MerchantNo,
+			})
+			if errors.Is(err, pgx.ErrNoRows) {
+				classifiedErr := classifyOriginRefundDecreaseMiss(ctx, qtx, originTxnUUID, stage.MerchantNo, stage.Amount)
+				if classifiedErr != nil {
+					return result, classifiedErr
+				}
+				return result, service.ErrRefundAmountExceeded
+			}
+			if err != nil {
+				return result, err
+			}
+
+			refundDebit := strings.TrimSpace(origin.CreditAccountNo)
+			refundCredit := strings.TrimSpace(origin.DebitAccountNo)
+			if refundDebit == "" || refundCredit == "" {
+				return result, service.ErrAccountResolveFailed
+			}
+			if err := qtx.UpdateTransferTxnParties(ctx, dbsqlc.UpdateTransferTxnPartiesParams{
+				DebitAccountNo:  textValue(refundDebit),
+				CreditAccountNo: textValue(refundCredit),
+				TxnNo:           txnUUID,
+			}); err != nil {
+				return result, err
+			}
+			if err := applyAccountDebitTx(ctx, qtx, txnUUID, refundDebit, stage.Amount); err != nil {
+				return result, err
+			}
+			result.DebitAccountNo = refundDebit
+			result.CreditAccountNo = refundCredit
+		default:
+			return result, service.ErrTxnStatusInvalid
+		}
+
+		if err := qtx.UpdateTransferTxnStatus(ctx, dbsqlc.UpdateTransferTxnStatusParams{
+			Status:    service.TxnStatusPaySuccess,
+			ErrorCode: nil,
+			ErrorMsg:  nil,
+			TxnNo:     txnUUID,
+		}); err != nil {
+			return result, err
+		}
+		result.Applied = true
+		result.CurrentStatus = service.TxnStatusPaySuccess
+
+	case service.TxnStatusPaySuccess:
+		switch result.BizType {
+		case service.BizTypeTransfer:
+			if result.CreditAccountNo == "" {
+				return result, service.ErrAccountResolveFailed
+			}
+			if err := applyAccountCreditTx(ctx, qtx, txnUUID, result.CreditAccountNo, stage.Amount, pgDatePtr(stage.CreditExpireAt)); err != nil {
+				return result, err
+			}
+		case service.BizTypeRefund:
+			if result.CreditAccountNo == "" {
+				return result, service.ErrAccountResolveFailed
+			}
+
+			creditRow, err := qtx.GetAccountForUpdateByNo(ctx, result.CreditAccountNo)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return result, service.ErrAccountResolveFailed
+			}
+			if err != nil {
+				return result, err
+			}
+			creditAccount := accountFromGetAccountForUpdateRow(creditRow)
+			if !creditAccount.AllowCreditIn {
+				return result, service.ErrAccountForbidCredit
+			}
+
+			if creditAccount.BookEnabled {
+				parts, err := buildRefundBookCreditParts(ctx, qtx, txnNo, stage.RefundOfTxnNo, stage.MerchantNo, stage.Amount)
+				if err != nil {
+					return result, err
+				}
+				if err := applyBookCreditPartsTx(ctx, qtx, txnUUID, creditAccount, stage.Amount, parts); err != nil {
+					return result, err
+				}
+			} else if err := applyAccountCreditTx(ctx, qtx, txnUUID, result.CreditAccountNo, stage.Amount, nil); err != nil {
+				return result, err
+			}
+		default:
+			return result, service.ErrTxnStatusInvalid
+		}
+
+		if err := qtx.UpdateTransferTxnStatus(ctx, dbsqlc.UpdateTransferTxnStatusParams{
+			Status:    service.TxnStatusRecvSuccess,
+			ErrorCode: nil,
+			ErrorMsg:  nil,
+			TxnNo:     txnUUID,
+		}); err != nil {
+			return result, err
+		}
+		if err := insertOutboxEventTx(ctx, tx, txnUUID, stage.MerchantNo, stage.OutTradeNo); err != nil {
+			return result, err
+		}
+		result.Applied = true
+		result.CurrentStatus = service.TxnStatusRecvSuccess
+
+	default:
+		return result, service.ErrTxnStatusInvalid
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
 func (r *Repository) ApplyTransferDebitStage(txnNo, debitAccountNo string, amount int64) (bool, error) {
 	ctx, cancel := r.withTimeout()
 	defer cancel()

@@ -351,66 +351,61 @@ func (p *TransferAsyncProcessor) processStage(txnNo, expectedStatus string) erro
 	}
 	defer p.endStage(txnNo, expectedStatus)
 
-	txn, exists := p.repo.GetTransferTxn(txnNo)
-	if !exists {
-		return ErrTxnNotFound
-	}
-	if txn.BizType != BizTypeTransfer && txn.BizType != BizTypeRefund {
-		return nil
-	}
-	if txn.Status != expectedStatus {
-		_ = p.enqueueByStatusWithTxn(txnNo, txn.Status, &txn)
-		return nil
-	}
+	return p.processStageWithApplyResult(txnNo, expectedStatus)
+}
 
-	switch expectedStatus {
-	case TxnStatusInit:
-		if txn.BizType == BizTypeRefund {
-			applied, err := p.repo.ApplyRefundDebitStage(txn.TxnNo, txn.Amount)
-			if err != nil {
+func (p *TransferAsyncProcessor) processStageWithApplyResult(txnNo, expectedStatus string) error {
+	result, err := p.repo.ApplyTxnStage(txnNo, expectedStatus)
+	if err != nil {
+		if result.BizType != BizTypeTransfer && result.BizType != BizTypeRefund {
+			return err
+		}
+		switch expectedStatus {
+		case TxnStatusInit:
+			if result.BizType == BizTypeRefund {
 				return p.handleStageError(txnNo, TxnStatusInit, p.refundDebitErrorCode(err), err)
 			}
-			if !applied {
-				p.enqueueByCurrentStatusTxn(txn)
-				return nil
-			}
-			_ = p.enqueueByStatusWithTxn(txnNo, TxnStatusPaySuccess, &txn)
-			return nil
-		}
-		applied, err := p.repo.ApplyTransferDebitStage(txn.TxnNo, txn.DebitAccountNo, txn.Amount)
-		if err != nil {
 			return p.handleStageError(txnNo, TxnStatusInit, "DEBIT_FAILED", err)
-		}
-		if !applied {
-			p.enqueueByCurrentStatusTxn(txn)
-			return nil
-		}
-		_ = p.enqueueByStatusWithTxn(txnNo, TxnStatusPaySuccess, &txn)
-		return nil
-	case TxnStatusPaySuccess:
-		if txn.BizType == BizTypeRefund {
-			applied, err := p.repo.ApplyRefundCreditStage(txn.TxnNo, txn.CreditAccountNo, txn.Amount)
-			if err != nil {
+		case TxnStatusPaySuccess:
+			if result.BizType == BizTypeRefund {
 				log.Printf("warn: refund credit stage failed, txn_no=%s status=%s err=%v", txnNo, TxnStatusPaySuccess, err)
 				// Keep refund txn in PAY_SUCCESS to allow compensation retry
 				// when second-stage credit fails after debit has succeeded.
 				return err
 			}
-			if !applied {
-				p.enqueueByCurrentStatusTxn(txn)
-				return nil
-			}
-			p.notifyWebhook(txnNo)
-			return nil
-		}
-		applied, err := p.repo.ApplyTransferCreditStage(txn.TxnNo, txn.CreditAccountNo, txn.Amount)
-		if err != nil {
 			return p.handleStageError(txnNo, TxnStatusPaySuccess, "CREDIT_FAILED", err)
+		default:
+			_ = p.fail(txnNo, expectedStatus, "TXN_STATUS_INVALID", "unknown txn status")
+			return ErrTxnStatusInvalid
 		}
-		if !applied {
-			p.enqueueByCurrentStatusTxn(txn)
+	}
+	if result.BizType != BizTypeTransfer && result.BizType != BizTypeRefund {
+		return nil
+	}
+
+	stageTxn := TransferTxn{
+		TxnNo:           txnNo,
+		BizType:         result.BizType,
+		DebitAccountNo:  result.DebitAccountNo,
+		CreditAccountNo: result.CreditAccountNo,
+	}
+	if !result.Applied {
+		stageTxn.Status = result.CurrentStatus
+		if stageTxn.Status == "" {
+			p.enqueueByCurrentStatus(txnNo)
 			return nil
 		}
+		_ = p.enqueueByStatusWithTxn(txnNo, stageTxn.Status, &stageTxn)
+		return nil
+	}
+
+	switch expectedStatus {
+	case TxnStatusInit:
+		// Route PAY_SUCCESS by credit account using data read in the same tx.
+		stageTxn.Status = TxnStatusPaySuccess
+		_ = p.enqueueByStatusWithTxn(txnNo, TxnStatusPaySuccess, &stageTxn)
+		return nil
+	case TxnStatusPaySuccess:
 		p.notifyWebhook(txnNo)
 		return nil
 	default:

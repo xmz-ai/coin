@@ -28,6 +28,14 @@ type OutboxEventDelivery struct {
 	RetryCount    int
 }
 
+type TxnStageApplyResult struct {
+	Applied         bool
+	CurrentStatus   string
+	BizType         string
+	DebitAccountNo  string
+	CreditAccountNo string
+}
+
 // Repository defines the persistence contract used by services.
 // Production should provide a DB-backed implementation; tests can provide fakes.
 type Repository interface {
@@ -55,10 +63,7 @@ type Repository interface {
 	TransitionTransferTxnStatus(txnNo, fromStatus, toStatus, errorCode, errorMsg string) (bool, error)
 	UpdateTransferTxnParties(txnNo, debitAccountNo, creditAccountNo string) error
 	TryDecreaseTxnRefundable(txnNo string, amount int64) (left int64, ok bool, err error)
-	ApplyTransferDebitStage(txnNo, debitAccountNo string, amount int64) (bool, error)
-	ApplyTransferCreditStage(txnNo, creditAccountNo string, amount int64) (bool, error)
-	ApplyRefundDebitStage(refundTxnNo string, amount int64) (bool, error)
-	ApplyRefundCreditStage(refundTxnNo, creditAccountNo string, amount int64) (bool, error)
+	ApplyTxnStage(txnNo, expectedStatus string) (TxnStageApplyResult, error)
 	TxnCount() int
 
 	UpsertWebhookConfig(merchantNo, url string, enabled bool) error
