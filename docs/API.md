@@ -390,7 +390,8 @@ Response:
 ```
 
 说明：
-- HTTP 状态码为 `201 Created`
+- 校验通过时 HTTP 状态码为 `201 Created`
+- 原单不存在/不归属当前商户、原单状态非法、退款金额超限会在提交阶段直接返回 `404/409`
 - 建单成功即返回，服务端优先进程内异步执行；轮询 worker 仅用于故障恢复兜底
 
 校验：
@@ -497,9 +498,9 @@ Request:
 ```
 
 校验：
-1. 同步提交阶段：仅校验请求参数与幂等（`out_trade_no/refund_of_txn_no/amount`）。
-2. 异步执行阶段：原单必须存在、归属当前商户，且 `biz_type=TRANSFER`、`status=RECV_SUCCESS`。
-3. 异步执行阶段：`amount <= origin.refundable_amount`，并发退款通过 CAS 保证不超退。
+1. 同步提交阶段：校验请求参数与幂等（`out_trade_no/refund_of_txn_no/amount`）。
+2. 同步提交阶段：校验原单必须存在、归属当前商户，且 `biz_type=TRANSFER`、`status=RECV_SUCCESS`，并且 `amount <= origin.refundable_amount`。
+3. 同步提交阶段不扣减原单可退余额；异步执行阶段仍通过 CAS 递减 `origin.refundable_amount`，保证并发不超退。
 
 输出：
 - 提交响应固定返回 `txn_no/status`（`status=INIT`）。
