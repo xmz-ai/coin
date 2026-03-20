@@ -1231,21 +1231,6 @@ func (r *Repository) MarkOutboxEventRetry(eventID string, retryCount int, nextRe
 	})
 }
 
-func (r *Repository) InsertNotifyLog(txnNo, status string, retries int) error {
-	ctx, cancel := r.withTimeout()
-	defer cancel()
-
-	txnUUID, err := parseUUID(txnNo)
-	if err != nil {
-		return err
-	}
-	return r.queries.InsertNotifyLog(ctx, dbsqlc.InsertNotifyLogParams{
-		TxnNo:   txnUUID,
-		Status:  status,
-		Retries: int32(retries),
-	})
-}
-
 func (r *Repository) TxnCount() int {
 	ctx, cancel := r.withTimeout()
 	defer cancel()

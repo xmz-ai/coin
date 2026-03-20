@@ -37,9 +37,9 @@ func TestTC8011WebhookWorkerSkipsWhenConfigDisabled(t *testing.T) {
 		t.Fatalf("expected no pending outbox events, got %d", len(events))
 	}
 
-	logs := queryNotifyLogsByTxnNo(t, pool, "01956f4e-9d22-73bc-8e11-3f5e9c7a8111")
-	if len(logs) != 1 || logs[0].Status != service.NotifyStatusSuccess {
-		t.Fatalf("expected one SUCCESS notify log, got %+v", logs)
+	rows := queryOutboxEventsByTxnNo(t, pool, "01956f4e-9d22-73bc-8e11-3f5e9c7a8111")
+	if len(rows) != 1 || rows[0].Status != "SUCCESS" || rows[0].RetryCount != 0 {
+		t.Fatalf("expected outbox status SUCCESS with retry_count=0, got %+v", rows)
 	}
 }
 
@@ -114,9 +114,9 @@ func TestTC8012WebhookWorkerDeliverySuccessWithSignature(t *testing.T) {
 	if len(events) != 0 {
 		t.Fatalf("expected no pending outbox events, got %d", len(events))
 	}
-	logs := queryNotifyLogsByTxnNo(t, pool, "01956f4e-9d22-73bc-8e11-3f5e9c7a8111")
-	if len(logs) != 1 || logs[0].Status != service.NotifyStatusSuccess || logs[0].Retries != 0 {
-		t.Fatalf("unexpected notify logs: %+v", logs)
+	rows := queryOutboxEventsByTxnNo(t, pool, "01956f4e-9d22-73bc-8e11-3f5e9c7a8111")
+	if len(rows) != 1 || rows[0].Status != "SUCCESS" || rows[0].RetryCount != 0 {
+		t.Fatalf("unexpected outbox rows: %+v", rows)
 	}
 }
 
@@ -125,9 +125,6 @@ func TestTC8012WebhookWorkerRefundEventType(t *testing.T) {
 
 	if _, err := pool.Exec(context.Background(), `DELETE FROM outbox_event`); err != nil {
 		t.Fatalf("clear outbox events failed: %v", err)
-	}
-	if _, err := pool.Exec(context.Background(), `DELETE FROM notify_log`); err != nil {
-		t.Fatalf("clear notify logs failed: %v", err)
 	}
 
 	refundTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a8112"
@@ -196,11 +193,11 @@ func TestTC8013WebhookWorkerRetryAndDead(t *testing.T) {
 	}
 
 	worker := service.NewWebhookWorker(repo, secrets, 3, 100, []int{1, 1, 1})
-	events := queryOutboxEventsByTxnNo(t, pool, "01956f4e-9d22-73bc-8e11-3f5e9c7a8111")
-	if len(events) != 1 {
-		t.Fatalf("expected one outbox event before retry rounds, got %+v", events)
+	rows := queryOutboxEventsByTxnNo(t, pool, "01956f4e-9d22-73bc-8e11-3f5e9c7a8111")
+	if len(rows) != 1 {
+		t.Fatalf("expected one outbox event before retry rounds, got %+v", rows)
 	}
-	eventID := events[0].EventID
+	eventID := rows[0].EventID
 	for i := 0; i < 3; i++ {
 		worker.RunOnce(nil)
 		if i < 2 {
@@ -218,13 +215,12 @@ func TestTC8013WebhookWorkerRetryAndDead(t *testing.T) {
 		t.Fatalf("expected no pending outbox events after DEAD, got %d", len(pending))
 	}
 
-	logs := queryNotifyLogsByTxnNo(t, pool, "01956f4e-9d22-73bc-8e11-3f5e9c7a8111")
-	if len(logs) == 0 {
-		t.Fatalf("expected notify logs")
+	rows = queryOutboxEventsByTxnNo(t, pool, "01956f4e-9d22-73bc-8e11-3f5e9c7a8111")
+	if len(rows) != 1 {
+		t.Fatalf("expected one outbox row after retries, got %+v", rows)
 	}
-	last := logs[len(logs)-1]
-	if last.Status != service.NotifyStatusDead {
-		t.Fatalf("expected last notify status DEAD, got %s", last.Status)
+	if rows[0].Status != "DEAD" || rows[0].RetryCount != 3 {
+		t.Fatalf("expected outbox status DEAD with retry_count=3, got %+v", rows[0])
 	}
 }
 
@@ -244,6 +240,14 @@ func TestTC8014WebhookWorkerRetryOnSecretUnavailable(t *testing.T) {
 	worker := service.NewWebhookWorker(repo, secrets, 8, 100, []int{1})
 	worker.RunOnce(nil)
 
+	rows := queryOutboxEventsByTxnNo(t, pool, "01956f4e-9d22-73bc-8e11-3f5e9c7a8111")
+	if len(rows) != 1 {
+		t.Fatalf("expected one outbox row, got %+v", rows)
+	}
+	if rows[0].Status != "PENDING" || rows[0].RetryCount != 1 {
+		t.Fatalf("expected outbox status PENDING with retry_count=1, got %+v", rows[0])
+	}
+
 	events, err := repo.ClaimDueOutboxEvents(10, time.Now().UTC().Add(24*time.Hour))
 	if err != nil {
 		t.Fatalf("claim events failed: %v", err)
@@ -253,10 +257,6 @@ func TestTC8014WebhookWorkerRetryOnSecretUnavailable(t *testing.T) {
 	}
 	if events[0].RetryCount != 1 {
 		t.Fatalf("expected retry_count=1, got %d", events[0].RetryCount)
-	}
-	logs := queryNotifyLogsByTxnNo(t, pool, "01956f4e-9d22-73bc-8e11-3f5e9c7a8111")
-	if len(logs) != 1 || logs[0].Status != service.NotifyStatusFailed {
-		t.Fatalf("expected one FAILED notify log, got %+v", logs)
 	}
 }
 

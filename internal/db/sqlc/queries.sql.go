@@ -14,7 +14,7 @@ import (
 const claimDueOutboxEvents = `-- name: ClaimDueOutboxEvents :many
 WITH picked AS (
   SELECT
-    e.event_id,
+    e.id,
     e.created_at
   FROM outbox_event e
   WHERE (
@@ -24,7 +24,7 @@ WITH picked AS (
       e.status = 'PROCESSING'
       AND e.updated_at <= NOW() - INTERVAL '30 minutes'
     )
-  ORDER BY e.created_at ASC, e.event_id ASC
+  ORDER BY e.created_at ASC, e.id ASC
   LIMIT $2
   FOR UPDATE SKIP LOCKED
 ),
@@ -33,8 +33,9 @@ claimed AS (
   SET status = 'PROCESSING',
       updated_at = NOW()
   FROM picked p
-  WHERE e.event_id = p.event_id
+  WHERE e.id = p.id
   RETURNING
+    e.id,
     e.event_id,
     e.txn_no,
     e.merchant_no,
@@ -54,7 +55,7 @@ SELECT
   c.retry_count
 FROM claimed c
 JOIN txn t ON t.txn_no = c.txn_no
-ORDER BY c.created_at ASC, c.event_id ASC
+ORDER BY c.created_at ASC, c.id ASC
 `
 
 type ClaimDueOutboxEventsParams struct {
@@ -107,7 +108,7 @@ func (q *Queries) ClaimDueOutboxEvents(ctx context.Context, arg ClaimDueOutboxEv
 const claimDueOutboxEventsByTxnNo = `-- name: ClaimDueOutboxEventsByTxnNo :many
 WITH picked AS (
   SELECT
-    e.event_id,
+    e.id,
     e.created_at
   FROM outbox_event e
   WHERE e.txn_no = $1::uuid
@@ -120,7 +121,7 @@ WITH picked AS (
         AND e.updated_at <= NOW() - INTERVAL '30 minutes'
       )
     )
-  ORDER BY e.created_at ASC, e.event_id ASC
+  ORDER BY e.created_at ASC, e.id ASC
   LIMIT $3
   FOR UPDATE SKIP LOCKED
 ),
@@ -129,8 +130,9 @@ claimed AS (
   SET status = 'PROCESSING',
       updated_at = NOW()
   FROM picked p
-  WHERE e.event_id = p.event_id
+  WHERE e.id = p.id
   RETURNING
+    e.id,
     e.event_id,
     e.txn_no,
     e.merchant_no,
@@ -150,7 +152,7 @@ SELECT
   c.retry_count
 FROM claimed c
 JOIN txn t ON t.txn_no = c.txn_no
-ORDER BY c.created_at ASC, c.event_id ASC
+ORDER BY c.created_at ASC, c.id ASC
 `
 
 type ClaimDueOutboxEventsByTxnNoParams struct {
@@ -1165,27 +1167,6 @@ type InsertMerchantSecretCredentialParams struct {
 
 func (q *Queries) InsertMerchantSecretCredential(ctx context.Context, arg InsertMerchantSecretCredentialParams) error {
 	_, err := q.db.Exec(ctx, insertMerchantSecretCredential, arg.MerchantNo, arg.SecretCiphertext, arg.SecretVersion)
-	return err
-}
-
-const insertNotifyLog = `-- name: InsertNotifyLog :exec
-INSERT INTO notify_log (txn_no, status, retries, created_at)
-VALUES (
-  $1::uuid,
-  $2,
-  $3,
-  NOW()
-)
-`
-
-type InsertNotifyLogParams struct {
-	TxnNo   pgtype.UUID
-	Status  string
-	Retries int32
-}
-
-func (q *Queries) InsertNotifyLog(ctx context.Context, arg InsertNotifyLogParams) error {
-	_, err := q.db.Exec(ctx, insertNotifyLog, arg.TxnNo, arg.Status, arg.Retries)
 	return err
 }
 

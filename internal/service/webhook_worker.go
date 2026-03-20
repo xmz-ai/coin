@@ -265,7 +265,6 @@ func (w *WebhookWorker) handleEvent(ctx context.Context, event OutboxEventDelive
 	}
 	if !found || !cfg.Enabled || strings.TrimSpace(cfg.URL) == "" {
 		_ = w.repo.MarkOutboxEventSuccess(event.EventID)
-		_ = w.repo.InsertNotifyLog(event.TxnNo, NotifyStatusSuccess, event.RetryCount)
 		return
 	}
 
@@ -277,7 +276,6 @@ func (w *WebhookWorker) handleEvent(ctx context.Context, event OutboxEventDelive
 
 	if w.deliver(ctx, cfg.URL, event, secret) {
 		_ = w.repo.MarkOutboxEventSuccess(event.EventID)
-		_ = w.repo.InsertNotifyLog(event.TxnNo, NotifyStatusSuccess, event.RetryCount)
 		return
 	}
 	w.markRetry(event)
@@ -379,12 +377,6 @@ func (w *WebhookWorker) markRetry(event OutboxEventDelivery) {
 	dead := nextRetry >= w.maxRetries
 	nextAt := w.nowFn().Add(w.retryDelay(nextRetry))
 	_ = w.repo.MarkOutboxEventRetry(event.EventID, nextRetry, nextAt, dead)
-
-	status := NotifyStatusFailed
-	if dead {
-		status = NotifyStatusDead
-	}
-	_ = w.repo.InsertNotifyLog(event.TxnNo, status, nextRetry)
 	if w.profiler != nil {
 		w.profiler.observeRetry()
 	}

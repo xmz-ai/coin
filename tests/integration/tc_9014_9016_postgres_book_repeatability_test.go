@@ -67,7 +67,6 @@ func TestTC9015PostgresSetupPoolResetsSchemaData(t *testing.T) {
 		"account_book",
 		"account_book_change_log",
 		"outbox_event",
-		"notify_log",
 		"webhook_config",
 	} {
 		if got := queryTableCount(t, poolB, table); got != 0 {

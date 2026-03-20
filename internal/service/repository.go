@@ -73,7 +73,6 @@ type Repository interface {
 	ClaimDueOutboxEventsByTxnNo(txnNo string, limit int, now time.Time) ([]OutboxEventDelivery, error)
 	MarkOutboxEventSuccess(eventID string) error
 	MarkOutboxEventRetry(eventID string, retryCount int, nextRetryAt time.Time, dead bool) error
-	InsertNotifyLog(txnNo, status string, retries int) error
 
 	IncTxnCompensationRun()
 	IncNotifyCompensationRun()
