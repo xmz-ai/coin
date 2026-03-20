@@ -1585,7 +1585,6 @@ func applyAccountDebitTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype.
 		books, err := q.ListAvailableAccountBooksForUpdate(ctx, dbsqlc.ListAvailableAccountBooksForUpdateParams{
 			AccountNo: debit.AccountNo,
 			NowUtc:    toPGDate(time.Now().UTC()),
-			Amount:    amount,
 		})
 		if err != nil {
 			return err
@@ -1612,13 +1611,6 @@ func applyAccountDebitTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype.
 				use = left
 			}
 			after := book.Balance - use
-
-			if err := q.UpdateAccountBookBalance(ctx, dbsqlc.UpdateAccountBookBalanceParams{
-				BookNo:  book.BookNo,
-				Balance: after,
-			}); err != nil {
-				return err
-			}
 			changes = append(changes, bookChange{
 				BookNo:       book.BookNo,
 				ExpireAt:     book.ExpireAt,
@@ -1629,6 +1621,34 @@ func applyAccountDebitTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype.
 		}
 		if left > 0 {
 			return service.ErrInsufficientBalance
+		}
+
+		bookNos := make([]string, 0, len(changes))
+		deltas := make([]int64, 0, len(changes))
+		for _, change := range changes {
+			bookNos = append(bookNos, pgUUIDToString(change.BookNo))
+			deltas = append(deltas, change.Delta)
+		}
+		updatedBooks, err := q.BatchUpdateAccountBookBalances(ctx, dbsqlc.BatchUpdateAccountBookBalancesParams{
+			BookNos: bookNos,
+			Deltas:  deltas,
+		})
+		if err != nil {
+			return err
+		}
+		if len(updatedBooks) != len(changes) {
+			return service.ErrInsufficientBalance
+		}
+		updatedBalancesByBookNo := make(map[string]int64, len(updatedBooks))
+		for _, row := range updatedBooks {
+			updatedBalancesByBookNo[pgUUIDToString(row.BookNo)] = row.Balance
+		}
+		for i := range changes {
+			after, ok := updatedBalancesByBookNo[pgUUIDToString(changes[i].BookNo)]
+			if !ok {
+				return service.ErrInsufficientBalance
+			}
+			changes[i].BalanceAfter = after
 		}
 
 		debitAfter := debit.Balance - amount
@@ -1935,6 +1955,13 @@ func mustPGUUID(v uuid.UUID) pgtype.UUID {
 	copy(out.Bytes[:], v[:])
 	out.Valid = true
 	return out
+}
+
+func pgUUIDToString(v pgtype.UUID) string {
+	if !v.Valid {
+		return ""
+	}
+	return uuid.UUID(v.Bytes).String()
 }
 
 func parseOptionalUUID(v string) (pgtype.UUID, error) {

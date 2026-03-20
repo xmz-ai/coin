@@ -441,21 +441,7 @@ FROM account_book b
 WHERE b.account_no = sqlc.arg(account_no)
   AND b.expire_at > sqlc.arg(now_utc)::date
   AND b.balance > 0
-  AND (
-    (
-      SELECT COALESCE(SUM(b2.balance), 0)::bigint
-      FROM account_book b2
-      WHERE b2.account_no = b.account_no
-        AND b2.expire_at > sqlc.arg(now_utc)::date
-        AND b2.balance > 0
-        AND (
-          b2.expire_at < b.expire_at
-          OR (b2.expire_at = b.expire_at AND b2.book_no <= b.book_no)
-        )
-    ) - b.balance
-  ) < sqlc.arg(amount)
-ORDER BY b.expire_at ASC, b.book_no ASC
-FOR UPDATE OF b;
+ORDER BY b.expire_at ASC, b.book_no ASC;
 
 -- name: UpsertAccountBookBalance :one
 INSERT INTO account_book (book_no, account_no, expire_at, balance)
@@ -469,10 +455,20 @@ ON CONFLICT (account_no, expire_at)
 DO UPDATE SET balance = account_book.balance + EXCLUDED.balance
 RETURNING book_no, account_no, expire_at, balance;
 
--- name: UpdateAccountBookBalance :exec
-UPDATE account_book
-SET balance = sqlc.arg(balance)
-WHERE book_no = sqlc.arg(book_no)::uuid;
+-- name: BatchUpdateAccountBookBalances :many
+WITH payload AS (
+  SELECT
+    bn.book_no::uuid AS book_no,
+    bl.delta::bigint AS delta
+  FROM UNNEST(CAST(sqlc.arg(book_nos) AS text[])) WITH ORDINALITY AS bn(book_no, ord)
+  JOIN UNNEST(CAST(sqlc.arg(deltas) AS bigint[])) WITH ORDINALITY AS bl(delta, ord)
+    ON bn.ord = bl.ord
+)
+UPDATE account_book b
+SET balance = b.balance + payload.delta
+FROM payload
+WHERE b.book_no = payload.book_no
+RETURNING b.book_no, b.balance;
 
 -- name: InsertAccountBookChange :exec
 INSERT INTO account_book_change_log (txn_no, account_no, book_no, delta, balance_after, expire_at)

@@ -11,6 +11,52 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const batchUpdateAccountBookBalances = `-- name: BatchUpdateAccountBookBalances :many
+WITH payload AS (
+  SELECT
+    bn.book_no::uuid AS book_no,
+    bl.delta::bigint AS delta
+  FROM UNNEST(CAST($1 AS text[])) WITH ORDINALITY AS bn(book_no, ord)
+  JOIN UNNEST(CAST($2 AS bigint[])) WITH ORDINALITY AS bl(delta, ord)
+    ON bn.ord = bl.ord
+)
+UPDATE account_book b
+SET balance = b.balance + payload.delta
+FROM payload
+WHERE b.book_no = payload.book_no
+RETURNING b.book_no, b.balance
+`
+
+type BatchUpdateAccountBookBalancesParams struct {
+	BookNos []string
+	Deltas  []int64
+}
+
+type BatchUpdateAccountBookBalancesRow struct {
+	BookNo  pgtype.UUID
+	Balance int64
+}
+
+func (q *Queries) BatchUpdateAccountBookBalances(ctx context.Context, arg BatchUpdateAccountBookBalancesParams) ([]BatchUpdateAccountBookBalancesRow, error) {
+	rows, err := q.db.Query(ctx, batchUpdateAccountBookBalances, arg.BookNos, arg.Deltas)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []BatchUpdateAccountBookBalancesRow
+	for rows.Next() {
+		var i BatchUpdateAccountBookBalancesRow
+		if err := rows.Scan(&i.BookNo, &i.Balance); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const claimDueOutboxEvents = `-- name: ClaimDueOutboxEvents :many
 WITH picked AS (
   SELECT
@@ -1310,27 +1356,12 @@ FROM account_book b
 WHERE b.account_no = $1
   AND b.expire_at > $2::date
   AND b.balance > 0
-  AND (
-    (
-      SELECT COALESCE(SUM(b2.balance), 0)::bigint
-      FROM account_book b2
-      WHERE b2.account_no = b.account_no
-        AND b2.expire_at > $2::date
-        AND b2.balance > 0
-        AND (
-          b2.expire_at < b.expire_at
-          OR (b2.expire_at = b.expire_at AND b2.book_no <= b.book_no)
-        )
-    ) - b.balance
-  ) < $3
 ORDER BY b.expire_at ASC, b.book_no ASC
-FOR UPDATE OF b
 `
 
 type ListAvailableAccountBooksForUpdateParams struct {
 	AccountNo string
 	NowUtc    pgtype.Date
-	Amount    int64
 }
 
 type ListAvailableAccountBooksForUpdateRow struct {
@@ -1341,7 +1372,7 @@ type ListAvailableAccountBooksForUpdateRow struct {
 }
 
 func (q *Queries) ListAvailableAccountBooksForUpdate(ctx context.Context, arg ListAvailableAccountBooksForUpdateParams) ([]ListAvailableAccountBooksForUpdateRow, error) {
-	rows, err := q.db.Query(ctx, listAvailableAccountBooksForUpdate, arg.AccountNo, arg.NowUtc, arg.Amount)
+	rows, err := q.db.Query(ctx, listAvailableAccountBooksForUpdate, arg.AccountNo, arg.NowUtc)
 	if err != nil {
 		return nil, err
 	}
@@ -1820,22 +1851,6 @@ type UpdateAccountBalanceParams struct {
 
 func (q *Queries) UpdateAccountBalance(ctx context.Context, arg UpdateAccountBalanceParams) error {
 	_, err := q.db.Exec(ctx, updateAccountBalance, arg.Balance, arg.AccountNo)
-	return err
-}
-
-const updateAccountBookBalance = `-- name: UpdateAccountBookBalance :exec
-UPDATE account_book
-SET balance = $1
-WHERE book_no = $2::uuid
-`
-
-type UpdateAccountBookBalanceParams struct {
-	Balance int64
-	BookNo  pgtype.UUID
-}
-
-func (q *Queries) UpdateAccountBookBalance(ctx context.Context, arg UpdateAccountBookBalanceParams) error {
-	_, err := q.db.Exec(ctx, updateAccountBookBalance, arg.Balance, arg.BookNo)
 	return err
 }
 
