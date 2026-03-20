@@ -18,12 +18,14 @@ func TestTC8001OutboxWrittenWithMainTxn(t *testing.T) {
 
 func TestTC8002WebhookSuccessDelivery(t *testing.T) {
 	svc := service.NewAsyncService()
-	txnNo := svc.RecordMainTxnSuccess("m1", "ord_8002")
+	_ = svc.RecordMainTxnSuccess("m1", "ord_8002")
 
 	svc.ProcessOutbox(func(_ service.OutboxEvent) bool { return true })
-	logs := svc.ListNotifyLogs(txnNo)
-	if len(logs) != 1 || logs[0].Status != service.NotifyStatusSuccess {
-		t.Fatalf("expected notify success")
+	if pending := svc.ListOutboxPending(); len(pending) != 0 {
+		t.Fatalf("expected no pending outbox events after successful delivery, got %+v", pending)
+	}
+	if dead := svc.ListOutboxDead(); len(dead) != 0 {
+		t.Fatalf("expected no dead outbox events after successful delivery, got %+v", dead)
 	}
 }
 

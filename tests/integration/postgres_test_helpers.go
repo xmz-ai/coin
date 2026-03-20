@@ -41,12 +41,6 @@ type pgBookChange struct {
 	ExpireAt     time.Time
 }
 
-type pgNotifyLog struct {
-	Status    string
-	Retries   int
-	CreatedAt time.Time
-}
-
 type pgOutboxEvent struct {
 	EventID    string
 	TxnNo      string
@@ -468,39 +462,6 @@ ORDER BY change_id ASC
 	return out
 }
 
-func queryNotifyLogsByTxnNo(t *testing.T, pool *pgxpool.Pool, txnNo string) []pgNotifyLog {
-	t.Helper()
-
-	rows, err := pool.Query(context.Background(), `
-SELECT status, retries, created_at
-FROM notify_log
-WHERE txn_no = $1::uuid
-ORDER BY notify_id ASC
-`, txnNo)
-	if err != nil {
-		t.Fatalf("query notify_log failed: %v", err)
-	}
-	defer rows.Close()
-
-	out := make([]pgNotifyLog, 0)
-	for rows.Next() {
-		var (
-			item    pgNotifyLog
-			retries int32
-		)
-		if err := rows.Scan(&item.Status, &retries, &item.CreatedAt); err != nil {
-			t.Fatalf("scan notify_log failed: %v", err)
-		}
-		item.Retries = int(retries)
-		item.CreatedAt = item.CreatedAt.UTC()
-		out = append(out, item)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate notify_log failed: %v", err)
-	}
-	return out
-}
-
 func queryOutboxEventsByTxnNo(t *testing.T, pool *pgxpool.Pool, txnNo string) []pgOutboxEvent {
 	t.Helper()
 
@@ -508,7 +469,7 @@ func queryOutboxEventsByTxnNo(t *testing.T, pool *pgxpool.Pool, txnNo string) []
 SELECT event_id::text, txn_no::text, merchant_no, COALESCE(out_trade_no, ''), status, retry_count, next_retry_at
 FROM outbox_event
 WHERE txn_no = $1::uuid
-ORDER BY created_at ASC, event_id ASC
+ORDER BY created_at ASC, id ASC
 `, txnNo)
 	if err != nil {
 		t.Fatalf("query outbox_event failed: %v", err)

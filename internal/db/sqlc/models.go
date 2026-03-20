@@ -94,14 +94,6 @@ type MerchantApiCredential struct {
 	UpdatedAt        pgtype.Timestamptz
 }
 
-type NotifyLog struct {
-	NotifyID  int64
-	TxnNo     pgtype.UUID
-	Status    string
-	Retries   int32
-	CreatedAt pgtype.Timestamptz
-}
-
 type OutboxEvent struct {
 	EventID     pgtype.UUID
 	TxnNo       pgtype.UUID
@@ -112,6 +104,7 @@ type OutboxEvent struct {
 	NextRetryAt pgtype.Timestamptz
 	CreatedAt   pgtype.Timestamptz
 	UpdatedAt   pgtype.Timestamptz
+	ID          int64
 }
 
 type Txn struct {

@@ -6,6 +6,11 @@ sql:
       - "migrations/000002_txn_credit_expire_at.up.sql"
       - "migrations/000003_merchant_auto_create_flags.up.sql"
       - "migrations/000004_customer_default_account_no.up.sql"
+      - "migrations/000005_txn_drop_processing_status.up.sql"
+      - "migrations/000006_drop_applied_change_counter.up.sql"
+      - "migrations/000007_account_book_available_index.up.sql"
+      - "migrations/000008_drop_notify_log.up.sql"
+      - "migrations/000009_outbox_event_autoinc_pk.up.sql"
     queries:
       - "internal/db/sql"
     gen:

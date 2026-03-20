@@ -586,7 +586,7 @@ LIMIT 1;
 -- name: ClaimDueOutboxEvents :many
 WITH picked AS (
   SELECT
-    e.event_id,
+    e.id,
     e.created_at
   FROM outbox_event e
   WHERE (
@@ -596,7 +596,7 @@ WITH picked AS (
       e.status = 'PROCESSING'
       AND e.updated_at <= NOW() - INTERVAL '30 minutes'
     )
-  ORDER BY e.created_at ASC, e.event_id ASC
+  ORDER BY e.created_at ASC, e.id ASC
   LIMIT sqlc.arg(page_limit)
   FOR UPDATE SKIP LOCKED
 ),
@@ -605,8 +605,9 @@ claimed AS (
   SET status = 'PROCESSING',
       updated_at = NOW()
   FROM picked p
-  WHERE e.event_id = p.event_id
+  WHERE e.id = p.id
   RETURNING
+    e.id,
     e.event_id,
     e.txn_no,
     e.merchant_no,
@@ -626,12 +627,12 @@ SELECT
   c.retry_count
 FROM claimed c
 JOIN txn t ON t.txn_no = c.txn_no
-ORDER BY c.created_at ASC, c.event_id ASC;
+ORDER BY c.created_at ASC, c.id ASC;
 
 -- name: ClaimDueOutboxEventsByTxnNo :many
 WITH picked AS (
   SELECT
-    e.event_id,
+    e.id,
     e.created_at
   FROM outbox_event e
   WHERE e.txn_no = sqlc.arg(txn_no)::uuid
@@ -644,7 +645,7 @@ WITH picked AS (
         AND e.updated_at <= NOW() - INTERVAL '30 minutes'
       )
     )
-  ORDER BY e.created_at ASC, e.event_id ASC
+  ORDER BY e.created_at ASC, e.id ASC
   LIMIT sqlc.arg(page_limit)
   FOR UPDATE SKIP LOCKED
 ),
@@ -653,8 +654,9 @@ claimed AS (
   SET status = 'PROCESSING',
       updated_at = NOW()
   FROM picked p
-  WHERE e.event_id = p.event_id
+  WHERE e.id = p.id
   RETURNING
+    e.id,
     e.event_id,
     e.txn_no,
     e.merchant_no,
@@ -674,7 +676,7 @@ SELECT
   c.retry_count
 FROM claimed c
 JOIN txn t ON t.txn_no = c.txn_no
-ORDER BY c.created_at ASC, c.event_id ASC;
+ORDER BY c.created_at ASC, c.id ASC;
 
 -- name: MarkOutboxEventSuccess :exec
 UPDATE outbox_event
@@ -689,15 +691,6 @@ SET retry_count = sqlc.arg(retry_count),
     status = CASE WHEN sqlc.arg(mark_dead)::bool THEN 'DEAD' ELSE 'PENDING' END,
     updated_at = NOW()
 WHERE event_id = sqlc.arg(event_id)::uuid;
-
--- name: InsertNotifyLog :exec
-INSERT INTO notify_log (txn_no, status, retries, created_at)
-VALUES (
-  sqlc.arg(txn_no)::uuid,
-  sqlc.arg(status),
-  sqlc.arg(retries),
-  NOW()
-);
 
 -- name: GetActiveSecretCiphertext :one
 SELECT secret_ciphertext
