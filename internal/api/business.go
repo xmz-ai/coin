@@ -33,6 +33,10 @@ type transferAsyncStatusDispatcher interface {
 	EnqueueByStatus(txnNo, status string) bool
 }
 
+type transferAsyncTxnDispatcher interface {
+	EnqueueTxn(txn service.TransferTxn) bool
+}
+
 type CustomerAccountResolver interface {
 	ResolveCustomerAccount(merchantNo, accountNo, outUserID string) (string, error)
 	EnsureCustomerAccountForCredit(merchantNo, outUserID string) (string, error)
@@ -662,6 +666,10 @@ func (h *BusinessHandler) handleGetByTxnNo(c *gin.Context) {
 
 func (h *BusinessHandler) enqueueTxn(txn service.TransferTxn) {
 	if h == nil || h.asyncTransfer == nil {
+		return
+	}
+	if dispatcher, ok := h.asyncTransfer.(transferAsyncTxnDispatcher); ok {
+		_ = dispatcher.EnqueueTxn(txn)
 		return
 	}
 	if dispatcher, ok := h.asyncTransfer.(transferAsyncStatusDispatcher); ok {

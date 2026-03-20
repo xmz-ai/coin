@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"hash/fnv"
 	"log"
 	"strings"
 	"sync"
@@ -9,8 +10,8 @@ import (
 )
 
 const (
-	defaultAsyncInitWorkers       = 4
-	defaultAsyncPaySuccessWorkers = 4
+	defaultAsyncInitWorkers       = 17
+	defaultAsyncPaySuccessWorkers = 17
 	defaultAsyncInitQueueSize     = 65536
 	defaultAsyncPaySuccessQueue   = 65536
 )
@@ -69,22 +70,44 @@ type stageQueueItem struct {
 }
 
 type stageQueue struct {
-	ch      chan stageQueueItem
-	mu      sync.Mutex
-	pending map[string]struct{}
+	workerQueues []chan stageQueueItem
+	maxPending   int
+	mu           sync.Mutex
+	pending      map[string]struct{}
 }
 
 func newStageQueue(size int) *stageQueue {
+	return newStageQueueWithWorkers(1, size)
+}
+
+func newStageQueueWithWorkers(workerCount, size int) *stageQueue {
+	if workerCount <= 0 {
+		workerCount = 1
+	}
 	if size <= 0 {
 		size = 1
 	}
+	if workerCount > size {
+		workerCount = size
+	}
+	queues := make([]chan stageQueueItem, workerCount)
+	for i := 0; i < workerCount; i++ {
+		// Keep per-worker channel large enough so one hot shard can consume
+		// the full global queue budget when needed.
+		queues[i] = make(chan stageQueueItem, size)
+	}
 	return &stageQueue{
-		ch:      make(chan stageQueueItem, size),
-		pending: map[string]struct{}{},
+		workerQueues: queues,
+		maxPending:   size,
+		pending:      map[string]struct{}{},
 	}
 }
 
 func (q *stageQueue) Enqueue(txnNo string) bool {
+	return q.EnqueueWithRoute(txnNo, "")
+}
+
+func (q *stageQueue) EnqueueWithRoute(txnNo, routeKey string) bool {
 	if q == nil {
 		return false
 	}
@@ -92,19 +115,54 @@ func (q *stageQueue) Enqueue(txnNo string) bool {
 	if txnNo == "" {
 		return false
 	}
+	workerIndex := q.workerIndex(routeKey, txnNo)
+	if workerIndex < 0 || workerIndex >= len(q.workerQueues) {
+		return false
+	}
+	workerQueue := q.workerQueues[workerIndex]
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if _, exists := q.pending[txnNo]; exists {
 		return true
 	}
+	if q.maxPending > 0 && len(q.pending) >= q.maxPending {
+		return false
+	}
 	select {
-	case q.ch <- stageQueueItem{txnNo: txnNo, enqueuedAt: time.Now()}:
+	case workerQueue <- stageQueueItem{txnNo: txnNo, enqueuedAt: time.Now()}:
 		q.pending[txnNo] = struct{}{}
 		return true
 	default:
 		return false
 	}
+}
+
+func (q *stageQueue) workerIndex(routeKey, fallback string) int {
+	if q == nil || len(q.workerQueues) == 0 {
+		return -1
+	}
+	key := strings.TrimSpace(routeKey)
+	if key == "" {
+		key = strings.TrimSpace(fallback)
+	}
+	if key == "" {
+		return 0
+	}
+	hasher := fnv.New32a()
+	_, _ = hasher.Write([]byte(key))
+	return int(hasher.Sum32() % uint32(len(q.workerQueues)))
+}
+
+func (q *stageQueue) Depth() int {
+	if q == nil {
+		return 0
+	}
+	total := 0
+	for _, workerQueue := range q.workerQueues {
+		total += len(workerQueue)
+	}
+	return total
 }
 
 func (q *stageQueue) Done(txnNo string) {
@@ -136,15 +194,15 @@ func NewTransferAsyncProcessorWithGuardAndOptions(repo Repository, guard StagePr
 	p := &TransferAsyncProcessor{
 		repo:            repo,
 		guard:           guard,
-		initQueue:       newStageQueue(opts.InitQueueSize),
-		paySuccessQueue: newStageQueue(opts.PaySuccessQueue),
+		initQueue:       newStageQueueWithWorkers(opts.InitWorkers, opts.InitQueueSize),
+		paySuccessQueue: newStageQueueWithWorkers(opts.PaySuccessWorkers, opts.PaySuccessQueue),
 	}
 	if opts.ProfilingEnabled {
 		p.profiler = newAsyncProcessorProfiler(opts.ProfilingLogInterval)
 		p.profiler.startLogger()
 	}
-	p.startWorkers(TxnStatusInit, opts.InitWorkers, p.initQueue)
-	p.startWorkers(TxnStatusPaySuccess, opts.PaySuccessWorkers, p.paySuccessQueue)
+	p.startWorkers(TxnStatusInit, p.initQueue)
+	p.startWorkers(TxnStatusPaySuccess, p.paySuccessQueue)
 	return p
 }
 
@@ -157,17 +215,18 @@ func (p *TransferAsyncProcessor) SetWebhookDispatcher(dispatcher TxnNotifyDispat
 	p.webhookDispatcherM.Unlock()
 }
 
-func (p *TransferAsyncProcessor) startWorkers(stage string, workerCount int, queue *stageQueue) {
+func (p *TransferAsyncProcessor) startWorkers(stage string, queue *stageQueue) {
 	if queue == nil {
 		return
 	}
-	for i := 0; i < workerCount; i++ {
-		go func(expectedStatus string, q *stageQueue) {
-			for item := range q.ch {
+	for workerIdx := range queue.workerQueues {
+		workerQueue := queue.workerQueues[workerIdx]
+		go func(expectedStatus string, q *stageQueue, ch <-chan stageQueueItem) {
+			for item := range ch {
 				txnNo := item.txnNo
 				if p.profiler != nil {
 					p.profiler.observeQueueWait(expectedStatus, time.Since(item.enqueuedAt))
-					p.profiler.observeQueueDepth(expectedStatus, len(q.ch))
+					p.profiler.observeQueueDepth(expectedStatus, q.Depth())
 				}
 				func() {
 					defer q.Done(txnNo)
@@ -178,7 +237,7 @@ func (p *TransferAsyncProcessor) startWorkers(stage string, workerCount int, que
 					}
 				}()
 			}
-		}(stage, queue)
+		}(stage, queue, workerQueue)
 	}
 }
 
@@ -191,32 +250,55 @@ func (p *TransferAsyncProcessor) Enqueue(txnNo string) {
 	if !ok {
 		return
 	}
-	_ = p.EnqueueByStatus(txnNo, txn.Status)
+	_ = p.EnqueueTxn(txn)
+}
+
+func (p *TransferAsyncProcessor) EnqueueTxn(txn TransferTxn) bool {
+	if p == nil {
+		return false
+	}
+	txnNo := strings.TrimSpace(txn.TxnNo)
+	if txnNo == "" {
+		return false
+	}
+	status := strings.TrimSpace(txn.Status)
+	if status == "" {
+		status = TxnStatusInit
+	}
+	return p.enqueueByStatusWithTxn(txnNo, status, &txn)
 }
 
 func (p *TransferAsyncProcessor) EnqueueByStatus(txnNo, status string) bool {
+	return p.enqueueByStatusWithTxn(txnNo, status, nil)
+}
+
+func (p *TransferAsyncProcessor) enqueueByStatusWithTxn(txnNo, status string, txn *TransferTxn) bool {
+	if p == nil {
+		return false
+	}
 	txnNo = strings.TrimSpace(txnNo)
 	status = strings.TrimSpace(status)
 	if txnNo == "" {
 		return false
 	}
+	routeKey := p.stageRouteKey(status, txnNo, txn)
 
 	switch status {
 	case TxnStatusInit:
-		ok := p.initQueue.Enqueue(txnNo)
+		ok := p.initQueue.EnqueueWithRoute(txnNo, routeKey)
 		if p.profiler != nil {
 			if ok {
-				p.profiler.observeQueueDepth(TxnStatusInit, len(p.initQueue.ch))
+				p.profiler.observeQueueDepth(TxnStatusInit, p.initQueue.Depth())
 			} else {
 				p.profiler.observeDrop(TxnStatusInit)
 			}
 		}
 		return ok
 	case TxnStatusPaySuccess:
-		ok := p.paySuccessQueue.Enqueue(txnNo)
+		ok := p.paySuccessQueue.EnqueueWithRoute(txnNo, routeKey)
 		if p.profiler != nil {
 			if ok {
-				p.profiler.observeQueueDepth(TxnStatusPaySuccess, len(p.paySuccessQueue.ch))
+				p.profiler.observeQueueDepth(TxnStatusPaySuccess, p.paySuccessQueue.Depth())
 			} else {
 				p.profiler.observeDrop(TxnStatusPaySuccess)
 			}
@@ -277,7 +359,7 @@ func (p *TransferAsyncProcessor) processStage(txnNo, expectedStatus string) erro
 		return nil
 	}
 	if txn.Status != expectedStatus {
-		_ = p.EnqueueByStatus(txnNo, txn.Status)
+		_ = p.enqueueByStatusWithTxn(txnNo, txn.Status, &txn)
 		return nil
 	}
 
@@ -289,10 +371,10 @@ func (p *TransferAsyncProcessor) processStage(txnNo, expectedStatus string) erro
 				return p.handleStageError(txnNo, TxnStatusInit, p.refundDebitErrorCode(err), err)
 			}
 			if !applied {
-				p.enqueueByCurrentStatus(txnNo)
+				p.enqueueByCurrentStatusTxn(txn)
 				return nil
 			}
-			_ = p.EnqueueByStatus(txnNo, TxnStatusPaySuccess)
+			_ = p.enqueueByStatusWithTxn(txnNo, TxnStatusPaySuccess, &txn)
 			return nil
 		}
 		applied, err := p.repo.ApplyTransferDebitStage(txn.TxnNo, txn.DebitAccountNo, txn.Amount)
@@ -300,10 +382,10 @@ func (p *TransferAsyncProcessor) processStage(txnNo, expectedStatus string) erro
 			return p.handleStageError(txnNo, TxnStatusInit, "DEBIT_FAILED", err)
 		}
 		if !applied {
-			p.enqueueByCurrentStatus(txnNo)
+			p.enqueueByCurrentStatusTxn(txn)
 			return nil
 		}
-		_ = p.EnqueueByStatus(txnNo, TxnStatusPaySuccess)
+		_ = p.enqueueByStatusWithTxn(txnNo, TxnStatusPaySuccess, &txn)
 		return nil
 	case TxnStatusPaySuccess:
 		if txn.BizType == BizTypeRefund {
@@ -315,7 +397,7 @@ func (p *TransferAsyncProcessor) processStage(txnNo, expectedStatus string) erro
 				return err
 			}
 			if !applied {
-				p.enqueueByCurrentStatus(txnNo)
+				p.enqueueByCurrentStatusTxn(txn)
 				return nil
 			}
 			p.notifyWebhook(txnNo)
@@ -326,7 +408,7 @@ func (p *TransferAsyncProcessor) processStage(txnNo, expectedStatus string) erro
 			return p.handleStageError(txnNo, TxnStatusPaySuccess, "CREDIT_FAILED", err)
 		}
 		if !applied {
-			p.enqueueByCurrentStatus(txnNo)
+			p.enqueueByCurrentStatusTxn(txn)
 			return nil
 		}
 		p.notifyWebhook(txnNo)
@@ -342,7 +424,72 @@ func (p *TransferAsyncProcessor) enqueueByCurrentStatus(txnNo string) {
 	if !ok {
 		return
 	}
-	_ = p.EnqueueByStatus(txnNo, txn.Status)
+	p.enqueueByCurrentStatusTxn(txn)
+}
+
+func (p *TransferAsyncProcessor) enqueueByCurrentStatusTxn(txn TransferTxn) {
+	_ = p.enqueueByStatusWithTxn(txn.TxnNo, txn.Status, &txn)
+}
+
+func (p *TransferAsyncProcessor) stageRouteKey(status, txnNo string, txn *TransferTxn) string {
+	status = strings.TrimSpace(status)
+	txnNo = strings.TrimSpace(txnNo)
+	if status != TxnStatusInit && status != TxnStatusPaySuccess {
+		return txnNo
+	}
+	target := txn
+	if target == nil {
+		if p.repo == nil {
+			return txnNo
+		}
+		loaded, ok := p.repo.GetTransferTxn(txnNo)
+		if !ok {
+			return txnNo
+		}
+		target = &loaded
+	}
+	primaryKey := routeKeyForTxnStage(*target, status)
+	if primaryKey != "" {
+		return primaryKey
+	}
+	if target.BizType == BizTypeRefund && p.repo != nil {
+		originTxnNo := strings.TrimSpace(target.RefundOfTxnNo)
+		if originTxnNo != "" {
+			originTxn, ok := p.repo.GetTransferTxn(originTxnNo)
+			if ok {
+				if status == TxnStatusInit {
+					if key := strings.TrimSpace(originTxn.CreditAccountNo); key != "" {
+						return key
+					}
+				}
+				if status == TxnStatusPaySuccess {
+					if key := strings.TrimSpace(originTxn.DebitAccountNo); key != "" {
+						return key
+					}
+				}
+			}
+			return originTxnNo
+		}
+	}
+	if txnNo != "" {
+		return txnNo
+	}
+	return strings.TrimSpace(target.TxnNo)
+}
+
+func routeKeyForTxnStage(txn TransferTxn, status string) string {
+	status = strings.TrimSpace(status)
+	switch status {
+	case TxnStatusInit:
+		if key := strings.TrimSpace(txn.DebitAccountNo); key != "" {
+			return key
+		}
+	case TxnStatusPaySuccess:
+		if key := strings.TrimSpace(txn.CreditAccountNo); key != "" {
+			return key
+		}
+	}
+	return ""
 }
 
 func (p *TransferAsyncProcessor) notifyWebhook(txnNo string) {
