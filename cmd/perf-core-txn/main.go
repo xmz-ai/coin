@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,11 +33,14 @@ import (
 )
 
 const (
-	toBookTransferOutUser    = "u_perf_to_book"
-	toNonBookTransferOutUser = "u_perf_to_non_book"
-	progressBarWidth         = 24
-	submitProgressPercent    = 5
-	webhookProgressPercent   = 1
+	toBookTransferOutUser      = "u_perf_to_book"
+	toNonBookTransferOutUser   = "u_perf_to_non_book"
+	fromBookToBookOutUser      = "u_perf_from_book_to_book"
+	toBookToBookOutUser        = "u_perf_to_book_to_book"
+	progressBarWidth           = 24
+	submitProgressPercent      = 5
+	webhookProgressPercent     = 1
+	bookToBookTransferExpiryIn = int64(30)
 )
 
 type perfConfig struct {
@@ -60,6 +64,8 @@ type perfConfig struct {
 	TxnRecoveryInterval time.Duration
 	TxnRecoveryStale    time.Duration
 	TxnRecoveryBatch    int
+	CPUProfileEnabled   bool
+	CPUProfilePath      string
 }
 
 type resultRow struct {
@@ -111,14 +117,16 @@ type metrics struct {
 type scenarioFireFn func(nonce string) resultRow
 
 type perfRuntime struct {
-	Server                *httptest.Server
-	WebhookServer         *httptest.Server
-	WebhookSink           *webhookSink
-	MerchantNo            string
-	Secret                string
-	TransferFromAccountNo string
-	TransferBookToAccount string
-	TransferToAccountNo   string
+	Server                    *httptest.Server
+	WebhookServer             *httptest.Server
+	WebhookSink               *webhookSink
+	MerchantNo                string
+	Secret                    string
+	TransferFromAccountNo     string
+	TransferBookToAccount     string
+	TransferToAccountNo       string
+	BookToBookFromAccountNo   string
+	BookToBookTargetAccountNo string
 }
 
 type webhookSink struct {
@@ -196,6 +204,11 @@ func loadPerfConfig() (perfConfig, error) {
 	txnRecoveryIntervalMs := getenvInt("PERF_TXN_RECOVERY_INTERVAL_MS", max(base.TxnRecoveryIntervalMS, 1))
 	txnRecoveryStaleMs := getenvInt("PERF_TXN_RECOVERY_STALE_MS", max(base.TxnRecoveryStaleMS, 1))
 	txnRecoveryBatch := getenvInt("PERF_TXN_RECOVERY_BATCH", max(base.TxnRecoveryBatchSize, 1))
+	cpuProfileEnabled := getenvBool("PERF_CPU_PROFILE_ENABLED", false)
+	cpuProfilePath := strings.TrimSpace(os.Getenv("PERF_CPU_PROFILE_PATH"))
+	if cpuProfileEnabled && cpuProfilePath == "" {
+		cpuProfilePath = "perf-cpu.pprof"
+	}
 
 	if requestCount <= 0 {
 		return perfConfig{}, fmt.Errorf("PERF_REQUESTS must be > 0")
@@ -257,6 +270,8 @@ func loadPerfConfig() (perfConfig, error) {
 		TxnRecoveryInterval: time.Duration(txnRecoveryIntervalMs) * time.Millisecond,
 		TxnRecoveryStale:    time.Duration(txnRecoveryStaleMs) * time.Millisecond,
 		TxnRecoveryBatch:    txnRecoveryBatch,
+		CPUProfileEnabled:   cpuProfileEnabled,
+		CPUProfilePath:      cpuProfilePath,
 	}, nil
 }
 
@@ -288,6 +303,7 @@ func run(cfg perfConfig) error {
 
 	runtimeEnv, err := setupPerfServer(
 		ctx,
+		pool,
 		repo,
 		redisClient,
 		secretManager,
@@ -299,6 +315,7 @@ func run(cfg perfConfig) error {
 		cfg.TxnRecoveryStale,
 		cfg.WebhookPollInterval,
 		cfg.MaxBodyBytes,
+		int64(max(cfg.RequestCount+cfg.WarmupRequests+10, 1000)),
 	)
 	if err != nil {
 		return err
@@ -315,9 +332,23 @@ func run(cfg perfConfig) error {
 	if err != nil {
 		return err
 	}
+	initialBookToBookFromBalance, initialBookToBookTargetBalance, err := snapshotBookToBookBalances(
+		repo,
+		runtimeEnv.BookToBookFromAccountNo,
+		runtimeEnv.BookToBookTargetAccountNo,
+	)
+	if err != nil {
+		return err
+	}
 
-	fmt.Printf("[perf] merchant_no=%s from_account_no=%s book_to_account_no=%s to_account_no=%s\n",
-		runtimeEnv.MerchantNo, runtimeEnv.TransferFromAccountNo, runtimeEnv.TransferBookToAccount, runtimeEnv.TransferToAccountNo)
+	fmt.Printf("[perf] merchant_no=%s from_account_no=%s book_to_account_no=%s to_account_no=%s book_to_book_from_account_no=%s book_to_book_target_account_no=%s\n",
+		runtimeEnv.MerchantNo,
+		runtimeEnv.TransferFromAccountNo,
+		runtimeEnv.TransferBookToAccount,
+		runtimeEnv.TransferToAccountNo,
+		runtimeEnv.BookToBookFromAccountNo,
+		runtimeEnv.BookToBookTargetAccountNo,
+	)
 	fmt.Printf("[perf] requests=%d concurrency=%d warmup=%d timeout=%s\n",
 		cfg.RequestCount, cfg.Concurrency, cfg.WarmupRequests, cfg.RequestTimeout)
 	fmt.Printf("[perf] mode=webhook-e2e webhook_poll=%s webhook_wait_timeout=%s\n", cfg.WebhookPollInterval, cfg.WebhookWaitTimeout)
@@ -326,9 +357,20 @@ func run(cfg perfConfig) error {
 	fmt.Printf("[perf] webhook_async workers=%d queue=%d\n", cfg.WebhookAsyncOpts.AsyncWorkers, cfg.WebhookAsyncOpts.AsyncQueueSize)
 	fmt.Printf("[perf] async_profile enabled=%t log_interval=%s\n", cfg.TxnAsyncOpts.ProfilingEnabled, cfg.TxnAsyncOpts.ProfilingLogInterval)
 	fmt.Printf("[perf] txn_recovery interval=%s stale=%s batch=%d\n", cfg.TxnRecoveryInterval, cfg.TxnRecoveryStale, cfg.TxnRecoveryBatch)
+	if cfg.CPUProfileEnabled {
+		stopCPUProfile, err := startCPUProfile(cfg.CPUProfilePath)
+		if err != nil {
+			return fmt.Errorf("start cpu profile failed: %w", err)
+		}
+		defer func() {
+			if stopErr := stopCPUProfile(); stopErr != nil {
+				log.Printf("warn: stop cpu profile failed: %v", stopErr)
+			}
+		}()
+		fmt.Printf("[perf] cpu_profile enabled path=%s\n", cfg.CPUProfilePath)
+	}
 
 	httpClient := &http.Client{Timeout: cfg.RequestTimeout}
-	const bookTransferExpireInDays = int64(30)
 	fireBookTransfer := func(nonce string) resultRow {
 		outTradeNo := "ord_perf_book_transfer_" + nonce
 		payload := map[string]any{
@@ -336,7 +378,7 @@ func run(cfg perfConfig) error {
 			"transfer_scene":    "P2P",
 			"from_account_no":   runtimeEnv.TransferFromAccountNo,
 			"to_account_no":     runtimeEnv.TransferBookToAccount,
-			"to_expire_in_days": bookTransferExpireInDays,
+			"to_expire_in_days": bookToBookTransferExpiryIn,
 			"amount":            1,
 		}
 		return fireAPIPostOnce(httpClient, runtimeEnv.Server.URL, runtimeEnv.MerchantNo, runtimeEnv.Secret, nonce, "/api/v1/transactions/transfer", outTradeNo, payload, cfg.MaxBodyBytes, runtimeEnv.WebhookSink, true)
@@ -370,6 +412,27 @@ func run(cfg perfConfig) error {
 		}
 		return fireAPIPostOnce(httpClient, runtimeEnv.Server.URL, runtimeEnv.MerchantNo, runtimeEnv.Secret, nonce, "/api/v1/transactions/refund", outTradeNo, payload, cfg.MaxBodyBytes, runtimeEnv.WebhookSink, true)
 	}
+	fireBookToBookTransfer := func(nonce string) resultRow {
+		outTradeNo := "ord_perf_book_to_book_transfer_" + nonce
+		payload := map[string]any{
+			"out_trade_no":      outTradeNo,
+			"transfer_scene":    "P2P",
+			"from_account_no":   runtimeEnv.BookToBookFromAccountNo,
+			"to_account_no":     runtimeEnv.BookToBookTargetAccountNo,
+			"to_expire_in_days": bookToBookTransferExpiryIn,
+			"amount":            1,
+		}
+		return fireAPIPostOnce(httpClient, runtimeEnv.Server.URL, runtimeEnv.MerchantNo, runtimeEnv.Secret, nonce, "/api/v1/transactions/transfer", outTradeNo, payload, cfg.MaxBodyBytes, runtimeEnv.WebhookSink, true)
+	}
+	fireBookToBookRefund := func(nonce, originTxnNo string) resultRow {
+		outTradeNo := "ord_perf_book_to_book_refund_" + nonce
+		payload := map[string]any{
+			"out_trade_no":     outTradeNo,
+			"refund_of_txn_no": originTxnNo,
+			"amount":           1,
+		}
+		return fireAPIPostOnce(httpClient, runtimeEnv.Server.URL, runtimeEnv.MerchantNo, runtimeEnv.Secret, nonce, "/api/v1/transactions/refund", outTradeNo, payload, cfg.MaxBodyBytes, runtimeEnv.WebhookSink, true)
+	}
 
 	if cfg.WarmupRequests > 0 {
 		for i := 0; i < cfg.WarmupRequests; i++ {
@@ -387,6 +450,22 @@ func run(cfg perfConfig) error {
 			if !row.SubmitOK || !row.E2EOK || row.TransportErr != "" || row.E2EErr != "" {
 				return fmt.Errorf("book refund warmup failed: status=%d code=%s submit_ok=%t e2e_ok=%t origin_txn_no=%s transport_err=%s e2e_err=%s",
 					row.StatusCode, row.Code, row.SubmitOK, row.E2EOK, bookOriginTxnNo, row.TransportErr, row.E2EErr)
+			}
+
+			nonce = "warmup-book-to-book-transfer-" + strconv.Itoa(i)
+			row = fireBookToBookTransfer(nonce)
+			awaitWebhookResult(&row, cfg.WebhookWaitTimeout)
+			if !row.SubmitOK || !row.E2EOK || row.TransportErr != "" || row.E2EErr != "" || strings.TrimSpace(row.TxnNo) == "" {
+				return fmt.Errorf("book-to-book transfer warmup failed: status=%d code=%s submit_ok=%t e2e_ok=%t txn_no=%s transport_err=%s e2e_err=%s",
+					row.StatusCode, row.Code, row.SubmitOK, row.E2EOK, row.TxnNo, row.TransportErr, row.E2EErr)
+			}
+			bookToBookOriginTxnNo := row.TxnNo
+			nonce = "warmup-book-to-book-refund-" + strconv.Itoa(i)
+			row = fireBookToBookRefund(nonce, bookToBookOriginTxnNo)
+			awaitWebhookResult(&row, cfg.WebhookWaitTimeout)
+			if !row.SubmitOK || !row.E2EOK || row.TransportErr != "" || row.E2EErr != "" {
+				return fmt.Errorf("book-to-book refund warmup failed: status=%d code=%s submit_ok=%t e2e_ok=%t origin_txn_no=%s transport_err=%s e2e_err=%s",
+					row.StatusCode, row.Code, row.SubmitOK, row.E2EOK, bookToBookOriginTxnNo, row.TransportErr, row.E2EErr)
 			}
 
 			nonce = "warmup-transfer-" + strconv.Itoa(i)
@@ -416,6 +495,16 @@ func run(cfg perfConfig) error {
 			initialBookBalance,
 			initialToBalance,
 			"warmup",
+		); err != nil {
+			return err
+		}
+		if err := assertBookToBookBalances(
+			repo,
+			runtimeEnv.BookToBookFromAccountNo,
+			runtimeEnv.BookToBookTargetAccountNo,
+			initialBookToBookFromBalance,
+			initialBookToBookTargetBalance,
+			"warmup-book-to-book",
 		); err != nil {
 			return err
 		}
@@ -501,6 +590,85 @@ func run(cfg perfConfig) error {
 		return err
 	}
 	fmt.Printf("[perf] scenario=book_refund done\n")
+
+	fmt.Printf("[perf] scenario=book_to_book_transfer start\n")
+	bookToBookTransferRows, bookToBookTransferMetrics := runLoadByRequestCount(
+		cfg.RequestCount,
+		cfg.Concurrency,
+		cfg.WebhookWaitTimeout,
+		"book_to_book_transfer",
+		true,
+		fireBookToBookTransfer,
+	)
+	bookToBookOriginTxnNos := collectSucceededTxnNos(bookToBookTransferRows)
+	if err := assertScenarioMetrics("book_to_book_transfer", bookToBookTransferMetrics, true); err != nil {
+		return err
+	}
+	if len(bookToBookOriginTxnNos) == 0 {
+		return fmt.Errorf("book_to_book_transfer completed but no successful txn_no produced")
+	}
+	if len(bookToBookOriginTxnNos) != bookToBookTransferMetrics.Total {
+		return fmt.Errorf("book_to_book_transfer successful txn_no count mismatch: got=%d total=%d", len(bookToBookOriginTxnNos), bookToBookTransferMetrics.Total)
+	}
+	if err := assertUniqueTxnNos("book_to_book_transfer", bookToBookOriginTxnNos); err != nil {
+		return err
+	}
+	if err := assertTxnStatusByOutTradePrefix(pool, "ord_perf_book_to_book_transfer_book_to_book_transfer-", service.TxnStatusRecvSuccess, bookToBookTransferMetrics.Total, "book_to_book_transfer"); err != nil {
+		return err
+	}
+	if err := assertNoInFlightTxnByOutTradePrefix(pool, "ord_perf_book_to_book_transfer_book_to_book_transfer-", "book_to_book_transfer"); err != nil {
+		return err
+	}
+	if err := assertChangeLogCountsByOutTradePrefix(pool, "ord_perf_book_to_book_transfer_book_to_book_transfer-", bookToBookTransferMetrics.Total*2, bookToBookTransferMetrics.Total*2, "book_to_book_transfer"); err != nil {
+		return err
+	}
+	if err := assertBookToBookBalances(
+		repo,
+		runtimeEnv.BookToBookFromAccountNo,
+		runtimeEnv.BookToBookTargetAccountNo,
+		initialBookToBookFromBalance-int64(len(bookToBookOriginTxnNos)),
+		initialBookToBookTargetBalance+int64(len(bookToBookOriginTxnNos)),
+		"book_to_book_transfer",
+	); err != nil {
+		return err
+	}
+	fmt.Printf("[perf] scenario=book_to_book_transfer done successful_origins=%d\n", len(bookToBookOriginTxnNos))
+
+	fmt.Printf("[perf] scenario=book_to_book_refund start input_origins=%d\n", len(bookToBookOriginTxnNos))
+	bookToBookRefundMetrics := runLoadByOriginTxnNos(
+		bookToBookOriginTxnNos,
+		cfg.Concurrency,
+		cfg.WebhookWaitTimeout,
+		"book_to_book_refund",
+		true,
+		fireBookToBookRefund,
+	)
+	if err := assertScenarioMetrics("book_to_book_refund", bookToBookRefundMetrics, true); err != nil {
+		return err
+	}
+	if err := assertScenarioInputCoverage("book_to_book_refund", len(bookToBookOriginTxnNos), bookToBookRefundMetrics); err != nil {
+		return err
+	}
+	if err := assertTxnStatusByOutTradePrefix(pool, "ord_perf_book_to_book_refund_book_to_book_refund-", service.TxnStatusRecvSuccess, bookToBookRefundMetrics.Total, "book_to_book_refund"); err != nil {
+		return err
+	}
+	if err := assertNoInFlightTxnByOutTradePrefix(pool, "ord_perf_book_to_book_refund_book_to_book_refund-", "book_to_book_refund"); err != nil {
+		return err
+	}
+	if err := assertChangeLogCountsByOutTradePrefix(pool, "ord_perf_book_to_book_refund_book_to_book_refund-", bookToBookRefundMetrics.Total*2, bookToBookRefundMetrics.Total*2, "book_to_book_refund"); err != nil {
+		return err
+	}
+	if err := assertBookToBookBalances(
+		repo,
+		runtimeEnv.BookToBookFromAccountNo,
+		runtimeEnv.BookToBookTargetAccountNo,
+		initialBookToBookFromBalance,
+		initialBookToBookTargetBalance,
+		"book_to_book_refund",
+	); err != nil {
+		return err
+	}
+	fmt.Printf("[perf] scenario=book_to_book_refund done\n")
 
 	fmt.Printf("[perf] scenario=transfer start\n")
 	transferRows, transferMetrics := runLoadByRequestCount(
@@ -592,33 +760,57 @@ func run(cfg perfConfig) error {
 	if err != nil {
 		return err
 	}
-	if finalFromBalance != initialFromBalance || finalBookBalance != initialBookBalance || finalToBalance != initialToBalance {
-		return fmt.Errorf("balance not restored after perf run: from_balance=%d want=%d book_balance=%d want=%d to_balance=%d want=%d",
-			finalFromBalance, initialFromBalance, finalBookBalance, initialBookBalance, finalToBalance, initialToBalance)
+	finalBookToBookFromBalance, finalBookToBookTargetBalance, err := snapshotBookToBookBalances(
+		repo,
+		runtimeEnv.BookToBookFromAccountNo,
+		runtimeEnv.BookToBookTargetAccountNo,
+	)
+	if err != nil {
+		return err
+	}
+	if finalFromBalance != initialFromBalance ||
+		finalBookBalance != initialBookBalance ||
+		finalToBalance != initialToBalance ||
+		finalBookToBookFromBalance != initialBookToBookFromBalance ||
+		finalBookToBookTargetBalance != initialBookToBookTargetBalance {
+		return fmt.Errorf("balance not restored after perf run: from_balance=%d want=%d book_balance=%d want=%d to_balance=%d want=%d book_to_book_from_balance=%d want=%d book_to_book_target_balance=%d want=%d",
+			finalFromBalance, initialFromBalance,
+			finalBookBalance, initialBookBalance,
+			finalToBalance, initialToBalance,
+			finalBookToBookFromBalance, initialBookToBookFromBalance,
+			finalBookToBookTargetBalance, initialBookToBookTargetBalance,
+		)
 	}
 
 	reports := []string{
-		fmt.Sprintf("# Core Txn Perf Report\n\n- generated_at_utc: %s\n- requests_per_transfer_scenario: %d\n- concurrency: %d\n- warmup_pair_count_per_mode: %d\n- transfer_origins_for_refund: %d\n- book_transfer_origins_for_refund: %d\n- final_balance_check: PASS (from=%d, to=%d, book=%d)",
+		fmt.Sprintf("# Core Txn Perf Report\n\n- generated_at_utc: %s\n- requests_per_transfer_scenario: %d\n- concurrency: %d\n- warmup_pair_count_per_mode: %d\n- transfer_origins_for_refund: %d\n- book_transfer_origins_for_refund: %d\n- book_to_book_transfer_origins_for_refund: %d\n- final_balance_check: PASS (from=%d, to=%d, book=%d, book_to_book_from=%d, book_to_book_target=%d)",
 			time.Now().UTC().Format(time.RFC3339),
 			cfg.RequestCount,
 			cfg.Concurrency,
 			cfg.WarmupRequests,
 			len(originTxnNos),
 			len(bookOriginTxnNos),
+			len(bookToBookOriginTxnNos),
 			finalFromBalance,
 			finalToBalance,
 			finalBookBalance,
+			finalBookToBookFromBalance,
+			finalBookToBookTargetBalance,
 		),
 		buildMetricsMarkdown(transferMetrics),
 		buildMetricsMarkdown(refundMetrics),
 		buildMetricsMarkdown(bookTransferMetrics),
 		buildMetricsMarkdown(bookRefundMetrics),
+		buildMetricsMarkdown(bookToBookTransferMetrics),
+		buildMetricsMarkdown(bookToBookRefundMetrics),
 	}
 	fullReport := strings.Join(reports, "\n\n")
 	fmt.Println(buildMetricsMarkdown(transferMetrics))
 	fmt.Println(buildMetricsMarkdown(refundMetrics))
 	fmt.Println(buildMetricsMarkdown(bookTransferMetrics))
 	fmt.Println(buildMetricsMarkdown(bookRefundMetrics))
+	fmt.Println(buildMetricsMarkdown(bookToBookTransferMetrics))
+	fmt.Println(buildMetricsMarkdown(bookToBookRefundMetrics))
 	if err := os.WriteFile("perf.md", []byte(fullReport+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write perf.md failed: %w", err)
 	}
@@ -654,6 +846,35 @@ func assertBalances(
 	if gotFrom != wantFrom || gotBook != wantBook || gotTo != wantTo {
 		return fmt.Errorf("%s balance mismatch: from_balance=%d want=%d book_balance=%d want=%d to_balance=%d want=%d",
 			stage, gotFrom, wantFrom, gotBook, wantBook, gotTo, wantTo)
+	}
+	return nil
+}
+
+func snapshotBookToBookBalances(repo *db.Repository, fromAccountNo, targetAccountNo string) (int64, int64, error) {
+	from, ok := repo.GetAccount(fromAccountNo)
+	if !ok {
+		return 0, 0, fmt.Errorf("book-to-book from account not found: %s", fromAccountNo)
+	}
+	target, ok := repo.GetAccount(targetAccountNo)
+	if !ok {
+		return 0, 0, fmt.Errorf("book-to-book target account not found: %s", targetAccountNo)
+	}
+	return from.Balance, target.Balance, nil
+}
+
+func assertBookToBookBalances(
+	repo *db.Repository,
+	fromAccountNo, targetAccountNo string,
+	wantFrom, wantTarget int64,
+	stage string,
+) error {
+	gotFrom, gotTarget, err := snapshotBookToBookBalances(repo, fromAccountNo, targetAccountNo)
+	if err != nil {
+		return fmt.Errorf("%s book-to-book balance check failed: %w", stage, err)
+	}
+	if gotFrom != wantFrom || gotTarget != wantTarget {
+		return fmt.Errorf("%s book-to-book balance mismatch: from_balance=%d want=%d target_balance=%d want=%d",
+			stage, gotFrom, wantFrom, gotTarget, wantTarget)
 	}
 	return nil
 }
@@ -819,6 +1040,7 @@ func collectSucceededTxnNos(rows []resultRow) []string {
 
 func setupPerfServer(
 	ctx context.Context,
+	pool *pgxpool.Pool,
 	repo *db.Repository,
 	redisClient *goredis.Client,
 	secretManager *db.MerchantSecretManager,
@@ -830,6 +1052,7 @@ func setupPerfServer(
 	txnRecoveryStale time.Duration,
 	webhookPollInterval time.Duration,
 	maxBodyBytes int64,
+	bookToBookSeedBalance int64,
 ) (*perfRuntime, error) {
 	ids := idpkg.NewRuntimeUUIDProvider()
 	merchantSvc := service.NewMerchantService(repo, ids)
@@ -856,6 +1079,14 @@ func setupPerfServer(
 	if err != nil {
 		return nil, fmt.Errorf("create book transfer customer: %w", err)
 	}
+	bookToBookFromCustomer, err := customerSvc.CreateCustomer(merchant.MerchantNo, fromBookToBookOutUser)
+	if err != nil {
+		return nil, fmt.Errorf("create book-to-book from customer: %w", err)
+	}
+	bookToBookTargetCustomer, err := customerSvc.CreateCustomer(merchant.MerchantNo, toBookToBookOutUser)
+	if err != nil {
+		return nil, fmt.Errorf("create book-to-book target customer: %w", err)
+	}
 
 	fromAccountNo, err := repo.NewAccountNo(merchant.MerchantNo, "CUSTOMER")
 	if err != nil {
@@ -868,6 +1099,14 @@ func setupPerfServer(
 	toBookTransferAccountNo, err := repo.NewAccountNo(merchant.MerchantNo, "CUSTOMER")
 	if err != nil {
 		return nil, fmt.Errorf("new book transfer account no: %w", err)
+	}
+	bookToBookFromAccountNo, err := repo.NewAccountNo(merchant.MerchantNo, "CUSTOMER")
+	if err != nil {
+		return nil, fmt.Errorf("new book-to-book from account no: %w", err)
+	}
+	bookToBookTargetAccountNo, err := repo.NewAccountNo(merchant.MerchantNo, "CUSTOMER")
+	if err != nil {
+		return nil, fmt.Errorf("new book-to-book target account no: %w", err)
 	}
 
 	if err := repo.CreateAccount(service.Account{
@@ -913,6 +1152,50 @@ func setupPerfServer(
 		Balance:           0,
 	}); err != nil {
 		return nil, fmt.Errorf("create transfer account: %w", err)
+	}
+	if bookToBookSeedBalance <= 0 {
+		return nil, fmt.Errorf("book-to-book seed balance must be > 0")
+	}
+	if err := repo.CreateAccount(service.Account{
+		AccountNo:         bookToBookFromAccountNo,
+		MerchantNo:        merchant.MerchantNo,
+		CustomerNo:        bookToBookFromCustomer.CustomerNo,
+		AccountType:       "CUSTOMER",
+		AllowOverdraft:    false,
+		MaxOverdraftLimit: 0,
+		AllowDebitOut:     true,
+		AllowCreditIn:     true,
+		AllowTransfer:     true,
+		BookEnabled:       true,
+		Balance:           bookToBookSeedBalance,
+	}); err != nil {
+		return nil, fmt.Errorf("create book-to-book from account: %w", err)
+	}
+	if err := repo.CreateAccount(service.Account{
+		AccountNo:         bookToBookTargetAccountNo,
+		MerchantNo:        merchant.MerchantNo,
+		CustomerNo:        bookToBookTargetCustomer.CustomerNo,
+		AccountType:       "CUSTOMER",
+		AllowOverdraft:    false,
+		MaxOverdraftLimit: 0,
+		AllowDebitOut:     true,
+		AllowCreditIn:     true,
+		AllowTransfer:     true,
+		BookEnabled:       true,
+		Balance:           0,
+	}); err != nil {
+		return nil, fmt.Errorf("create book-to-book target account: %w", err)
+	}
+	seedBookNo, err := ids.NewUUIDv7()
+	if err != nil {
+		return nil, fmt.Errorf("new book-to-book seed book no: %w", err)
+	}
+	seedExpireAt := time.Now().UTC().AddDate(1, 0, 0)
+	if _, err := pool.Exec(ctx, `
+INSERT INTO account_book (book_no, account_no, expire_at, balance)
+VALUES ($1::uuid, $2, $3::date, $4)
+`, seedBookNo, bookToBookFromAccountNo, seedExpireAt, bookToBookSeedBalance); err != nil {
+		return nil, fmt.Errorf("seed book-to-book from account book row: %w", err)
 	}
 	secret, _, err := secretManager.RotateSecret(context.Background(), merchant.MerchantNo)
 	if err != nil {
@@ -977,14 +1260,16 @@ func setupPerfServer(
 		MerchantCreator: merchantSvc,
 	})
 	return &perfRuntime{
-		Server:                httptest.NewServer(r),
-		WebhookServer:         webhookServer,
-		WebhookSink:           sink,
-		MerchantNo:            merchant.MerchantNo,
-		Secret:                secret,
-		TransferFromAccountNo: fromAccountNo,
-		TransferBookToAccount: toBookTransferAccountNo,
-		TransferToAccountNo:   toAccountNo,
+		Server:                    httptest.NewServer(r),
+		WebhookServer:             webhookServer,
+		WebhookSink:               sink,
+		MerchantNo:                merchant.MerchantNo,
+		Secret:                    secret,
+		TransferFromAccountNo:     fromAccountNo,
+		TransferBookToAccount:     toBookTransferAccountNo,
+		TransferToAccountNo:       toAccountNo,
+		BookToBookFromAccountNo:   bookToBookFromAccountNo,
+		BookToBookTargetAccountNo: bookToBookTargetAccountNo,
 	}, nil
 }
 
@@ -1570,6 +1855,45 @@ func getenvInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func getenvBool(key string, fallback bool) bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if v == "" {
+		return fallback
+	}
+	switch v {
+	case "1", "true", "t", "yes", "y", "on":
+		return true
+	case "0", "false", "f", "no", "n", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
+func startCPUProfile(path string) (func() error, error) {
+	cleanPath := strings.TrimSpace(path)
+	if cleanPath == "" {
+		return nil, fmt.Errorf("profile path is empty")
+	}
+	if dir := filepath.Dir(cleanPath); dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("create profile directory failed: %w", err)
+		}
+	}
+	file, err := os.Create(cleanPath)
+	if err != nil {
+		return nil, fmt.Errorf("create profile file failed: %w", err)
+	}
+	if err := pprof.StartCPUProfile(file); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("start cpu profile failed: %w", err)
+	}
+	return func() error {
+		pprof.StopCPUProfile()
+		return file.Close()
+	}, nil
 }
 
 func max(a, b int) int {
