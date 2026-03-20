@@ -255,8 +255,8 @@
 
 关键规则：
 - 先校验能力（透支/转账/状态）
-- 再执行余额变化（账户路径 or 账本路径）
-- 最后写流水与推进状态
+- 单笔记账内先写流水（`account_change_log`/`account_book_change_log`），再更新余额（`account`/`account_book`）
+- 状态推进与 outbox 仍与主交易同事务提交
 
 ## 3.3 BookRoutingService（V1: Expiry）
 职责：
@@ -343,7 +343,7 @@
 3. 入贷方：
    - 非过期账户：加 `account.balance`
    - 过期账户：按 `expire_at` 写入/更新 `account_book`，同步更新 `account.balance`
-4. 写 `account_change_log`；必要时写 `account_book_change_log`
+4. 记账动作按“先写流水，再更新余额”执行（`account_change_log` 必写；必要时写 `account_book_change_log`）
 5. 入贷方成功后推进状态 `PAY_SUCCESS -> RECV_SUCCESS`
 6. 写 `outbox_event`（成功事件）
 

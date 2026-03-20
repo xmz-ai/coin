@@ -157,6 +157,7 @@ CREATE TABLE IF NOT EXISTS account_change_log (
   txn_no UUID NOT NULL,
   account_no VARCHAR(19) NOT NULL,
   delta BIGINT NOT NULL,
+  balance_before BIGINT NOT NULL,
   balance_after BIGINT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CHECK (account_no ~ '^[0-9]{19}$')
@@ -193,6 +194,7 @@ CREATE TABLE IF NOT EXISTS account_book_change_log (
   account_no VARCHAR(19) NOT NULL,
   book_no UUID NOT NULL,
   delta BIGINT NOT NULL,
+  balance_before BIGINT NOT NULL,
   balance_after BIGINT NOT NULL,
   expire_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

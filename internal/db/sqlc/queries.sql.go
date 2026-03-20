@@ -486,6 +486,43 @@ func (q *Queries) DecreaseOriginTxnRefundableIfValid(ctx context.Context, arg De
 	return i, err
 }
 
+const getAccountBookForUpdateByAccountExpire = `-- name: GetAccountBookForUpdateByAccountExpire :one
+SELECT
+  b.book_no,
+  b.account_no,
+  b.expire_at,
+  b.balance
+FROM account_book b
+WHERE b.account_no = $1
+  AND b.expire_at = $2::date
+FOR UPDATE OF b
+LIMIT 1
+`
+
+type GetAccountBookForUpdateByAccountExpireParams struct {
+	AccountNo string
+	ExpireAt  pgtype.Date
+}
+
+type GetAccountBookForUpdateByAccountExpireRow struct {
+	BookNo    pgtype.UUID
+	AccountNo string
+	ExpireAt  pgtype.Date
+	Balance   int64
+}
+
+func (q *Queries) GetAccountBookForUpdateByAccountExpire(ctx context.Context, arg GetAccountBookForUpdateByAccountExpireParams) (GetAccountBookForUpdateByAccountExpireRow, error) {
+	row := q.db.QueryRow(ctx, getAccountBookForUpdateByAccountExpire, arg.AccountNo, arg.ExpireAt)
+	var i GetAccountBookForUpdateByAccountExpireRow
+	err := row.Scan(
+		&i.BookNo,
+		&i.AccountNo,
+		&i.ExpireAt,
+		&i.Balance,
+	)
+	return i, err
+}
+
 const getAccountByMerchantOutUserID = `-- name: GetAccountByMerchantOutUserID :one
 SELECT
   a.account_no,
@@ -1096,24 +1133,26 @@ func (q *Queries) InitCodeSequence(ctx context.Context, arg InitCodeSequencePara
 }
 
 const insertAccountBookChange = `-- name: InsertAccountBookChange :exec
-INSERT INTO account_book_change_log (txn_no, account_no, book_no, delta, balance_after, expire_at)
+INSERT INTO account_book_change_log (txn_no, account_no, book_no, delta, balance_before, balance_after, expire_at)
 VALUES (
   $1::uuid,
   $2,
   $3::uuid,
   $4,
   $5,
-  $6::date
+  $6,
+  $7::date
 )
 `
 
 type InsertAccountBookChangeParams struct {
-	TxnNo        pgtype.UUID
-	AccountNo    string
-	BookNo       pgtype.UUID
-	Delta        int64
-	BalanceAfter int64
-	ExpireAt     pgtype.Date
+	TxnNo         pgtype.UUID
+	AccountNo     string
+	BookNo        pgtype.UUID
+	Delta         int64
+	BalanceBefore int64
+	BalanceAfter  int64
+	ExpireAt      pgtype.Date
 }
 
 func (q *Queries) InsertAccountBookChange(ctx context.Context, arg InsertAccountBookChangeParams) error {
@@ -1122,6 +1161,7 @@ func (q *Queries) InsertAccountBookChange(ctx context.Context, arg InsertAccount
 		arg.AccountNo,
 		arg.BookNo,
 		arg.Delta,
+		arg.BalanceBefore,
 		arg.BalanceAfter,
 		arg.ExpireAt,
 	)
@@ -1129,20 +1169,22 @@ func (q *Queries) InsertAccountBookChange(ctx context.Context, arg InsertAccount
 }
 
 const insertAccountChange = `-- name: InsertAccountChange :exec
-INSERT INTO account_change_log (txn_no, account_no, delta, balance_after)
+INSERT INTO account_change_log (txn_no, account_no, delta, balance_before, balance_after)
 VALUES (
   $1::uuid,
   $2,
   $3,
-  $4
+  $4,
+  $5
 )
 `
 
 type InsertAccountChangeParams struct {
-	TxnNo        pgtype.UUID
-	AccountNo    string
-	Delta        int64
-	BalanceAfter int64
+	TxnNo         pgtype.UUID
+	AccountNo     string
+	Delta         int64
+	BalanceBefore int64
+	BalanceAfter  int64
 }
 
 func (q *Queries) InsertAccountChange(ctx context.Context, arg InsertAccountChangeParams) error {
@@ -1150,36 +1192,41 @@ func (q *Queries) InsertAccountChange(ctx context.Context, arg InsertAccountChan
 		arg.TxnNo,
 		arg.AccountNo,
 		arg.Delta,
+		arg.BalanceBefore,
 		arg.BalanceAfter,
 	)
 	return err
 }
 
 const insertAccountChangePair = `-- name: InsertAccountChangePair :exec
-INSERT INTO account_change_log (txn_no, account_no, delta, balance_after)
+INSERT INTO account_change_log (txn_no, account_no, delta, balance_before, balance_after)
 VALUES
   (
     $1::uuid,
     $2,
     $3,
-    $4
+    $4,
+    $5
   ),
   (
     $1::uuid,
-    $5,
     $6,
-    $7
+    $7,
+    $8,
+    $9
   )
 `
 
 type InsertAccountChangePairParams struct {
-	TxnNo              pgtype.UUID
-	DebitAccountNo     string
-	DebitDelta         int64
-	DebitBalanceAfter  int64
-	CreditAccountNo    string
-	CreditDelta        int64
-	CreditBalanceAfter int64
+	TxnNo               pgtype.UUID
+	DebitAccountNo      string
+	DebitDelta          int64
+	DebitBalanceBefore  int64
+	DebitBalanceAfter   int64
+	CreditAccountNo     string
+	CreditDelta         int64
+	CreditBalanceBefore int64
+	CreditBalanceAfter  int64
 }
 
 func (q *Queries) InsertAccountChangePair(ctx context.Context, arg InsertAccountChangePairParams) error {
@@ -1187,9 +1234,11 @@ func (q *Queries) InsertAccountChangePair(ctx context.Context, arg InsertAccount
 		arg.TxnNo,
 		arg.DebitAccountNo,
 		arg.DebitDelta,
+		arg.DebitBalanceBefore,
 		arg.DebitBalanceAfter,
 		arg.CreditAccountNo,
 		arg.CreditDelta,
+		arg.CreditBalanceBefore,
 		arg.CreditBalanceAfter,
 	)
 	return err

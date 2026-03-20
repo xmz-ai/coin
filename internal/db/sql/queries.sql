@@ -408,27 +408,30 @@ SET balance = sqlc.arg(balance),
 WHERE account_no = sqlc.arg(account_no);
 
 -- name: InsertAccountChangePair :exec
-INSERT INTO account_change_log (txn_no, account_no, delta, balance_after)
+INSERT INTO account_change_log (txn_no, account_no, delta, balance_before, balance_after)
 VALUES
   (
     sqlc.arg(txn_no)::uuid,
     sqlc.arg(debit_account_no),
     sqlc.arg(debit_delta),
+    sqlc.arg(debit_balance_before),
     sqlc.arg(debit_balance_after)
   ),
   (
     sqlc.arg(txn_no)::uuid,
     sqlc.arg(credit_account_no),
     sqlc.arg(credit_delta),
+    sqlc.arg(credit_balance_before),
     sqlc.arg(credit_balance_after)
   );
 
 -- name: InsertAccountChange :exec
-INSERT INTO account_change_log (txn_no, account_no, delta, balance_after)
+INSERT INTO account_change_log (txn_no, account_no, delta, balance_before, balance_after)
 VALUES (
   sqlc.arg(txn_no)::uuid,
   sqlc.arg(account_no),
   sqlc.arg(delta),
+  sqlc.arg(balance_before),
   sqlc.arg(balance_after)
 );
 
@@ -443,6 +446,18 @@ WHERE b.account_no = sqlc.arg(account_no)
   AND b.expire_at > sqlc.arg(now_utc)::date
   AND b.balance > 0
 ORDER BY b.expire_at ASC, b.book_no ASC;
+
+-- name: GetAccountBookForUpdateByAccountExpire :one
+SELECT
+  b.book_no,
+  b.account_no,
+  b.expire_at,
+  b.balance
+FROM account_book b
+WHERE b.account_no = sqlc.arg(account_no)
+  AND b.expire_at = sqlc.arg(expire_at)::date
+FOR UPDATE OF b
+LIMIT 1;
 
 -- name: UpsertAccountBookBalance :one
 INSERT INTO account_book (book_no, account_no, expire_at, balance)
@@ -472,12 +487,13 @@ WHERE b.book_no = payload.book_no
 RETURNING b.book_no, b.balance;
 
 -- name: InsertAccountBookChange :exec
-INSERT INTO account_book_change_log (txn_no, account_no, book_no, delta, balance_after, expire_at)
+INSERT INTO account_book_change_log (txn_no, account_no, book_no, delta, balance_before, balance_after, expire_at)
 VALUES (
   sqlc.arg(txn_no)::uuid,
   sqlc.arg(account_no),
   sqlc.arg(book_no)::uuid,
   sqlc.arg(delta),
+  sqlc.arg(balance_before),
   sqlc.arg(balance_after),
   sqlc.arg(expire_at)::date
 );
