@@ -15,9 +15,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/xmz-ai/coin/internal/api"
+	"github.com/xmz-ai/coin/internal/db"
 	idpkg "github.com/xmz-ai/coin/internal/platform/id"
 	"github.com/xmz-ai/coin/internal/service"
-	"github.com/xmz-ai/coin/tests/support/memoryrepo"
 )
 
 const (
@@ -29,7 +29,7 @@ type noopAsyncDispatcher struct{}
 
 func (noopAsyncDispatcher) Enqueue(string) {}
 
-func BenchmarkCoreTxnTransferSubmitAPIMemory(b *testing.B) {
+func BenchmarkCoreTxnTransferSubmitAPIPostgres(b *testing.B) {
 	router, merchantNo, secret := newCoreTxnBenchmarkServer(b)
 
 	b.ReportAllocs()
@@ -59,7 +59,7 @@ func BenchmarkCoreTxnTransferSubmitAPIMemory(b *testing.B) {
 	}
 }
 
-func BenchmarkCoreTxnTransferFullPathServiceMemory(b *testing.B) {
+func BenchmarkCoreTxnTransferFullPathServicePostgres(b *testing.B) {
 	repo, merchantNo, transferSvc, processor := newCoreTxnBenchmarkServices(b)
 	_, _ = repo, merchantNo
 
@@ -124,10 +124,11 @@ func newCoreTxnBenchmarkServer(b *testing.B) (*gin.Engine, string, string) {
 	return r, merchantNo, secret
 }
 
-func newCoreTxnBenchmarkServices(b *testing.B) (*memoryrepo.Repo, string, *service.TransferService, *service.TransferAsyncProcessor) {
+func newCoreTxnBenchmarkServices(b *testing.B) (*db.Repository, string, *service.TransferService, *service.TransferAsyncProcessor) {
 	b.Helper()
 
-	repo := memoryrepo.New()
+	pool := setupPostgresPool(b)
+	repo := db.NewRepository(pool)
 	ids := idpkg.NewRuntimeUUIDProvider()
 	merchantSvc := service.NewMerchantService(repo, ids)
 	merchant, err := merchantSvc.CreateMerchant("", "core-txn-bench")
