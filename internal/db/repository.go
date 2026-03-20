@@ -367,13 +367,8 @@ func (r *Repository) CreateTransferTxn(txn service.TransferTxn) error {
 	ctx, cancel := r.withTimeout()
 	defer cancel()
 
-	txnUUID, err := parseUUID(txn.TxnNo)
-	if err != nil {
-		return err
-	}
-
-	err = r.queries.CreateTransferTxn(ctx, dbsqlc.CreateTransferTxnParams{
-		TxnNo:            txnUUID,
+	err := r.queries.CreateTransferTxn(ctx, dbsqlc.CreateTransferTxnParams{
+		TxnNo:            txn.TxnNo,
 		MerchantNo:       txn.MerchantNo,
 		OutTradeNo:       txn.OutTradeNo,
 		BizType:          txn.BizType,
@@ -398,12 +393,7 @@ func (r *Repository) GetTransferTxn(txnNo string) (service.TransferTxn, bool) {
 	ctx, cancel := r.withTimeout()
 	defer cancel()
 
-	txnUUID, err := parseUUID(txnNo)
-	if err != nil {
-		return service.TransferTxn{}, false
-	}
-
-	row, err := r.queries.GetTransferTxnByNo(ctx, txnUUID)
+	row, err := r.queries.GetTransferTxnByNo(ctx, txnNo)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return service.TransferTxn{}, false
 	}
@@ -553,15 +543,11 @@ func (r *Repository) UpdateTransferTxnStatus(txnNo, status, errorCode, errorMsg 
 	ctx, cancel := r.withTimeout()
 	defer cancel()
 
-	txnUUID, err := parseUUID(txnNo)
-	if err != nil {
-		return err
-	}
 	return r.queries.UpdateTransferTxnStatus(ctx, dbsqlc.UpdateTransferTxnStatusParams{
 		Status:    status,
 		ErrorCode: nullIfEmpty(errorCode),
 		ErrorMsg:  nullIfEmpty(errorMsg),
-		TxnNo:     txnUUID,
+		TxnNo:     txnNo,
 	})
 }
 
@@ -569,16 +555,11 @@ func (r *Repository) TransitionTransferTxnStatus(txnNo, fromStatus, toStatus, er
 	ctx, cancel := r.withTimeout()
 	defer cancel()
 
-	txnUUID, err := parseUUID(txnNo)
-	if err != nil {
-		return false, err
-	}
-
 	affected, err := r.queries.UpdateTransferTxnStatusFrom(ctx, dbsqlc.UpdateTransferTxnStatusFromParams{
 		NextStatus: toStatus,
 		ErrorCode:  nullIfEmpty(errorCode),
 		ErrorMsg:   nullIfEmpty(errorMsg),
-		TxnNo:      txnUUID,
+		TxnNo:      txnNo,
 		FromStatus: fromStatus,
 	})
 	if err != nil {
@@ -591,14 +572,10 @@ func (r *Repository) UpdateTransferTxnParties(txnNo, debitAccountNo, creditAccou
 	ctx, cancel := r.withTimeout()
 	defer cancel()
 
-	txnUUID, err := parseUUID(txnNo)
-	if err != nil {
-		return err
-	}
 	return r.queries.UpdateTransferTxnParties(ctx, dbsqlc.UpdateTransferTxnPartiesParams{
 		DebitAccountNo:  textValue(debitAccountNo),
 		CreditAccountNo: textValue(creditAccountNo),
-		TxnNo:           txnUUID,
+		TxnNo:           txnNo,
 	})
 }
 
@@ -606,14 +583,9 @@ func (r *Repository) TryDecreaseTxnRefundable(txnNo string, amount int64) (left 
 	ctx, cancel := r.withTimeout()
 	defer cancel()
 
-	txnUUID, err := parseUUID(txnNo)
-	if err != nil {
-		return 0, false, err
-	}
-
 	left, err = r.queries.TryDecreaseTxnRefundable(ctx, dbsqlc.TryDecreaseTxnRefundableParams{
 		Amount: amount,
-		TxnNo:  txnUUID,
+		TxnNo:  txnNo,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, nil
@@ -629,10 +601,6 @@ func (r *Repository) ApplyTxnStage(txnNo, expectedStatus string) (service.TxnSta
 	defer cancel()
 
 	var result service.TxnStageApplyResult
-	txnUUID, err := parseUUID(txnNo)
-	if err != nil {
-		return result, service.ErrTxnNotFound
-	}
 
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -641,13 +609,14 @@ func (r *Repository) ApplyTxnStage(txnNo, expectedStatus string) (service.TxnSta
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	qtx := r.queries.WithTx(tx)
-	stage, err := qtx.GetTransferTxnStageForUpdate(ctx, txnUUID)
+	stage, err := qtx.GetTransferTxnStageForUpdate(ctx, txnNo)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return result, service.ErrTxnNotFound
 	}
 	if err != nil {
 		return result, err
 	}
+	txnUUID := stage.TxnNo
 
 	result.BizType = strings.TrimSpace(stage.BizType)
 	result.CurrentStatus = strings.TrimSpace(stage.Status)
@@ -677,14 +646,10 @@ func (r *Repository) ApplyTxnStage(txnNo, expectedStatus string) (service.TxnSta
 				return result, err
 			}
 		case service.BizTypeRefund:
-			refundOfTxnNo := strings.TrimSpace(stage.RefundOfTxnNo)
-			if refundOfTxnNo == "" {
+			if !stage.RefundOfTxnNo.Valid {
 				return result, service.ErrTxnStatusInvalid
 			}
-			originTxnUUID, err := parseUUID(refundOfTxnNo)
-			if err != nil {
-				return result, service.ErrTxnNotFound
-			}
+			originTxnUUID := stage.RefundOfTxnNo
 			origin, err := qtx.DecreaseOriginTxnRefundableIfValid(ctx, dbsqlc.DecreaseOriginTxnRefundableIfValidParams{
 				Amount:      stage.Amount,
 				OriginTxnNo: originTxnUUID,
@@ -746,6 +711,9 @@ func (r *Repository) ApplyTxnStage(txnNo, expectedStatus string) (service.TxnSta
 			if result.CreditAccountNo == "" {
 				return result, service.ErrAccountResolveFailed
 			}
+			if !stage.RefundOfTxnNo.Valid {
+				return result, service.ErrTxnStatusInvalid
+			}
 
 			creditRow, err := qtx.GetAccountForUpdateByNo(ctx, result.CreditAccountNo)
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -760,7 +728,7 @@ func (r *Repository) ApplyTxnStage(txnNo, expectedStatus string) (service.TxnSta
 			}
 
 			if creditAccount.BookEnabled {
-				parts, err := buildRefundBookCreditParts(ctx, qtx, txnNo, stage.RefundOfTxnNo, stage.MerchantNo, stage.Amount)
+				parts, err := buildRefundBookCreditParts(ctx, qtx, txnUUID, stage.RefundOfTxnNo, stage.MerchantNo, stage.Amount)
 				if err != nil {
 					return result, err
 				}
@@ -802,11 +770,6 @@ func (r *Repository) ApplyTransferDebitStage(txnNo, debitAccountNo string, amoun
 	ctx, cancel := r.withTimeout()
 	defer cancel()
 
-	txnUUID, err := parseUUID(txnNo)
-	if err != nil {
-		return false, service.ErrAccountResolveFailed
-	}
-
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return false, err
@@ -814,13 +777,14 @@ func (r *Repository) ApplyTransferDebitStage(txnNo, debitAccountNo string, amoun
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	qtx := r.queries.WithTx(tx)
-	stage, err := qtx.GetTransferTxnStageForUpdate(ctx, txnUUID)
+	stage, err := qtx.GetTransferTxnStageForUpdate(ctx, txnNo)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, service.ErrTxnNotFound
 	}
 	if err != nil {
 		return false, err
 	}
+	txnUUID := stage.TxnNo
 	if stage.Status != service.TxnStatusInit {
 		if err := tx.Commit(ctx); err != nil {
 			return false, err
@@ -859,11 +823,6 @@ func (r *Repository) ApplyTransferCreditStage(txnNo, creditAccountNo string, amo
 	ctx, cancel := r.withTimeout()
 	defer cancel()
 
-	txnUUID, err := parseUUID(txnNo)
-	if err != nil {
-		return false, service.ErrAccountResolveFailed
-	}
-
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return false, err
@@ -871,13 +830,14 @@ func (r *Repository) ApplyTransferCreditStage(txnNo, creditAccountNo string, amo
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	qtx := r.queries.WithTx(tx)
-	stage, err := qtx.GetTransferTxnStageForUpdate(ctx, txnUUID)
+	stage, err := qtx.GetTransferTxnStageForUpdate(ctx, txnNo)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, service.ErrTxnNotFound
 	}
 	if err != nil {
 		return false, err
 	}
+	txnUUID := stage.TxnNo
 	if stage.Status != service.TxnStatusPaySuccess {
 		if err := tx.Commit(ctx); err != nil {
 			return false, err
@@ -919,11 +879,6 @@ func (r *Repository) ApplyRefundDebitStage(refundTxnNo string, amount int64) (bo
 	ctx, cancel := r.withTimeout()
 	defer cancel()
 
-	refundTxnUUID, err := parseUUID(refundTxnNo)
-	if err != nil {
-		return false, service.ErrTxnNotFound
-	}
-
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return false, err
@@ -931,27 +886,25 @@ func (r *Repository) ApplyRefundDebitStage(refundTxnNo string, amount int64) (bo
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	qtx := r.queries.WithTx(tx)
-	refund, err := qtx.GetTransferTxnStageForUpdate(ctx, refundTxnUUID)
+	refund, err := qtx.GetTransferTxnStageForUpdate(ctx, refundTxnNo)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, service.ErrTxnNotFound
 	}
 	if err != nil {
 		return false, err
 	}
+	refundTxnUUID := refund.TxnNo
 	if refund.Status != service.TxnStatusInit {
 		if err := tx.Commit(ctx); err != nil {
 			return false, err
 		}
 		return false, nil
 	}
-	if refund.BizType != service.BizTypeRefund || strings.TrimSpace(refund.RefundOfTxnNo) == "" {
+	if refund.BizType != service.BizTypeRefund || !refund.RefundOfTxnNo.Valid {
 		return false, service.ErrTxnStatusInvalid
 	}
 
-	originTxnUUID, err := parseUUID(refund.RefundOfTxnNo)
-	if err != nil {
-		return false, service.ErrTxnNotFound
-	}
+	originTxnUUID := refund.RefundOfTxnNo
 	origin, err := qtx.DecreaseOriginTxnRefundableIfValid(ctx, dbsqlc.DecreaseOriginTxnRefundableIfValidParams{
 		Amount:      amount,
 		OriginTxnNo: originTxnUUID,
@@ -1002,11 +955,6 @@ func (r *Repository) ApplyRefundCreditStage(refundTxnNo, creditAccountNo string,
 	ctx, cancel := r.withTimeout()
 	defer cancel()
 
-	refundTxnUUID, err := parseUUID(refundTxnNo)
-	if err != nil {
-		return false, service.ErrTxnNotFound
-	}
-
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return false, err
@@ -1014,18 +962,22 @@ func (r *Repository) ApplyRefundCreditStage(refundTxnNo, creditAccountNo string,
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	qtx := r.queries.WithTx(tx)
-	refund, err := qtx.GetTransferTxnStageForUpdate(ctx, refundTxnUUID)
+	refund, err := qtx.GetTransferTxnStageForUpdate(ctx, refundTxnNo)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, service.ErrTxnNotFound
 	}
 	if err != nil {
 		return false, err
 	}
+	refundTxnUUID := refund.TxnNo
 	if refund.Status != service.TxnStatusPaySuccess {
 		if err := tx.Commit(ctx); err != nil {
 			return false, err
 		}
 		return false, nil
+	}
+	if !refund.RefundOfTxnNo.Valid {
+		return false, service.ErrTxnStatusInvalid
 	}
 
 	stageCreditAccountNo := strings.TrimSpace(refund.CreditAccountNo)
@@ -1052,7 +1004,7 @@ func (r *Repository) ApplyRefundCreditStage(refundTxnNo, creditAccountNo string,
 	}
 
 	if creditAccount.BookEnabled {
-		parts, err := buildRefundBookCreditParts(ctx, qtx, refundTxnNo, refund.RefundOfTxnNo, refund.MerchantNo, amount)
+		parts, err := buildRefundBookCreditParts(ctx, qtx, refundTxnUUID, refund.RefundOfTxnNo, refund.MerchantNo, amount)
 		if err != nil {
 			return false, err
 		}
@@ -1168,10 +1120,6 @@ func (r *Repository) ClaimDueOutboxEventsByTxnNo(txnNo string, limit int, now ti
 	ctx, cancel := r.withTimeout()
 	defer cancel()
 
-	txnUUID, err := parseUUID(txnNo)
-	if err != nil {
-		return nil, err
-	}
 	if limit <= 0 {
 		limit = 100
 	}
@@ -1180,7 +1128,7 @@ func (r *Repository) ClaimDueOutboxEventsByTxnNo(txnNo string, limit int, now ti
 	}
 
 	rows, err := r.queries.ClaimDueOutboxEventsByTxnNo(ctx, dbsqlc.ClaimDueOutboxEventsByTxnNoParams{
-		TxnNo:     txnUUID,
+		TxnNo:     txnNo,
 		NowAt:     pgtype.Timestamptz{Time: now.UTC(), Valid: true},
 		PageLimit: int32(limit),
 	})
@@ -1208,26 +1156,18 @@ func (r *Repository) MarkOutboxEventSuccess(eventID string) error {
 	ctx, cancel := r.withTimeout()
 	defer cancel()
 
-	eventUUID, err := parseUUID(eventID)
-	if err != nil {
-		return err
-	}
-	return r.queries.MarkOutboxEventSuccess(ctx, eventUUID)
+	return r.queries.MarkOutboxEventSuccess(ctx, eventID)
 }
 
 func (r *Repository) MarkOutboxEventRetry(eventID string, retryCount int, nextRetryAt time.Time, dead bool) error {
 	ctx, cancel := r.withTimeout()
 	defer cancel()
 
-	eventUUID, err := parseUUID(eventID)
-	if err != nil {
-		return err
-	}
 	return r.queries.MarkOutboxEventRetry(ctx, dbsqlc.MarkOutboxEventRetryParams{
 		RetryCount:  int32(retryCount),
 		NextRetryAt: pgtype.Timestamptz{Time: nextRetryAt.UTC(), Valid: true},
 		MarkDead:    dead,
-		EventID:     eventUUID,
+		EventID:     eventID,
 	})
 }
 
@@ -1258,20 +1198,12 @@ type bookCreditPart struct {
 func buildRefundBookCreditParts(
 	ctx context.Context,
 	q *dbsqlc.Queries,
-	refundTxnNo, originTxnNo, merchantNo string,
+	refundTxnUUID, originTxnUUID pgtype.UUID,
+	merchantNo string,
 	refundAmount int64,
 ) ([]bookCreditPart, error) {
-	if strings.TrimSpace(refundTxnNo) == "" || strings.TrimSpace(originTxnNo) == "" || refundAmount <= 0 {
+	if !refundTxnUUID.Valid || !originTxnUUID.Valid || refundAmount <= 0 {
 		return nil, service.ErrAccountResolveFailed
-	}
-
-	refundTxnUUID, err := parseUUID(refundTxnNo)
-	if err != nil {
-		return nil, service.ErrTxnNotFound
-	}
-	originTxnUUID, err := parseUUID(originTxnNo)
-	if err != nil {
-		return nil, service.ErrTxnNotFound
 	}
 	originTxn, err := q.GetTransferTxnByNo(ctx, originTxnUUID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1403,13 +1335,9 @@ func applyBookCreditPartsTx(
 		if err != nil {
 			return err
 		}
-		bookUUID, err := parseUUID(bookNo)
-		if err != nil {
-			return err
-		}
 
 		book, err := q.UpsertAccountBookBalance(ctx, dbsqlc.UpsertAccountBookBalanceParams{
-			BookNo:    bookUUID,
+			BookNo:    bookNo,
 			AccountNo: credit.AccountNo,
 			ExpireAt:  toPGDate(part.ExpireAt),
 			Delta:     part.Amount,
@@ -1746,13 +1674,9 @@ func applyAccountCreditTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype
 		if err != nil {
 			return err
 		}
-		bookUUID, err := parseUUID(bookNo)
-		if err != nil {
-			return err
-		}
 
 		book, err := q.UpsertAccountBookBalance(ctx, dbsqlc.UpsertAccountBookBalanceParams{
-			BookNo:    bookUUID,
+			BookNo:    bookNo,
 			AccountNo: credit.AccountNo,
 			ExpireAt:  toPGDate(expireAt),
 			Delta:     amount,
@@ -1787,10 +1711,6 @@ func applyAccountCreditTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype
 			return err
 		}
 		return nil
-	}
-
-	if !credit.AllowCreditIn {
-		return service.ErrAccountForbidCredit
 	}
 
 	creditAfter := credit.Balance + amount

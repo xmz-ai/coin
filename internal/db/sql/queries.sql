@@ -159,7 +159,7 @@ INSERT INTO txn (
   debit_account_no, credit_account_no, credit_expire_at, amount, status,
   refund_of_txn_no, refundable_amount, error_code, error_msg
 ) VALUES (
-  sqlc.arg(txn_no)::uuid,
+  NULLIF(sqlc.arg(txn_no), '')::uuid,
   sqlc.arg(merchant_no),
   sqlc.arg(out_trade_no),
   sqlc.arg(biz_type),
@@ -193,11 +193,12 @@ SELECT
   COALESCE(t.error_msg, '') AS error_msg,
   t.created_at
 FROM txn t
-WHERE t.txn_no = sqlc.arg(txn_no)
+WHERE t.txn_no = NULLIF(sqlc.arg(txn_no), '')::uuid
 LIMIT 1;
 
 -- name: GetTransferTxnStageForUpdate :one
 SELECT
+  t.txn_no,
   COALESCE(t.status, '') AS status,
   COALESCE(t.debit_account_no, '') AS debit_account_no,
   COALESCE(t.credit_account_no, '') AS credit_account_no,
@@ -207,9 +208,9 @@ SELECT
   t.out_trade_no,
   COALESCE(t.biz_type, '') AS biz_type,
   COALESCE(t.transfer_scene, '') AS transfer_scene,
-  COALESCE(t.refund_of_txn_no::text, '')::text AS refund_of_txn_no
+  t.refund_of_txn_no
 FROM txn t
-WHERE t.txn_no = sqlc.arg(txn_no)
+WHERE t.txn_no = NULLIF(sqlc.arg(txn_no), '')::uuid
 FOR UPDATE
 LIMIT 1;
 
@@ -311,7 +312,7 @@ SET status = sqlc.arg(status),
     error_code = NULLIF(sqlc.arg(error_code), ''),
     error_msg = NULLIF(sqlc.arg(error_msg), ''),
     updated_at = NOW()
-WHERE txn_no = sqlc.arg(txn_no);
+WHERE txn_no = NULLIF(sqlc.arg(txn_no), '')::uuid;
 
 -- name: UpdateTransferTxnStatusFrom :execrows
 UPDATE txn
@@ -319,7 +320,7 @@ SET status = sqlc.arg(next_status),
     error_code = NULLIF(sqlc.arg(error_code), ''),
     error_msg = NULLIF(sqlc.arg(error_msg), ''),
     updated_at = NOW()
-WHERE txn_no = sqlc.arg(txn_no)
+WHERE txn_no = NULLIF(sqlc.arg(txn_no), '')::uuid
   AND status = sqlc.arg(from_status);
 
 -- name: UpdateTransferTxnParties :exec
@@ -327,13 +328,13 @@ UPDATE txn
 SET debit_account_no = sqlc.arg(debit_account_no),
     credit_account_no = sqlc.arg(credit_account_no),
     updated_at = NOW()
-WHERE txn_no = sqlc.arg(txn_no);
+WHERE txn_no = NULLIF(sqlc.arg(txn_no), '')::uuid;
 
 -- name: TryDecreaseTxnRefundable :one
 UPDATE txn
 SET refundable_amount = refundable_amount - sqlc.arg(amount),
     updated_at = NOW()
-WHERE txn_no = sqlc.arg(txn_no)
+WHERE txn_no = NULLIF(sqlc.arg(txn_no), '')::uuid
   AND refundable_amount >= sqlc.arg(amount)
 RETURNING refundable_amount;
 
@@ -446,7 +447,7 @@ ORDER BY b.expire_at ASC, b.book_no ASC;
 -- name: UpsertAccountBookBalance :one
 INSERT INTO account_book (book_no, account_no, expire_at, balance)
 VALUES (
-  sqlc.arg(book_no)::uuid,
+  NULLIF(sqlc.arg(book_no), '')::uuid,
   sqlc.arg(account_no),
   sqlc.arg(expire_at)::date,
   sqlc.arg(delta)
@@ -631,7 +632,7 @@ WITH picked AS (
     e.id,
     e.created_at
   FROM outbox_event e
-  WHERE e.txn_no = sqlc.arg(txn_no)::uuid
+  WHERE e.txn_no = NULLIF(sqlc.arg(txn_no), '')::uuid
     AND (
       (
         e.status = 'PENDING'
@@ -678,7 +679,7 @@ ORDER BY c.created_at ASC, c.id ASC;
 UPDATE outbox_event
 SET status = 'SUCCESS',
     updated_at = NOW()
-WHERE event_id = sqlc.arg(event_id)::uuid;
+WHERE event_id = NULLIF(sqlc.arg(event_id), '')::uuid;
 
 -- name: MarkOutboxEventRetry :exec
 UPDATE outbox_event
@@ -686,7 +687,7 @@ SET retry_count = sqlc.arg(retry_count),
     next_retry_at = sqlc.arg(next_retry_at)::timestamptz,
     status = CASE WHEN sqlc.arg(mark_dead)::bool THEN 'DEAD' ELSE 'PENDING' END,
     updated_at = NOW()
-WHERE event_id = sqlc.arg(event_id)::uuid;
+WHERE event_id = NULLIF(sqlc.arg(event_id), '')::uuid;
 
 -- name: GetActiveSecretCiphertext :one
 SELECT secret_ciphertext

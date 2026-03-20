@@ -157,7 +157,7 @@ WITH picked AS (
     e.id,
     e.created_at
   FROM outbox_event e
-  WHERE e.txn_no = $1::uuid
+  WHERE e.txn_no = NULLIF($1, '')::uuid
     AND (
       (
         e.status = 'PENDING'
@@ -202,7 +202,7 @@ ORDER BY c.created_at ASC, c.id ASC
 `
 
 type ClaimDueOutboxEventsByTxnNoParams struct {
-	TxnNo     pgtype.UUID
+	TxnNo     interface{}
 	NowAt     pgtype.Timestamptz
 	PageLimit int32
 }
@@ -368,7 +368,7 @@ INSERT INTO txn (
   debit_account_no, credit_account_no, credit_expire_at, amount, status,
   refund_of_txn_no, refundable_amount, error_code, error_msg
 ) VALUES (
-  $1::uuid,
+  NULLIF($1, '')::uuid,
   $2,
   $3,
   $4,
@@ -386,7 +386,7 @@ INSERT INTO txn (
 `
 
 type CreateTransferTxnParams struct {
-	TxnNo            pgtype.UUID
+	TxnNo            interface{}
 	MerchantNo       string
 	OutTradeNo       string
 	BizType          string
@@ -888,7 +888,7 @@ SELECT
   COALESCE(t.error_msg, '') AS error_msg,
   t.created_at
 FROM txn t
-WHERE t.txn_no = $1
+WHERE t.txn_no = NULLIF($1, '')::uuid
 LIMIT 1
 `
 
@@ -910,7 +910,7 @@ type GetTransferTxnByNoRow struct {
 	CreatedAt        pgtype.Timestamptz
 }
 
-func (q *Queries) GetTransferTxnByNo(ctx context.Context, txnNo pgtype.UUID) (GetTransferTxnByNoRow, error) {
+func (q *Queries) GetTransferTxnByNo(ctx context.Context, txnNo interface{}) (GetTransferTxnByNoRow, error) {
 	row := q.db.QueryRow(ctx, getTransferTxnByNo, txnNo)
 	var i GetTransferTxnByNoRow
 	err := row.Scan(
@@ -1004,6 +1004,7 @@ func (q *Queries) GetTransferTxnByOutTradeNo(ctx context.Context, arg GetTransfe
 
 const getTransferTxnStageForUpdate = `-- name: GetTransferTxnStageForUpdate :one
 SELECT
+  t.txn_no,
   COALESCE(t.status, '') AS status,
   COALESCE(t.debit_account_no, '') AS debit_account_no,
   COALESCE(t.credit_account_no, '') AS credit_account_no,
@@ -1013,14 +1014,15 @@ SELECT
   t.out_trade_no,
   COALESCE(t.biz_type, '') AS biz_type,
   COALESCE(t.transfer_scene, '') AS transfer_scene,
-  COALESCE(t.refund_of_txn_no::text, '')::text AS refund_of_txn_no
+  t.refund_of_txn_no
 FROM txn t
-WHERE t.txn_no = $1
+WHERE t.txn_no = NULLIF($1, '')::uuid
 FOR UPDATE
 LIMIT 1
 `
 
 type GetTransferTxnStageForUpdateRow struct {
+	TxnNo           pgtype.UUID
 	Status          string
 	DebitAccountNo  string
 	CreditAccountNo string
@@ -1030,13 +1032,14 @@ type GetTransferTxnStageForUpdateRow struct {
 	OutTradeNo      string
 	BizType         string
 	TransferScene   string
-	RefundOfTxnNo   string
+	RefundOfTxnNo   pgtype.UUID
 }
 
-func (q *Queries) GetTransferTxnStageForUpdate(ctx context.Context, txnNo pgtype.UUID) (GetTransferTxnStageForUpdateRow, error) {
+func (q *Queries) GetTransferTxnStageForUpdate(ctx context.Context, txnNo interface{}) (GetTransferTxnStageForUpdateRow, error) {
 	row := q.db.QueryRow(ctx, getTransferTxnStageForUpdate, txnNo)
 	var i GetTransferTxnStageForUpdateRow
 	err := row.Scan(
+		&i.TxnNo,
 		&i.Status,
 		&i.DebitAccountNo,
 		&i.CreditAccountNo,
@@ -1679,14 +1682,14 @@ SET retry_count = $1,
     next_retry_at = $2::timestamptz,
     status = CASE WHEN $3::bool THEN 'DEAD' ELSE 'PENDING' END,
     updated_at = NOW()
-WHERE event_id = $4::uuid
+WHERE event_id = NULLIF($4, '')::uuid
 `
 
 type MarkOutboxEventRetryParams struct {
 	RetryCount  int32
 	NextRetryAt pgtype.Timestamptz
 	MarkDead    bool
-	EventID     pgtype.UUID
+	EventID     interface{}
 }
 
 func (q *Queries) MarkOutboxEventRetry(ctx context.Context, arg MarkOutboxEventRetryParams) error {
@@ -1703,10 +1706,10 @@ const markOutboxEventSuccess = `-- name: MarkOutboxEventSuccess :exec
 UPDATE outbox_event
 SET status = 'SUCCESS',
     updated_at = NOW()
-WHERE event_id = $1::uuid
+WHERE event_id = NULLIF($1, '')::uuid
 `
 
-func (q *Queries) MarkOutboxEventSuccess(ctx context.Context, eventID pgtype.UUID) error {
+func (q *Queries) MarkOutboxEventSuccess(ctx context.Context, eventID interface{}) error {
 	_, err := q.db.Exec(ctx, markOutboxEventSuccess, eventID)
 	return err
 }
@@ -1808,14 +1811,14 @@ const tryDecreaseTxnRefundable = `-- name: TryDecreaseTxnRefundable :one
 UPDATE txn
 SET refundable_amount = refundable_amount - $1,
     updated_at = NOW()
-WHERE txn_no = $2
+WHERE txn_no = NULLIF($2, '')::uuid
   AND refundable_amount >= $1
 RETURNING refundable_amount
 `
 
 type TryDecreaseTxnRefundableParams struct {
 	Amount int64
-	TxnNo  pgtype.UUID
+	TxnNo  interface{}
 }
 
 func (q *Queries) TryDecreaseTxnRefundable(ctx context.Context, arg TryDecreaseTxnRefundableParams) (int64, error) {
@@ -1885,13 +1888,13 @@ UPDATE txn
 SET debit_account_no = $1,
     credit_account_no = $2,
     updated_at = NOW()
-WHERE txn_no = $3
+WHERE txn_no = NULLIF($3, '')::uuid
 `
 
 type UpdateTransferTxnPartiesParams struct {
 	DebitAccountNo  pgtype.Text
 	CreditAccountNo pgtype.Text
-	TxnNo           pgtype.UUID
+	TxnNo           interface{}
 }
 
 func (q *Queries) UpdateTransferTxnParties(ctx context.Context, arg UpdateTransferTxnPartiesParams) error {
@@ -1905,14 +1908,14 @@ SET status = $1,
     error_code = NULLIF($2, ''),
     error_msg = NULLIF($3, ''),
     updated_at = NOW()
-WHERE txn_no = $4
+WHERE txn_no = NULLIF($4, '')::uuid
 `
 
 type UpdateTransferTxnStatusParams struct {
 	Status    string
 	ErrorCode interface{}
 	ErrorMsg  interface{}
-	TxnNo     pgtype.UUID
+	TxnNo     interface{}
 }
 
 func (q *Queries) UpdateTransferTxnStatus(ctx context.Context, arg UpdateTransferTxnStatusParams) error {
@@ -1931,7 +1934,7 @@ SET status = $1,
     error_code = NULLIF($2, ''),
     error_msg = NULLIF($3, ''),
     updated_at = NOW()
-WHERE txn_no = $4
+WHERE txn_no = NULLIF($4, '')::uuid
   AND status = $5
 `
 
@@ -1939,7 +1942,7 @@ type UpdateTransferTxnStatusFromParams struct {
 	NextStatus string
 	ErrorCode  interface{}
 	ErrorMsg   interface{}
-	TxnNo      pgtype.UUID
+	TxnNo      interface{}
 	FromStatus string
 }
 
@@ -1960,7 +1963,7 @@ func (q *Queries) UpdateTransferTxnStatusFrom(ctx context.Context, arg UpdateTra
 const upsertAccountBookBalance = `-- name: UpsertAccountBookBalance :one
 INSERT INTO account_book (book_no, account_no, expire_at, balance)
 VALUES (
-  $1::uuid,
+  NULLIF($1, '')::uuid,
   $2,
   $3::date,
   $4
@@ -1971,7 +1974,7 @@ RETURNING book_no, account_no, expire_at, balance
 `
 
 type UpsertAccountBookBalanceParams struct {
-	BookNo    pgtype.UUID
+	BookNo    interface{}
 	AccountNo string
 	ExpireAt  pgtype.Date
 	Delta     int64
