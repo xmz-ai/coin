@@ -45,6 +45,16 @@ func main() {
 	if guardTTL <= 0 {
 		guardTTL = time.Duration(cfg.ProcessingKeyTTLSeconds) * time.Second
 	}
+	recoveryInterval := time.Duration(cfg.TxnRecoveryIntervalMS) * time.Millisecond
+	recoveryStale := time.Duration(cfg.TxnRecoveryStaleMS) * time.Millisecond
+	if recoveryInterval > 0 && recoveryStale > 0 && guardTTL > recoveryStale+recoveryInterval {
+		log.Printf(
+			"warn: txn processing guard ttl is longer than recovery window; crash recovery may be delayed: guard_ttl=%s recovery_stale=%s recovery_interval=%s",
+			guardTTL,
+			recoveryStale,
+			recoveryInterval,
+		)
+	}
 	processingGuard := service.NewRedisProcessingGuard(redisClient, guardTTL)
 	asyncProfileLogInterval := time.Duration(cfg.TxnAsyncProfileLogIntervalMS) * time.Millisecond
 	asyncTransferProcessor := service.NewTransferAsyncProcessorWithGuardAndOptions(repo, processingGuard, service.TransferAsyncProcessorOptions{
@@ -72,7 +82,7 @@ func main() {
 	queryService := service.NewTxnQueryService(repo)
 	businessHandler := api.NewBusinessHandler(transferService, repo, transferRoutingService, asyncTransferProcessor, accountResolver, repo, queryService, repo, nil)
 	// Fallback recovery worker; main path is in-process async Enqueue on API submit.
-	go transferWorker.Start(ctx, time.Duration(cfg.TxnRecoveryIntervalMS)*time.Millisecond)
+	go transferWorker.Start(ctx, recoveryInterval)
 	go webhookWorker.Start(ctx, time.Duration(cfg.WebhookWorkerIntervalMS)*time.Millisecond)
 
 	authMiddleware := api.NewAuthMiddleware(api.AuthMiddlewareConfig{
