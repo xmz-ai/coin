@@ -19,7 +19,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -36,7 +35,6 @@ const (
 	toBookTransferOutUser    = "u_perf_to_book"
 	toNonBookTransferOutUser = "u_perf_to_non_book"
 	progressBarWidth         = 24
-	progressTickInterval     = 500 * time.Millisecond
 )
 
 type perfConfig struct {
@@ -50,7 +48,7 @@ type perfConfig struct {
 	TxnAsyncOpts         service.TransferAsyncProcessorOptions
 	WebhookAsyncOpts     service.WebhookWorkerOptions
 
-	Duration            time.Duration
+	RequestCount        int
 	Concurrency         int
 	WarmupRequests      int
 	RequestTimeout      time.Duration
@@ -186,7 +184,7 @@ func main() {
 func loadPerfConfig() (perfConfig, error) {
 	base := config.Load()
 
-	durationSec := getenvInt("PERF_DURATION_SECONDS", 30)
+	requestCount := getenvInt("PERF_REQUESTS", 10000)
 	concurrency := getenvInt("PERF_CONCURRENCY", 50)
 	warmup := getenvInt("PERF_WARMUP", 200)
 	requestTimeoutMs := getenvInt("PERF_REQUEST_TIMEOUT_MS", 3000)
@@ -197,8 +195,8 @@ func loadPerfConfig() (perfConfig, error) {
 	txnRecoveryStaleMs := getenvInt("PERF_TXN_RECOVERY_STALE_MS", max(base.TxnRecoveryStaleMS, 1))
 	txnRecoveryBatch := getenvInt("PERF_TXN_RECOVERY_BATCH", max(base.TxnRecoveryBatchSize, 1))
 
-	if durationSec <= 0 {
-		return perfConfig{}, fmt.Errorf("PERF_DURATION_SECONDS must be > 0")
+	if requestCount <= 0 {
+		return perfConfig{}, fmt.Errorf("PERF_REQUESTS must be > 0")
 	}
 	if concurrency <= 0 {
 		return perfConfig{}, fmt.Errorf("PERF_CONCURRENCY must be > 0")
@@ -247,7 +245,7 @@ func loadPerfConfig() (perfConfig, error) {
 			ProfilingEnabled:     base.TxnAsyncProfileEnabled,
 			ProfilingLogInterval: time.Duration(base.TxnAsyncProfileLogIntervalMS) * time.Millisecond,
 		},
-		Duration:            time.Duration(durationSec) * time.Second,
+		RequestCount:        requestCount,
 		Concurrency:         concurrency,
 		WarmupRequests:      max(warmup, 0),
 		RequestTimeout:      time.Duration(requestTimeoutMs) * time.Millisecond,
@@ -318,8 +316,8 @@ func run(cfg perfConfig) error {
 
 	fmt.Printf("[perf] merchant_no=%s from_account_no=%s book_to_account_no=%s to_account_no=%s\n",
 		runtimeEnv.MerchantNo, runtimeEnv.TransferFromAccountNo, runtimeEnv.TransferBookToAccount, runtimeEnv.TransferToAccountNo)
-	fmt.Printf("[perf] duration=%s concurrency=%d warmup=%d timeout=%s\n",
-		cfg.Duration, cfg.Concurrency, cfg.WarmupRequests, cfg.RequestTimeout)
+	fmt.Printf("[perf] requests=%d concurrency=%d warmup=%d timeout=%s\n",
+		cfg.RequestCount, cfg.Concurrency, cfg.WarmupRequests, cfg.RequestTimeout)
 	fmt.Printf("[perf] mode=webhook-e2e webhook_poll=%s webhook_wait_timeout=%s\n", cfg.WebhookPollInterval, cfg.WebhookWaitTimeout)
 	fmt.Printf("[perf] txn_async init_workers=%d pay_success_workers=%d init_queue=%d pay_success_queue=%d\n",
 		cfg.TxnAsyncOpts.InitWorkers, cfg.TxnAsyncOpts.PaySuccessWorkers, cfg.TxnAsyncOpts.InitQueueSize, cfg.TxnAsyncOpts.PaySuccessQueue)
@@ -422,8 +420,8 @@ func run(cfg perfConfig) error {
 	}
 
 	fmt.Printf("[perf] scenario=book_transfer start\n")
-	bookTransferRows, bookTransferMetrics := runLoadDuration(
-		cfg.Duration,
+	bookTransferRows, bookTransferMetrics := runLoadByRequestCount(
+		cfg.RequestCount,
 		cfg.Concurrency,
 		cfg.WebhookWaitTimeout,
 		"book_transfer",
@@ -503,8 +501,8 @@ func run(cfg perfConfig) error {
 	fmt.Printf("[perf] scenario=book_refund done\n")
 
 	fmt.Printf("[perf] scenario=transfer start\n")
-	transferRows, transferMetrics := runLoadDuration(
-		cfg.Duration,
+	transferRows, transferMetrics := runLoadByRequestCount(
+		cfg.RequestCount,
 		cfg.Concurrency,
 		cfg.WebhookWaitTimeout,
 		"transfer",
@@ -598,9 +596,9 @@ func run(cfg perfConfig) error {
 	}
 
 	reports := []string{
-		fmt.Sprintf("# Core Txn Perf Report\n\n- generated_at_utc: %s\n- duration_per_transfer_scenario: %s\n- concurrency: %d\n- warmup_pair_count_per_mode: %d\n- transfer_origins_for_refund: %d\n- book_transfer_origins_for_refund: %d\n- final_balance_check: PASS (from=%d, to=%d, book=%d)",
+		fmt.Sprintf("# Core Txn Perf Report\n\n- generated_at_utc: %s\n- requests_per_transfer_scenario: %d\n- concurrency: %d\n- warmup_pair_count_per_mode: %d\n- transfer_origins_for_refund: %d\n- book_transfer_origins_for_refund: %d\n- final_balance_check: PASS (from=%d, to=%d, book=%d)",
 			time.Now().UTC().Format(time.RFC3339),
-			cfg.Duration,
+			cfg.RequestCount,
 			cfg.Concurrency,
 			cfg.WarmupRequests,
 			len(originTxnNos),
@@ -988,48 +986,43 @@ func setupPerfServer(
 	}, nil
 }
 
-func runLoadDuration(
-	duration time.Duration,
+func runLoadByRequestCount(
+	requestCount int,
 	concurrency int,
 	webhookWaitTimeout time.Duration,
 	mode string,
 	requireWebhook bool,
 	fire scenarioFireFn,
 ) ([]resultRow, metrics) {
-	var idCounter uint64
-	start := time.Now()
-	deadline := start.Add(duration)
-	progressDone := make(chan struct{})
-	progressExited := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(progressTickInterval)
-		defer ticker.Stop()
-		defer close(progressExited)
-		for {
-			select {
-			case <-ticker.C:
-				renderDurationProgress(mode+" submit", time.Since(start), duration, int64(atomic.LoadUint64(&idCounter)))
-			case <-progressDone:
-				renderDurationProgress(mode+" submit", duration, duration, int64(atomic.LoadUint64(&idCounter)))
-				fmt.Print("\n")
-				return
-			}
-		}
-	}()
+	if requestCount <= 0 {
+		return nil, aggregate(nil, 0, 0, mode)
+	}
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	if concurrency > requestCount {
+		concurrency = requestCount
+	}
 
-	results := make(chan resultRow, concurrency*8)
+	type requestJob struct {
+		Idx int
+	}
+	jobs := make(chan requestJob, requestCount)
+	for i := 1; i <= requestCount; i++ {
+		jobs <- requestJob{Idx: i}
+	}
+	close(jobs)
+
+	start := time.Now()
+	results := make(chan resultRow, max(concurrency*8, 1))
 	var wg sync.WaitGroup
 
 	for w := 0; w < concurrency; w++ {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			for {
-				if time.Now().After(deadline) {
-					return
-				}
-				id := atomic.AddUint64(&idCounter, 1)
-				nonce := mode + "-" + strconv.Itoa(workerID) + "-" + strconv.FormatUint(id, 10)
+			for job := range jobs {
+				nonce := mode + "-" + strconv.Itoa(workerID) + "-" + strconv.Itoa(job.Idx)
 				results <- fire(nonce)
 			}
 		}(w)
@@ -1042,19 +1035,24 @@ func runLoadDuration(
 
 	rows := make([]resultRow, 0, 1024)
 	pending := make([]int, 0, 1024)
+	step := progressUpdateStep(requestCount)
 	for r := range results {
 		idx := len(rows)
 		rows = append(rows, r)
 		if requireWebhook && r.SubmitOK && r.WebhookDone != nil {
 			pending = append(pending, idx)
 		}
+		done := len(rows)
+		if done%step == 0 || done == requestCount {
+			renderCountProgress(mode+" submit", done, requestCount)
+		}
 	}
-	close(progressDone)
-	<-progressExited
+	renderCountProgress(mode+" submit", requestCount, requestCount)
+	fmt.Print("\n")
 
 	submitElapsed := time.Since(start)
 	if requireWebhook {
-		step := progressUpdateStep(len(pending))
+		step = progressUpdateStep(len(pending))
 		for i, idx := range pending {
 			awaitWebhookResult(&rows[idx], webhookWaitTimeout)
 			done := i + 1
@@ -1401,22 +1399,6 @@ func renderCountProgress(label string, done, total int) {
 	bar := buildProgressBar(ratio, progressBarWidth)
 	percent := int(ratio*100 + 0.5)
 	fmt.Printf("\r[perf] progress=%s %s %3d%% (%d/%d)", label, bar, percent, done, total)
-}
-
-func renderDurationProgress(label string, elapsed, total time.Duration, processed int64) {
-	if total <= 0 {
-		return
-	}
-	if elapsed < 0 {
-		elapsed = 0
-	}
-	if elapsed > total {
-		elapsed = total
-	}
-	ratio := float64(elapsed) / float64(total)
-	bar := buildProgressBar(ratio, progressBarWidth)
-	percent := int(ratio*100 + 0.5)
-	fmt.Printf("\r[perf] progress=%s %s %3d%% elapsed=%s/%s processed=%d", label, bar, percent, elapsed.Round(time.Second), total.Round(time.Second), processed)
 }
 
 func buildProgressBar(ratio float64, width int) string {
