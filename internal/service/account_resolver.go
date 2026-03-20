@@ -36,12 +36,9 @@ func (r *AccountResolver) ResolveCustomerAccount(merchantNo, accountNo, outUserI
 
 	var fromOutUser string
 	if outUserID != "" {
-		c, ok := r.repo.GetCustomerByOutUserID(merchantNo, outUserID)
+		a, ok := r.repo.GetAccountByOutUserID(merchantNo, outUserID)
 		if ok {
-			a, ok := r.repo.GetAccountByCustomerNo(merchantNo, c.CustomerNo)
-			if ok {
-				fromOutUser = a.AccountNo
-			}
+			fromOutUser = a.AccountNo
 		}
 	}
 

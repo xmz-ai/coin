@@ -334,6 +334,35 @@ func (r *Repository) GetAccountByCustomerNo(merchantNo, customerNo string) (serv
 	return accountFromGetAccountRow(row), true
 }
 
+func (r *Repository) GetAccountByOutUserID(merchantNo, outUserID string) (service.Account, bool) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	row, err := r.queries.GetAccountByMerchantOutUserID(ctx, dbsqlc.GetAccountByMerchantOutUserIDParams{
+		MerchantNo: merchantNo,
+		OutUserID:  outUserID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return service.Account{}, false
+	}
+	if err != nil {
+		return service.Account{}, false
+	}
+	return service.Account{
+		AccountNo:         row.AccountNo,
+		MerchantNo:        row.MerchantNo,
+		CustomerNo:        row.CustomerNo,
+		AccountType:       row.AccountType,
+		AllowOverdraft:    row.AllowOverdraft,
+		MaxOverdraftLimit: row.MaxOverdraftLimit,
+		AllowDebitOut:     row.AllowDebitOut,
+		AllowCreditIn:     row.AllowCreditIn,
+		AllowTransfer:     row.AllowTransfer,
+		BookEnabled:       row.BookEnabled,
+		Balance:           row.Balance,
+	}, true
+}
+
 func (r *Repository) CreateTransferTxn(txn service.TransferTxn) error {
 	ctx, cancel := r.withTimeout()
 	defer cancel()

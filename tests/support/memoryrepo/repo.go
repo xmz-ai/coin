@@ -197,6 +197,26 @@ func (r *Repo) GetAccountByCustomerNo(merchantNo, customerNo string) (service.Ac
 	return account, true
 }
 
+func (r *Repo) GetAccountByOutUserID(merchantNo, outUserID string) (service.Account, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	customer, ok := r.customersByK[merchantNo+":"+outUserID]
+	if !ok {
+		return service.Account{}, false
+	}
+	if customer.MerchantNo != merchantNo || customer.DefaultAccountNo == "" {
+		return service.Account{}, false
+	}
+	account, ok := r.accountsByNo[customer.DefaultAccountNo]
+	if !ok {
+		return service.Account{}, false
+	}
+	if account.MerchantNo != merchantNo || account.CustomerNo != customer.CustomerNo {
+		return service.Account{}, false
+	}
+	return account, true
+}
+
 func (r *Repo) CreateTransferTxn(txn service.TransferTxn) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

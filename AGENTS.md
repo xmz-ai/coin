@@ -28,6 +28,7 @@
 
 ## Testing Guidelines
 - Framework: Go `testing` package; tests are organized by scenario.
+- For every code change, run full regression tests with `make test` before submitting or committing.
 - Naming pattern: `TestTC<case_id><Behavior>` (for example, `TestTC9017...`).
 - Place tests by scope:
   - `tests/unit`: pure logic
