@@ -11,6 +11,7 @@ sql:
       - "migrations/000007_account_book_available_index.up.sql"
       - "migrations/000008_drop_notify_log.up.sql"
       - "migrations/000009_outbox_event_autoinc_pk.up.sql"
+      - "migrations/000010_change_log_balance_before.up.sql"
     queries:
       - "internal/db/sql"
     gen:

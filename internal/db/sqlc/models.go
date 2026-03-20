@@ -33,23 +33,25 @@ type AccountBook struct {
 }
 
 type AccountBookChangeLog struct {
-	ChangeID     int64
-	TxnNo        pgtype.UUID
-	AccountNo    string
-	BookNo       pgtype.UUID
-	Delta        int64
-	BalanceAfter int64
-	ExpireAt     pgtype.Date
-	CreatedAt    pgtype.Timestamptz
+	ChangeID      int64
+	TxnNo         pgtype.UUID
+	AccountNo     string
+	BookNo        pgtype.UUID
+	Delta         int64
+	BalanceAfter  int64
+	ExpireAt      pgtype.Date
+	CreatedAt     pgtype.Timestamptz
+	BalanceBefore int64
 }
 
 type AccountChangeLog struct {
-	ChangeID     int64
-	TxnNo        pgtype.UUID
-	AccountNo    string
-	Delta        int64
-	BalanceAfter int64
-	CreatedAt    pgtype.Timestamptz
+	ChangeID      int64
+	TxnNo         pgtype.UUID
+	AccountNo     string
+	Delta         int64
+	BalanceAfter  int64
+	CreatedAt     pgtype.Timestamptz
+	BalanceBefore int64
 }
 
 type CodeSequence struct {
