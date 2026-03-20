@@ -438,6 +438,67 @@ func (q *Queries) DecreaseOriginTxnRefundableIfValid(ctx context.Context, arg De
 	return i, err
 }
 
+const getAccountByMerchantOutUserID = `-- name: GetAccountByMerchantOutUserID :one
+SELECT
+  a.account_no,
+  a.merchant_no,
+  COALESCE(a.customer_no, '') AS customer_no,
+  a.account_type,
+  a.allow_overdraft,
+  a.max_overdraft_limit,
+  a.allow_debit_out,
+  a.allow_credit_in,
+  a.allow_transfer,
+  a.book_enabled,
+  a.balance
+FROM account a
+JOIN customer c
+  ON c.customer_no = a.customer_no
+ AND c.merchant_no = a.merchant_no
+WHERE c.merchant_no = $1
+  AND c.out_user_id = $2
+  AND c.default_account_no = a.account_no
+LIMIT 1
+`
+
+type GetAccountByMerchantOutUserIDParams struct {
+	MerchantNo string
+	OutUserID  string
+}
+
+type GetAccountByMerchantOutUserIDRow struct {
+	AccountNo         string
+	MerchantNo        string
+	CustomerNo        string
+	AccountType       string
+	AllowOverdraft    bool
+	MaxOverdraftLimit int64
+	AllowDebitOut     bool
+	AllowCreditIn     bool
+	AllowTransfer     bool
+	BookEnabled       bool
+	Balance           int64
+}
+
+func (q *Queries) GetAccountByMerchantOutUserID(ctx context.Context, arg GetAccountByMerchantOutUserIDParams) (GetAccountByMerchantOutUserIDRow, error) {
+	row := q.db.QueryRow(ctx, getAccountByMerchantOutUserID, arg.MerchantNo, arg.OutUserID)
+	var i GetAccountByMerchantOutUserIDRow
+	err := row.Scan(
+		&i.AccountNo,
+		&i.MerchantNo,
+		&i.CustomerNo,
+		&i.AccountType,
+		&i.AllowOverdraft,
+		&i.MaxOverdraftLimit,
+		&i.AllowDebitOut,
+		&i.AllowCreditIn,
+		&i.AllowTransfer,
+		&i.BookEnabled,
+		&i.Balance,
+	)
+	return i, err
+}
+
 const getAccountByNo = `-- name: GetAccountByNo :one
 SELECT
   a.account_no,

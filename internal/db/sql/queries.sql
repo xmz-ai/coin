@@ -116,6 +116,28 @@ WHERE c.merchant_no = sqlc.arg(merchant_no)
   AND c.out_user_id = sqlc.arg(out_user_id)
 LIMIT 1;
 
+-- name: GetAccountByMerchantOutUserID :one
+SELECT
+  a.account_no,
+  a.merchant_no,
+  COALESCE(a.customer_no, '') AS customer_no,
+  a.account_type,
+  a.allow_overdraft,
+  a.max_overdraft_limit,
+  a.allow_debit_out,
+  a.allow_credit_in,
+  a.allow_transfer,
+  a.book_enabled,
+  a.balance
+FROM account a
+JOIN customer c
+  ON c.customer_no = a.customer_no
+ AND c.merchant_no = a.merchant_no
+WHERE c.merchant_no = sqlc.arg(merchant_no)
+  AND c.out_user_id = sqlc.arg(out_user_id)
+  AND c.default_account_no = a.account_no
+LIMIT 1;
+
 -- name: SetCustomerDefaultAccountIfEmpty :execrows
 UPDATE customer c
 SET default_account_no = sqlc.arg(default_account_no),

@@ -52,6 +52,7 @@ type Repository interface {
 	GetCustomerByOutUserID(merchantNo, outUserID string) (domain.Customer, bool)
 
 	GetAccountByCustomerNo(merchantNo, customerNo string) (domain.Account, bool)
+	GetAccountByOutUserID(merchantNo, outUserID string) (domain.Account, bool)
 
 	CreateTransferTxn(txn domain.TransferTxn) error
 	GetTransferTxn(txnNo string) (domain.TransferTxn, bool)
