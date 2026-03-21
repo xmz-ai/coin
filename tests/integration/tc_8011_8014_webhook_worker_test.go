@@ -361,14 +361,14 @@ func setupWebhookWorkerFixture(t *testing.T) (*db.Repository, *pgxpool.Pool, *db
 	debitAccountNo := "6217701201801101001"
 	creditAccountNo := "6217701201801101002"
 	if err := repo.CreateAccount(service.Account{
-		AccountNo:     debitAccountNo,
-		MerchantNo:    merchant.MerchantNo,
-		CustomerNo:    debitCustomer.CustomerNo,
-		AccountType:   "CUSTOMER",
-		AllowDebitOut: true,
-		AllowCreditIn: true,
-		AllowTransfer: true,
-		Balance:       1000,
+		AccountNo:      debitAccountNo,
+		MerchantNo:     merchant.MerchantNo,
+		CustomerNo:     debitCustomer.CustomerNo,
+		AccountType:    "CUSTOMER",
+		AllowOverdraft: true,
+		AllowDebitOut:  true,
+		AllowCreditIn:  true,
+		AllowTransfer:  true,
 	}); err != nil {
 		t.Fatalf("create debit account failed: %v", err)
 	}

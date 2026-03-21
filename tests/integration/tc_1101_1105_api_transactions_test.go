@@ -1501,14 +1501,14 @@ func newTxnAPITestServer(t *testing.T) (*gin.Engine, *db.Repository, *pgxpool.Po
 		t.Fatalf("create customer failed: %v", err)
 	}
 	if err := repo.CreateAccount(service.Account{
-		AccountNo:     testDebitAccountNo,
-		MerchantNo:    merchant.MerchantNo,
-		CustomerNo:    debitCustomer.CustomerNo,
-		AccountType:   "CUSTOMER",
-		AllowDebitOut: true,
-		AllowCreditIn: true,
-		AllowTransfer: true,
-		Balance:       1_000_000,
+		AccountNo:      testDebitAccountNo,
+		MerchantNo:     merchant.MerchantNo,
+		CustomerNo:     debitCustomer.CustomerNo,
+		AccountType:    "CUSTOMER",
+		AllowOverdraft: true,
+		AllowDebitOut:  true,
+		AllowCreditIn:  true,
+		AllowTransfer:  true,
 	}); err != nil {
 		t.Fatalf("create debit account failed: %v", err)
 	}

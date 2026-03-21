@@ -448,7 +448,6 @@ func TestTC6009RefundCreditDoesNotCheckAllowCreditIn(t *testing.T) {
 		AllowDebitOut: true,
 		AllowCreditIn: false,
 		AllowTransfer: true,
-		Balance:       1000,
 	}); err != nil {
 		t.Fatalf("create debit account failed: %v", err)
 	}
@@ -459,10 +458,11 @@ func TestTC6009RefundCreditDoesNotCheckAllowCreditIn(t *testing.T) {
 		AllowDebitOut: true,
 		AllowCreditIn: true,
 		AllowTransfer: true,
-		Balance:       200,
 	}); err != nil {
 		t.Fatalf("create credit account failed: %v", err)
 	}
+	seedAccountBalanceByCredit(t, repo, merchantNo, debitAccountNo, 1000, nil)
+	seedAccountBalanceByCredit(t, repo, merchantNo, creditAccountNo, 200, nil)
 
 	originTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a6009"
 	if err := repo.CreateTransferTxn(service.TransferTxn{
@@ -593,7 +593,6 @@ func setupRefundAsyncFixture(t *testing.T) (*db.Repository, *pgxpool.Pool, *serv
 		AllowDebitOut: true,
 		AllowCreditIn: true,
 		AllowTransfer: true,
-		Balance:       1000,
 	}); err != nil {
 		t.Fatalf("create debit account failed: %v", err)
 	}
@@ -604,10 +603,11 @@ func setupRefundAsyncFixture(t *testing.T) (*db.Repository, *pgxpool.Pool, *serv
 		AllowDebitOut: true,
 		AllowCreditIn: true,
 		AllowTransfer: true,
-		Balance:       200,
 	}); err != nil {
 		t.Fatalf("create credit account failed: %v", err)
 	}
+	seedAccountBalanceByCredit(t, repo, merchantNo, debitAccountNo, 1000, nil)
+	seedAccountBalanceByCredit(t, repo, merchantNo, creditAccountNo, 200, nil)
 
 	originTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a6000"
 	if err := repo.CreateTransferTxn(service.TransferTxn{

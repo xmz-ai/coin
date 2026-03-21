@@ -131,7 +131,6 @@ func TestTC9005PostgresAccountNoConflictDoesNotOverwrite(t *testing.T) {
 		AllowCreditIn:  true,
 		AllowTransfer:  true,
 		BookEnabled:    false,
-		Balance:        100,
 		AllowOverdraft: false,
 	})
 	if err != nil {
@@ -146,7 +145,6 @@ func TestTC9005PostgresAccountNoConflictDoesNotOverwrite(t *testing.T) {
 		AllowCreditIn:     false,
 		AllowTransfer:     false,
 		BookEnabled:       true,
-		Balance:           999,
 		AllowOverdraft:    true,
 		MaxOverdraftLimit: 777,
 	})
@@ -158,8 +156,8 @@ func TestTC9005PostgresAccountNoConflictDoesNotOverwrite(t *testing.T) {
 	if !ok {
 		t.Fatalf("stored account not found after conflict")
 	}
-	if stored.Balance != 100 {
-		t.Fatalf("account overwritten: expected balance=100 got=%d", stored.Balance)
+	if stored.Balance != 0 {
+		t.Fatalf("account overwritten: expected balance=0 got=%d", stored.Balance)
 	}
 	if !stored.AllowDebitOut || !stored.AllowCreditIn || !stored.AllowTransfer {
 		t.Fatalf("account capability overwritten: %+v", stored)
@@ -171,4 +169,3 @@ func TestTC9005PostgresAccountNoConflictDoesNotOverwrite(t *testing.T) {
 		t.Fatalf("account allow_overdraft overwritten: %+v", stored)
 	}
 }
-
