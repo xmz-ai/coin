@@ -17,7 +17,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	dbsqlc "github.com/xmz-ai/coin/internal/db/sqlc"
-	"github.com/xmz-ai/coin/internal/domain"
 	idpkg "github.com/xmz-ai/coin/internal/platform/id"
 	"github.com/xmz-ai/coin/internal/service"
 )
@@ -705,28 +704,15 @@ func (r *Repository) ApplyTxnStage(txnNo, expectedStatus string) (service.TxnSta
 			if !stage.RefundOfTxnNo.Valid {
 				return result, service.ErrTxnStatusInvalid
 			}
-
-			creditRow, err := qtx.GetAccountForUpdateByNo(ctx, result.CreditAccountNo)
-			if errors.Is(err, pgx.ErrNoRows) {
-				return result, service.ErrAccountResolveFailed
-			}
-			if err != nil {
-				return result, err
-			}
-			creditAccount := accountFromGetAccountForUpdateRow(creditRow)
-			if !creditAccount.AllowCreditIn {
-				return result, service.ErrAccountForbidCredit
-			}
-
-			if creditAccount.BookEnabled {
-				parts, err := buildRefundBookCreditParts(ctx, qtx, txnUUID, stage.RefundOfTxnNo, stage.MerchantNo, stage.Amount)
-				if err != nil {
-					return result, err
-				}
-				if err := applyBookCreditPartsTx(ctx, qtx, txnUUID, creditAccount, stage.Amount, parts); err != nil {
-					return result, err
-				}
-			} else if err := applyAccountCreditTx(ctx, qtx, txnUUID, result.CreditAccountNo, stage.Amount, nil); err != nil {
+			if err := applyRefundCreditTx(
+				ctx,
+				qtx,
+				txnUUID,
+				result.CreditAccountNo,
+				stage.Amount,
+				stage.RefundOfTxnNo,
+				stage.MerchantNo,
+			); err != nil {
 				return result, err
 			}
 		default:
@@ -975,27 +961,15 @@ func (r *Repository) ApplyRefundCreditStage(refundTxnNo, creditAccountNo string,
 		return false, service.ErrAccountResolveFailed
 	}
 
-	creditRow, err := qtx.GetAccountForUpdateByNo(ctx, stageCreditAccountNo)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, service.ErrAccountResolveFailed
-	}
-	if err != nil {
-		return false, err
-	}
-	creditAccount := accountFromGetAccountForUpdateRow(creditRow)
-	if !creditAccount.AllowCreditIn {
-		return false, service.ErrAccountForbidCredit
-	}
-
-	if creditAccount.BookEnabled {
-		parts, err := buildRefundBookCreditParts(ctx, qtx, refundTxnUUID, refund.RefundOfTxnNo, refund.MerchantNo, amount)
-		if err != nil {
-			return false, err
-		}
-		if err := applyBookCreditPartsTx(ctx, qtx, refundTxnUUID, creditAccount, amount, parts); err != nil {
-			return false, err
-		}
-	} else if err := applyAccountCreditTx(ctx, qtx, refundTxnUUID, stageCreditAccountNo, amount, nil); err != nil {
+	if err := applyRefundCreditTx(
+		ctx,
+		qtx,
+		refundTxnUUID,
+		stageCreditAccountNo,
+		amount,
+		refund.RefundOfTxnNo,
+		refund.MerchantNo,
+	); err != nil {
 		return false, err
 	}
 	if err := qtx.UpdateTransferTxnStatus(ctx, dbsqlc.UpdateTransferTxnStatusParams{
@@ -1422,6 +1396,25 @@ func minInt64(a, b int64) int64 {
 	return b
 }
 
+func validateDebitBalanceOnly(a service.Account, amount int64) error {
+	if amount <= 0 {
+		return service.ErrInsufficientBalance
+	}
+	if !a.AllowOverdraft {
+		if a.Balance < amount {
+			return service.ErrInsufficientBalance
+		}
+		return nil
+	}
+	if a.MaxOverdraftLimit == 0 {
+		return nil
+	}
+	if a.Balance+a.MaxOverdraftLimit < amount {
+		return service.ErrInsufficientBalance
+	}
+	return nil
+}
+
 func applyAccountTransferTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype.UUID, debitAccountNo, creditAccountNo string, amount int64) error {
 	if debitAccountNo == "" || creditAccountNo == "" || amount <= 0 {
 		return service.ErrAccountResolveFailed
@@ -1449,11 +1442,8 @@ func applyAccountTransferTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgty
 		debit := accountFromListAccountsForUpdateByNosRow(debitRow)
 		credit := accountFromListAccountsForUpdateByNosRow(creditRow)
 		if !debit.BookEnabled && !credit.BookEnabled {
-			if err := domain.Account(debit).CanDebit(amount); err != nil {
+			if err := validateDebitBalanceOnly(debit, amount); err != nil {
 				return err
-			}
-			if !credit.AllowCreditIn {
-				return service.ErrAccountForbidCredit
 			}
 
 			debitBefore := debit.Balance
@@ -1513,9 +1503,6 @@ func applyAccountDebitTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype.
 	}
 
 	debit := accountFromGetAccountForUpdateRow(debitRow)
-	if !debit.AllowDebitOut {
-		return service.ErrAccountForbidDebit
-	}
 
 	if debit.BookEnabled {
 		books, err := q.ListAvailableAccountBooksForUpdate(ctx, dbsqlc.ListAvailableAccountBooksForUpdateParams{
@@ -1624,7 +1611,7 @@ func applyAccountDebitTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype.
 		return nil
 	}
 
-	if err := domain.Account(debit).CanDebit(amount); err != nil {
+	if err := validateDebitBalanceOnly(debit, amount); err != nil {
 		return err
 	}
 
@@ -1662,9 +1649,6 @@ func applyAccountCreditTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype
 	}
 
 	credit := accountFromGetAccountForUpdateRow(creditRow)
-	if !credit.AllowCreditIn {
-		return service.ErrAccountForbidCredit
-	}
 
 	if credit.BookEnabled {
 		if creditExpireAt == nil || creditExpireAt.IsZero() {
@@ -1756,6 +1740,83 @@ func applyAccountCreditTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype
 		Balance:   creditAfter,
 		AccountNo: credit.AccountNo,
 	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func applyRefundCreditTx(
+	ctx context.Context,
+	q *dbsqlc.Queries,
+	txnUUID pgtype.UUID,
+	creditAccountNo string,
+	amount int64,
+	originTxnUUID pgtype.UUID,
+	merchantNo string,
+) error {
+	if strings.TrimSpace(creditAccountNo) == "" || amount <= 0 {
+		return service.ErrAccountResolveFailed
+	}
+	if !originTxnUUID.Valid {
+		return service.ErrTxnStatusInvalid
+	}
+
+	creditRes, err := q.TryCreditAccountBalanceNonBookRefund(ctx, dbsqlc.TryCreditAccountBalanceNonBookRefundParams{
+		AccountNo: creditAccountNo,
+		Amount:    amount,
+	})
+	if err == nil {
+		creditAfter := creditRes.Balance
+		creditBefore := creditAfter - amount
+		if err := q.InsertAccountChange(ctx, dbsqlc.InsertAccountChangeParams{
+			TxnNo:         txnUUID,
+			AccountNo:     creditAccountNo,
+			Delta:         amount,
+			BalanceBefore: creditBefore,
+			BalanceAfter:  creditAfter,
+		}); err != nil {
+			return err
+		}
+		return nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+
+	creditRow, err := q.GetAccountForUpdateByNo(ctx, creditAccountNo)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return service.ErrAccountResolveFailed
+	}
+	if err != nil {
+		return err
+	}
+	creditAccount := accountFromGetAccountForUpdateRow(creditRow)
+	if !creditAccount.BookEnabled {
+		creditBefore := creditAccount.Balance
+		creditAfter := creditBefore + amount
+		if err := q.InsertAccountChange(ctx, dbsqlc.InsertAccountChangeParams{
+			TxnNo:         txnUUID,
+			AccountNo:     creditAccount.AccountNo,
+			Delta:         amount,
+			BalanceBefore: creditBefore,
+			BalanceAfter:  creditAfter,
+		}); err != nil {
+			return err
+		}
+		if err := q.UpdateAccountBalance(ctx, dbsqlc.UpdateAccountBalanceParams{
+			Balance:   creditAfter,
+			AccountNo: creditAccount.AccountNo,
+		}); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	parts, err := buildRefundBookCreditParts(ctx, q, txnUUID, originTxnUUID, merchantNo, amount)
+	if err != nil {
+		return err
+	}
+	if err := applyBookCreditPartsTx(ctx, q, txnUUID, creditAccount, amount, parts); err != nil {
 		return err
 	}
 	return nil

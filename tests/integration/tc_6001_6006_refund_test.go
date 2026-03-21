@@ -1,12 +1,14 @@
 package integration
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/xmz-ai/coin/internal/db"
+	idpkg "github.com/xmz-ai/coin/internal/platform/id"
 	"github.com/xmz-ai/coin/internal/service"
 )
 
@@ -428,6 +430,150 @@ func TestTC6006RefundReverseAccounting(t *testing.T) {
 	}
 	if deltas[creditAccountNo] != -30 || deltas[debitAccountNo] != 30 {
 		t.Fatalf("unexpected refund deltas: %+v", deltas)
+	}
+}
+
+func TestTC6009RefundCreditDoesNotCheckAllowCreditIn(t *testing.T) {
+	pool := setupPostgresPool(t)
+	repo := db.NewRepository(pool)
+	processor := service.NewTransferAsyncProcessor(repo)
+
+	merchantNo := "1000000000006009"
+	debitAccountNo := "6217701201600000901"
+	creditAccountNo := "6217701201600000902"
+	if err := repo.CreateAccount(service.Account{
+		AccountNo:     debitAccountNo,
+		MerchantNo:    merchantNo,
+		AccountType:   "CUSTOMER",
+		AllowDebitOut: true,
+		AllowCreditIn: false,
+		AllowTransfer: true,
+		Balance:       1000,
+	}); err != nil {
+		t.Fatalf("create debit account failed: %v", err)
+	}
+	if err := repo.CreateAccount(service.Account{
+		AccountNo:     creditAccountNo,
+		MerchantNo:    merchantNo,
+		AccountType:   "CUSTOMER",
+		AllowDebitOut: true,
+		AllowCreditIn: true,
+		AllowTransfer: true,
+		Balance:       200,
+	}); err != nil {
+		t.Fatalf("create credit account failed: %v", err)
+	}
+
+	originTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a6009"
+	if err := repo.CreateTransferTxn(service.TransferTxn{
+		TxnNo:            originTxnNo,
+		MerchantNo:       merchantNo,
+		OutTradeNo:       "ord_6009_origin",
+		BizType:          service.BizTypeTransfer,
+		TransferScene:    service.SceneP2P,
+		DebitAccountNo:   debitAccountNo,
+		CreditAccountNo:  creditAccountNo,
+		Amount:           100,
+		RefundableAmount: 100,
+		Status:           service.TxnStatusRecvSuccess,
+	}); err != nil {
+		t.Fatalf("create origin txn failed: %v", err)
+	}
+
+	refundTxnNo := "01956f4e-9d22-73bc-8e11-3f5e9c7a6010"
+	if err := repo.CreateTransferTxn(service.TransferTxn{
+		TxnNo:           refundTxnNo,
+		MerchantNo:      merchantNo,
+		OutTradeNo:      "ord_6009_refund",
+		BizType:         service.BizTypeRefund,
+		DebitAccountNo:  creditAccountNo,
+		CreditAccountNo: debitAccountNo,
+		RefundOfTxnNo:   originTxnNo,
+		Amount:          30,
+		Status:          service.TxnStatusInit,
+	}); err != nil {
+		t.Fatalf("create refund txn failed: %v", err)
+	}
+
+	processor.Enqueue(refundTxnNo)
+	waitTxnStatusRepo(t, repo, refundTxnNo, service.TxnStatusRecvSuccess, 2*time.Second)
+
+	debit, ok := repo.GetAccount(debitAccountNo)
+	if !ok {
+		t.Fatalf("debit account not found")
+	}
+	credit, ok := repo.GetAccount(creditAccountNo)
+	if !ok {
+		t.Fatalf("credit account not found")
+	}
+	if debit.Balance != 1030 {
+		t.Fatalf("expected debit balance 1030, got %d", debit.Balance)
+	}
+	if credit.Balance != 170 {
+		t.Fatalf("expected credit balance 170, got %d", credit.Balance)
+	}
+
+	origin, ok := repo.GetTransferTxn(originTxnNo)
+	if !ok {
+		t.Fatalf("origin txn not found")
+	}
+	if origin.RefundableAmount != 70 {
+		t.Fatalf("expected origin refundable_amount=70, got %d", origin.RefundableAmount)
+	}
+}
+
+func TestTC6010RefundSubmitChecksDebitCapability(t *testing.T) {
+	repo, _, _, merchantNo, originTxnNo, _, originCreditAccountNo := setupRefundAsyncFixture(t)
+	repo.UpdateAccountCapabilities(originCreditAccountNo, false, true, true)
+
+	transferSvc := service.NewTransferService(repo, idpkg.NewFixedUUIDProvider([]string{
+		"01956f4e-9d22-73bc-8e11-3f5e9c7a6011",
+	}))
+	_, err := transferSvc.Submit(service.TransferRequest{
+		MerchantNo:    merchantNo,
+		OutTradeNo:    "ord_6010_refund_submit",
+		BizType:       service.BizTypeRefund,
+		RefundOfTxnNo: originTxnNo,
+		Amount:        20,
+		Status:        service.TxnStatusInit,
+	})
+	if !errors.Is(err, service.ErrAccountForbidDebit) {
+		t.Fatalf("expected ErrAccountForbidDebit, got %v", err)
+	}
+}
+
+func TestTC6011RefundAsyncIgnoresCapabilitiesAfterSubmit(t *testing.T) {
+	repo, _, processor, merchantNo, originTxnNo, originDebitAccountNo, originCreditAccountNo := setupRefundAsyncFixture(t)
+
+	transferSvc := service.NewTransferService(repo, idpkg.NewFixedUUIDProvider([]string{
+		"01956f4e-9d22-73bc-8e11-3f5e9c7a6012",
+	}))
+	txn, err := transferSvc.Submit(service.TransferRequest{
+		MerchantNo:    merchantNo,
+		OutTradeNo:    "ord_6011_refund_submit",
+		BizType:       service.BizTypeRefund,
+		RefundOfTxnNo: originTxnNo,
+		Amount:        30,
+		Status:        service.TxnStatusInit,
+	})
+	if err != nil {
+		t.Fatalf("submit refund failed: %v", err)
+	}
+
+	// Flip capabilities after submit; async stages should not re-check these flags.
+	repo.UpdateAccountCapabilities(originCreditAccountNo, false, false, false)
+	repo.UpdateAccountCapabilities(originDebitAccountNo, false, false, false)
+
+	processor.Enqueue(txn.TxnNo)
+	waitTxnStatusRepo(t, repo, txn.TxnNo, service.TxnStatusRecvSuccess, 2*time.Second)
+
+	debit, _ := repo.GetAccount(originDebitAccountNo)
+	credit, _ := repo.GetAccount(originCreditAccountNo)
+	if debit.Balance != 1030 {
+		t.Fatalf("expected debit balance 1030, got %d", debit.Balance)
+	}
+	if credit.Balance != 170 {
+		t.Fatalf("expected credit balance 170, got %d", credit.Balance)
 	}
 }
 

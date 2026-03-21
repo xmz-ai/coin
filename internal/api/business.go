@@ -634,6 +634,10 @@ func (h *BusinessHandler) handleRefund(c *gin.Context) {
 			writeError(c, http.StatusConflict, "REFUND_ORIGIN_INVALID", "origin txn invalid for refund")
 			return
 		}
+		if errors.Is(err, service.ErrAccountForbidDebit) || errors.Is(err, service.ErrAccountForbidCredit) || errors.Is(err, service.ErrAccountForbidTransfer) {
+			writeError(c, http.StatusConflict, "REFUND_ORIGIN_INVALID", "origin txn invalid for refund")
+			return
+		}
 		if errors.Is(err, service.ErrRefundAmountExceeded) {
 			writeError(c, http.StatusConflict, "REFUND_AMOUNT_EXCEEDED", "refund amount exceeded")
 			return
