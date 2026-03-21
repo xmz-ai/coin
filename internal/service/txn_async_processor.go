@@ -76,10 +76,6 @@ type stageQueue struct {
 	pending      map[string]struct{}
 }
 
-func newStageQueue(size int) *stageQueue {
-	return newStageQueueWithWorkers(1, size)
-}
-
 func newStageQueueWithWorkers(workerCount, size int) *stageQueue {
 	if workerCount <= 0 {
 		workerCount = 1

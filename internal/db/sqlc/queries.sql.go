@@ -435,23 +435,6 @@ func (q *Queries) DeactivateActiveMerchantSecrets(ctx context.Context, merchantN
 	return err
 }
 
-const decreaseOriginTxnRefundable = `-- name: DecreaseOriginTxnRefundable :exec
-UPDATE txn
-SET refundable_amount = refundable_amount - $1,
-    updated_at = NOW()
-WHERE txn_no = $2
-`
-
-type DecreaseOriginTxnRefundableParams struct {
-	Amount      int64
-	OriginTxnNo pgtype.UUID
-}
-
-func (q *Queries) DecreaseOriginTxnRefundable(ctx context.Context, arg DecreaseOriginTxnRefundableParams) error {
-	_, err := q.db.Exec(ctx, decreaseOriginTxnRefundable, arg.Amount, arg.OriginTxnNo)
-	return err
-}
-
 const decreaseOriginTxnRefundableIfValid = `-- name: DecreaseOriginTxnRefundableIfValid :one
 UPDATE txn
 SET refundable_amount = refundable_amount - $1,
@@ -832,43 +815,6 @@ func (q *Queries) GetMerchantByNo(ctx context.Context, merchantNo string) (GetMe
 	return i, err
 }
 
-const getOriginTxnForUpdate = `-- name: GetOriginTxnForUpdate :one
-SELECT
-  COALESCE(debit_account_no, '') AS debit_account_no,
-  COALESCE(credit_account_no, '') AS credit_account_no,
-  refundable_amount,
-  merchant_no,
-  COALESCE(biz_type, '') AS biz_type,
-  COALESCE(status, '') AS status
-FROM txn
-WHERE txn_no = $1
-FOR UPDATE
-LIMIT 1
-`
-
-type GetOriginTxnForUpdateRow struct {
-	DebitAccountNo   string
-	CreditAccountNo  string
-	RefundableAmount int64
-	MerchantNo       string
-	BizType          string
-	Status           string
-}
-
-func (q *Queries) GetOriginTxnForUpdate(ctx context.Context, originTxnNo pgtype.UUID) (GetOriginTxnForUpdateRow, error) {
-	row := q.db.QueryRow(ctx, getOriginTxnForUpdate, originTxnNo)
-	var i GetOriginTxnForUpdateRow
-	err := row.Scan(
-		&i.DebitAccountNo,
-		&i.CreditAccountNo,
-		&i.RefundableAmount,
-		&i.MerchantNo,
-		&i.BizType,
-		&i.Status,
-	)
-	return i, err
-}
-
 const getRefundDebitStatsByOrigin = `-- name: GetRefundDebitStatsByOrigin :one
 SELECT
   COALESCE(SUM(t.amount), 0)::bigint AS total_debited,
@@ -1198,52 +1144,6 @@ func (q *Queries) InsertAccountChange(ctx context.Context, arg InsertAccountChan
 	return err
 }
 
-const insertAccountChangePair = `-- name: InsertAccountChangePair :exec
-INSERT INTO account_change_log (txn_no, account_no, delta, balance_before, balance_after)
-VALUES
-  (
-    $1::uuid,
-    $2,
-    $3,
-    $4,
-    $5
-  ),
-  (
-    $1::uuid,
-    $6,
-    $7,
-    $8,
-    $9
-  )
-`
-
-type InsertAccountChangePairParams struct {
-	TxnNo               pgtype.UUID
-	DebitAccountNo      string
-	DebitDelta          int64
-	DebitBalanceBefore  int64
-	DebitBalanceAfter   int64
-	CreditAccountNo     string
-	CreditDelta         int64
-	CreditBalanceBefore int64
-	CreditBalanceAfter  int64
-}
-
-func (q *Queries) InsertAccountChangePair(ctx context.Context, arg InsertAccountChangePairParams) error {
-	_, err := q.db.Exec(ctx, insertAccountChangePair,
-		arg.TxnNo,
-		arg.DebitAccountNo,
-		arg.DebitDelta,
-		arg.DebitBalanceBefore,
-		arg.DebitBalanceAfter,
-		arg.CreditAccountNo,
-		arg.CreditDelta,
-		arg.CreditBalanceBefore,
-		arg.CreditBalanceAfter,
-	)
-	return err
-}
-
 const insertMerchantSecretCredential = `-- name: InsertMerchantSecretCredential :exec
 INSERT INTO merchant_api_credential (
   merchant_no, secret_ciphertext, secret_version, active, created_at, updated_at
@@ -1331,71 +1231,6 @@ func (q *Queries) LeaseCodeRange(ctx context.Context, arg LeaseCodeRangeParams) 
 	var i LeaseCodeRangeRow
 	err := row.Scan(&i.StartValue, &i.EndValue)
 	return i, err
-}
-
-const listAccountsForUpdateByNos = `-- name: ListAccountsForUpdateByNos :many
-SELECT
-  a.account_no,
-  a.merchant_no,
-  COALESCE(a.customer_no, '') AS customer_no,
-  a.account_type,
-  a.allow_overdraft,
-  a.max_overdraft_limit,
-  a.allow_debit_out,
-  a.allow_credit_in,
-  a.allow_transfer,
-  a.book_enabled,
-  a.balance
-FROM account a
-WHERE a.account_no = ANY($1::varchar[])
-ORDER BY a.account_no ASC
-FOR UPDATE OF a
-`
-
-type ListAccountsForUpdateByNosRow struct {
-	AccountNo         string
-	MerchantNo        string
-	CustomerNo        string
-	AccountType       string
-	AllowOverdraft    bool
-	MaxOverdraftLimit int64
-	AllowDebitOut     bool
-	AllowCreditIn     bool
-	AllowTransfer     bool
-	BookEnabled       bool
-	Balance           int64
-}
-
-func (q *Queries) ListAccountsForUpdateByNos(ctx context.Context, accountNos []string) ([]ListAccountsForUpdateByNosRow, error) {
-	rows, err := q.db.Query(ctx, listAccountsForUpdateByNos, accountNos)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListAccountsForUpdateByNosRow
-	for rows.Next() {
-		var i ListAccountsForUpdateByNosRow
-		if err := rows.Scan(
-			&i.AccountNo,
-			&i.MerchantNo,
-			&i.CustomerNo,
-			&i.AccountType,
-			&i.AllowOverdraft,
-			&i.MaxOverdraftLimit,
-			&i.AllowDebitOut,
-			&i.AllowCreditIn,
-			&i.AllowTransfer,
-			&i.BookEnabled,
-			&i.Balance,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const listAvailableAccountBooksForUpdate = `-- name: ListAvailableAccountBooksForUpdate :many
@@ -1793,35 +1628,6 @@ func (q *Queries) SetCustomerDefaultAccountIfEmpty(ctx context.Context, arg SetC
 	return result.RowsAffected(), nil
 }
 
-const tryCreditAccountBalanceNonBook = `-- name: TryCreditAccountBalanceNonBook :one
-UPDATE account a
-SET balance = a.balance + $1,
-    updated_at = NOW()
-WHERE a.account_no = $2
-  AND a.book_enabled = false
-  AND a.allow_credit_in = true
-RETURNING
-  a.account_no,
-  a.balance
-`
-
-type TryCreditAccountBalanceNonBookParams struct {
-	Amount    int64
-	AccountNo string
-}
-
-type TryCreditAccountBalanceNonBookRow struct {
-	AccountNo string
-	Balance   int64
-}
-
-func (q *Queries) TryCreditAccountBalanceNonBook(ctx context.Context, arg TryCreditAccountBalanceNonBookParams) (TryCreditAccountBalanceNonBookRow, error) {
-	row := q.db.QueryRow(ctx, tryCreditAccountBalanceNonBook, arg.Amount, arg.AccountNo)
-	var i TryCreditAccountBalanceNonBookRow
-	err := row.Scan(&i.AccountNo, &i.Balance)
-	return i, err
-}
-
 const tryCreditAccountBalanceNonBookRefund = `-- name: TryCreditAccountBalanceNonBookRefund :one
 UPDATE account a
 SET balance = a.balance + $1,
@@ -1846,40 +1652,6 @@ type TryCreditAccountBalanceNonBookRefundRow struct {
 func (q *Queries) TryCreditAccountBalanceNonBookRefund(ctx context.Context, arg TryCreditAccountBalanceNonBookRefundParams) (TryCreditAccountBalanceNonBookRefundRow, error) {
 	row := q.db.QueryRow(ctx, tryCreditAccountBalanceNonBookRefund, arg.Amount, arg.AccountNo)
 	var i TryCreditAccountBalanceNonBookRefundRow
-	err := row.Scan(&i.AccountNo, &i.Balance)
-	return i, err
-}
-
-const tryDebitAccountBalanceNonBook = `-- name: TryDebitAccountBalanceNonBook :one
-UPDATE account a
-SET balance = a.balance - $1,
-    updated_at = NOW()
-WHERE a.account_no = $2
-  AND a.book_enabled = false
-  AND a.allow_debit_out = true
-  AND (
-    (a.allow_overdraft = false AND a.balance >= $1)
-    OR
-    (a.allow_overdraft = true AND (a.max_overdraft_limit = 0 OR a.balance + a.max_overdraft_limit >= $1))
-  )
-RETURNING
-  a.account_no,
-  a.balance
-`
-
-type TryDebitAccountBalanceNonBookParams struct {
-	Amount    int64
-	AccountNo string
-}
-
-type TryDebitAccountBalanceNonBookRow struct {
-	AccountNo string
-	Balance   int64
-}
-
-func (q *Queries) TryDebitAccountBalanceNonBook(ctx context.Context, arg TryDebitAccountBalanceNonBookParams) (TryDebitAccountBalanceNonBookRow, error) {
-	row := q.db.QueryRow(ctx, tryDebitAccountBalanceNonBook, arg.Amount, arg.AccountNo)
-	var i TryDebitAccountBalanceNonBookRow
 	err := row.Scan(&i.AccountNo, &i.Balance)
 	return i, err
 }
