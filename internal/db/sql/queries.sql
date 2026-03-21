@@ -356,51 +356,6 @@ WHERE a.account_no = sqlc.arg(account_no)
 FOR UPDATE OF a
 LIMIT 1;
 
--- name: ListAccountsForUpdateByNos :many
-SELECT
-  a.account_no,
-  a.merchant_no,
-  COALESCE(a.customer_no, '') AS customer_no,
-  a.account_type,
-  a.allow_overdraft,
-  a.max_overdraft_limit,
-  a.allow_debit_out,
-  a.allow_credit_in,
-  a.allow_transfer,
-  a.book_enabled,
-  a.balance
-FROM account a
-WHERE a.account_no = ANY(sqlc.arg(account_nos)::varchar[])
-ORDER BY a.account_no ASC
-FOR UPDATE OF a;
-
--- name: TryDebitAccountBalanceNonBook :one
-UPDATE account a
-SET balance = a.balance - sqlc.arg(amount),
-    updated_at = NOW()
-WHERE a.account_no = sqlc.arg(account_no)
-  AND a.book_enabled = false
-  AND a.allow_debit_out = true
-  AND (
-    (a.allow_overdraft = false AND a.balance >= sqlc.arg(amount))
-    OR
-    (a.allow_overdraft = true AND (a.max_overdraft_limit = 0 OR a.balance + a.max_overdraft_limit >= sqlc.arg(amount)))
-  )
-RETURNING
-  a.account_no,
-  a.balance;
-
--- name: TryCreditAccountBalanceNonBook :one
-UPDATE account a
-SET balance = a.balance + sqlc.arg(amount),
-    updated_at = NOW()
-WHERE a.account_no = sqlc.arg(account_no)
-  AND a.book_enabled = false
-  AND a.allow_credit_in = true
-RETURNING
-  a.account_no,
-  a.balance;
-
 -- name: TryCreditAccountBalanceNonBookRefund :one
 UPDATE account a
 SET balance = a.balance + sqlc.arg(amount),
@@ -416,24 +371,6 @@ UPDATE account
 SET balance = sqlc.arg(balance),
     updated_at = NOW()
 WHERE account_no = sqlc.arg(account_no);
-
--- name: InsertAccountChangePair :exec
-INSERT INTO account_change_log (txn_no, account_no, delta, balance_before, balance_after)
-VALUES
-  (
-    sqlc.arg(txn_no)::uuid,
-    sqlc.arg(debit_account_no),
-    sqlc.arg(debit_delta),
-    sqlc.arg(debit_balance_before),
-    sqlc.arg(debit_balance_after)
-  ),
-  (
-    sqlc.arg(txn_no)::uuid,
-    sqlc.arg(credit_account_no),
-    sqlc.arg(credit_delta),
-    sqlc.arg(credit_balance_before),
-    sqlc.arg(credit_balance_after)
-  );
 
 -- name: InsertAccountChange :exec
 INSERT INTO account_change_log (txn_no, account_no, delta, balance_before, balance_after)
@@ -507,25 +444,6 @@ VALUES (
   sqlc.arg(balance_after),
   sqlc.arg(expire_at)::date
 );
-
--- name: GetOriginTxnForUpdate :one
-SELECT
-  COALESCE(debit_account_no, '') AS debit_account_no,
-  COALESCE(credit_account_no, '') AS credit_account_no,
-  refundable_amount,
-  merchant_no,
-  COALESCE(biz_type, '') AS biz_type,
-  COALESCE(status, '') AS status
-FROM txn
-WHERE txn_no = sqlc.arg(origin_txn_no)
-FOR UPDATE
-LIMIT 1;
-
--- name: DecreaseOriginTxnRefundable :exec
-UPDATE txn
-SET refundable_amount = refundable_amount - sqlc.arg(amount),
-    updated_at = NOW()
-WHERE txn_no = sqlc.arg(origin_txn_no);
 
 -- name: DecreaseOriginTxnRefundableIfValid :one
 UPDATE txn

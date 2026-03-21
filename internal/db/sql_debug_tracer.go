@@ -508,18 +508,6 @@ func normalizeUUID(raw string) string {
 	return strings.ToLower(parsed.String())
 }
 
-func containsString(items []string, target string) bool {
-	if target == "" {
-		return false
-	}
-	for _, item := range items {
-		if item == target {
-			return true
-		}
-	}
-	return false
-}
-
 func isTruthyEnv(raw string) bool {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "1", "true", "t", "yes", "y", "on":

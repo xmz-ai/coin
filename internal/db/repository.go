@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1415,80 +1414,6 @@ func validateDebitBalanceOnly(a service.Account, amount int64) error {
 	return nil
 }
 
-func applyAccountTransferTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype.UUID, debitAccountNo, creditAccountNo string, amount int64) error {
-	if debitAccountNo == "" || creditAccountNo == "" || amount <= 0 {
-		return service.ErrAccountResolveFailed
-	}
-
-	if debitAccountNo != creditAccountNo {
-		lockedRows, err := q.ListAccountsForUpdateByNos(ctx, sortedAccountNos(debitAccountNo, creditAccountNo))
-		if err != nil {
-			return err
-		}
-		if len(lockedRows) < 2 {
-			return service.ErrAccountResolveFailed
-		}
-		lockedByNo := make(map[string]dbsqlc.ListAccountsForUpdateByNosRow, len(lockedRows))
-		for _, row := range lockedRows {
-			lockedByNo[row.AccountNo] = row
-		}
-
-		debitRow, debitOK := lockedByNo[debitAccountNo]
-		creditRow, creditOK := lockedByNo[creditAccountNo]
-		if !debitOK || !creditOK {
-			return service.ErrAccountResolveFailed
-		}
-
-		debit := accountFromListAccountsForUpdateByNosRow(debitRow)
-		credit := accountFromListAccountsForUpdateByNosRow(creditRow)
-		if !debit.BookEnabled && !credit.BookEnabled {
-			if err := validateDebitBalanceOnly(debit, amount); err != nil {
-				return err
-			}
-
-			debitBefore := debit.Balance
-			debitAfter := debitBefore - amount
-			creditBefore := credit.Balance
-			creditAfter := creditBefore + amount
-
-			if err := q.InsertAccountChangePair(ctx, dbsqlc.InsertAccountChangePairParams{
-				TxnNo:               txnUUID,
-				DebitAccountNo:      debit.AccountNo,
-				DebitDelta:          -amount,
-				DebitBalanceBefore:  debitBefore,
-				DebitBalanceAfter:   debitAfter,
-				CreditAccountNo:     credit.AccountNo,
-				CreditDelta:         amount,
-				CreditBalanceBefore: creditBefore,
-				CreditBalanceAfter:  creditAfter,
-			}); err != nil {
-				return err
-			}
-			if err := q.UpdateAccountBalance(ctx, dbsqlc.UpdateAccountBalanceParams{
-				Balance:   debitAfter,
-				AccountNo: debit.AccountNo,
-			}); err != nil {
-				return err
-			}
-			if err := q.UpdateAccountBalance(ctx, dbsqlc.UpdateAccountBalanceParams{
-				Balance:   creditAfter,
-				AccountNo: credit.AccountNo,
-			}); err != nil {
-				return err
-			}
-			return nil
-		}
-	}
-
-	if err := applyAccountDebitTx(ctx, q, txnUUID, debitAccountNo, amount); err != nil {
-		return err
-	}
-	if err := applyAccountCreditTx(ctx, q, txnUUID, creditAccountNo, amount, nil); err != nil {
-		return err
-	}
-	return nil
-}
-
 func applyAccountDebitTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype.UUID, debitAccountNo string, amount int64) error {
 	if debitAccountNo == "" || amount <= 0 {
 		return service.ErrAccountResolveFailed
@@ -1822,12 +1747,6 @@ func applyRefundCreditTx(
 	return nil
 }
 
-func sortedAccountNos(a, b string) []string {
-	nos := []string{a, b}
-	sort.Strings(nos)
-	return nos
-}
-
 func accountFromGetAccountRow(row dbsqlc.GetAccountByNoRow) service.Account {
 	return service.Account{
 		AccountNo:         row.AccountNo,
@@ -1845,22 +1764,6 @@ func accountFromGetAccountRow(row dbsqlc.GetAccountByNoRow) service.Account {
 }
 
 func accountFromGetAccountForUpdateRow(row dbsqlc.GetAccountForUpdateByNoRow) service.Account {
-	return service.Account{
-		AccountNo:         row.AccountNo,
-		MerchantNo:        row.MerchantNo,
-		CustomerNo:        row.CustomerNo,
-		AccountType:       row.AccountType,
-		AllowOverdraft:    row.AllowOverdraft,
-		MaxOverdraftLimit: row.MaxOverdraftLimit,
-		AllowDebitOut:     row.AllowDebitOut,
-		AllowCreditIn:     row.AllowCreditIn,
-		AllowTransfer:     row.AllowTransfer,
-		BookEnabled:       row.BookEnabled,
-		Balance:           row.Balance,
-	}
-}
-
-func accountFromListAccountsForUpdateByNosRow(row dbsqlc.ListAccountsForUpdateByNosRow) service.Account {
 	return service.Account{
 		AccountNo:         row.AccountNo,
 		MerchantNo:        row.MerchantNo,
@@ -1975,13 +1878,6 @@ func pgUUIDToString(v pgtype.UUID) string {
 	return uuid.UUID(v.Bytes).String()
 }
 
-func parseOptionalUUID(v string) (pgtype.UUID, error) {
-	if strings.TrimSpace(v) == "" {
-		return pgtype.UUID{}, nil
-	}
-	return parseUUID(v)
-}
-
 func nullableText(v string) pgtype.Text {
 	if v == "" {
 		return pgtype.Text{}
@@ -2018,14 +1914,6 @@ func pgDatePtr(d pgtype.Date) *time.Time {
 		return nil
 	}
 	v := d.Time.UTC()
-	return &v
-}
-
-func pgTimestampPtr(ts pgtype.Timestamptz) *time.Time {
-	if !ts.Valid {
-		return nil
-	}
-	v := ts.Time.UTC()
 	return &v
 }
 
