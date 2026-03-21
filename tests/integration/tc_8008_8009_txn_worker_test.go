@@ -156,6 +156,68 @@ func TestTC8010TransferEnqueueFastPathWithoutPollingWorker(t *testing.T) {
 	t.Fatalf("expected fast-path enqueue to finish without polling worker, got status=%s", got.Status)
 }
 
+func TestTC8016TransferSubmitChecksCapabilities(t *testing.T) {
+	repo, _, merchant, debitAccountNo, creditAccountNo := setupWorkerTransferFixture(t)
+	repo.UpdateAccountCapabilities(creditAccountNo, true, false, true)
+
+	transferSvc := service.NewTransferService(repo, idpkg.NewFixedUUIDProvider([]string{
+		"01956f4e-9d22-73bc-8e11-3f5e9c7a8816",
+	}))
+	_, err := transferSvc.Submit(service.TransferRequest{
+		MerchantNo:       merchant.MerchantNo,
+		OutTradeNo:       "ord_8016",
+		BizType:          "TRANSFER",
+		TransferScene:    service.SceneP2P,
+		DebitAccountNo:   debitAccountNo,
+		CreditAccountNo:  creditAccountNo,
+		Amount:           100,
+		RefundableAmount: 100,
+		Status:           service.TxnStatusInit,
+	})
+	if !errors.Is(err, service.ErrAccountForbidCredit) {
+		t.Fatalf("expected ErrAccountForbidCredit, got %v", err)
+	}
+}
+
+func TestTC8017TransferAsyncIgnoresCapabilitiesAfterSubmit(t *testing.T) {
+	repo, _, merchant, debitAccountNo, creditAccountNo := setupWorkerTransferFixture(t)
+
+	transferSvc := service.NewTransferService(repo, idpkg.NewFixedUUIDProvider([]string{
+		"01956f4e-9d22-73bc-8e11-3f5e9c7a8817",
+	}))
+	txn, err := transferSvc.Submit(service.TransferRequest{
+		MerchantNo:       merchant.MerchantNo,
+		OutTradeNo:       "ord_8017",
+		BizType:          "TRANSFER",
+		TransferScene:    service.SceneP2P,
+		DebitAccountNo:   debitAccountNo,
+		CreditAccountNo:  creditAccountNo,
+		Amount:           100,
+		RefundableAmount: 100,
+		Status:           service.TxnStatusInit,
+	})
+	if err != nil {
+		t.Fatalf("submit txn failed: %v", err)
+	}
+
+	// Flip capabilities after submit; async stages should not re-check these flags.
+	repo.UpdateAccountCapabilities(debitAccountNo, false, false, false)
+	repo.UpdateAccountCapabilities(creditAccountNo, false, false, false)
+
+	processor := service.NewTransferAsyncProcessor(repo)
+	processor.Enqueue(txn.TxnNo)
+	waitTxnStatusRepo(t, repo, txn.TxnNo, service.TxnStatusRecvSuccess, 2*time.Second)
+
+	debit, _ := repo.GetAccount(debitAccountNo)
+	credit, _ := repo.GetAccount(creditAccountNo)
+	if debit.Balance != 900 {
+		t.Fatalf("expected debit balance 900, got %d", debit.Balance)
+	}
+	if credit.Balance != 100 {
+		t.Fatalf("expected credit balance 100, got %d", credit.Balance)
+	}
+}
+
 func TestTC8030TransferEnqueueTriggersNotifyDispatcherAfterRecvSuccess(t *testing.T) {
 	repo, _, merchant, debitAccountNo, creditAccountNo := setupWorkerTransferFixture(t)
 

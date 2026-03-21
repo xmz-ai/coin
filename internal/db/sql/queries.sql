@@ -401,6 +401,16 @@ RETURNING
   a.account_no,
   a.balance;
 
+-- name: TryCreditAccountBalanceNonBookRefund :one
+UPDATE account a
+SET balance = a.balance + sqlc.arg(amount),
+    updated_at = NOW()
+WHERE a.account_no = sqlc.arg(account_no)
+  AND a.book_enabled = false
+RETURNING
+  a.account_no,
+  a.balance;
+
 -- name: UpdateAccountBalance :exec
 UPDATE account
 SET balance = sqlc.arg(balance),

@@ -1822,6 +1822,34 @@ func (q *Queries) TryCreditAccountBalanceNonBook(ctx context.Context, arg TryCre
 	return i, err
 }
 
+const tryCreditAccountBalanceNonBookRefund = `-- name: TryCreditAccountBalanceNonBookRefund :one
+UPDATE account a
+SET balance = a.balance + $1,
+    updated_at = NOW()
+WHERE a.account_no = $2
+  AND a.book_enabled = false
+RETURNING
+  a.account_no,
+  a.balance
+`
+
+type TryCreditAccountBalanceNonBookRefundParams struct {
+	Amount    int64
+	AccountNo string
+}
+
+type TryCreditAccountBalanceNonBookRefundRow struct {
+	AccountNo string
+	Balance   int64
+}
+
+func (q *Queries) TryCreditAccountBalanceNonBookRefund(ctx context.Context, arg TryCreditAccountBalanceNonBookRefundParams) (TryCreditAccountBalanceNonBookRefundRow, error) {
+	row := q.db.QueryRow(ctx, tryCreditAccountBalanceNonBookRefund, arg.Amount, arg.AccountNo)
+	var i TryCreditAccountBalanceNonBookRefundRow
+	err := row.Scan(&i.AccountNo, &i.Balance)
+	return i, err
+}
+
 const tryDebitAccountBalanceNonBook = `-- name: TryDebitAccountBalanceNonBook :one
 UPDATE account a
 SET balance = a.balance - $1,
