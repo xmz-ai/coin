@@ -340,7 +340,6 @@ func setupPostgresTransferFixture(t testing.TB, txnStatus string, amount int64) 
 		AllowDebitOut: true,
 		AllowCreditIn: true,
 		AllowTransfer: true,
-		Balance:       1000,
 	}); err != nil {
 		t.Fatalf("create debit account failed: %v", err)
 	}
@@ -352,10 +351,11 @@ func setupPostgresTransferFixture(t testing.TB, txnStatus string, amount int64) 
 		AllowDebitOut: true,
 		AllowCreditIn: true,
 		AllowTransfer: true,
-		Balance:       200,
 	}); err != nil {
 		t.Fatalf("create credit account failed: %v", err)
 	}
+	seedAccountBalanceByCredit(t, repoImpl, merchant.MerchantNo, debitAccountNo, 1000, nil)
+	seedAccountBalanceByCredit(t, repoImpl, merchant.MerchantNo, creditAccountNo, 200, nil)
 
 	txnNo := fmt.Sprintf("01956f4e-9d22-73bc-8e11-3f5e9c7a91%02d", amount%100)
 	if err := repoImpl.CreateTransferTxn(service.TransferTxn{
@@ -374,6 +374,76 @@ func setupPostgresTransferFixture(t testing.TB, txnStatus string, amount int64) 
 	}
 
 	return repoImpl, pool, merchant, debitAccountNo, creditAccountNo, txnNo
+}
+
+func seedAccountBalanceByCredit(
+	t testing.TB,
+	repo *db.Repository,
+	merchantNo, creditAccountNo string,
+	amount int64,
+	creditExpireAt *time.Time,
+) {
+	t.Helper()
+	if amount <= 0 {
+		return
+	}
+	seedDebitAccountNo, err := repo.NewAccountNo(merchantNo, "CUSTOMER")
+	if err != nil {
+		t.Fatalf("new seed debit account no failed: %v", err)
+	}
+	if err := repo.CreateAccount(service.Account{
+		AccountNo:         seedDebitAccountNo,
+		MerchantNo:        merchantNo,
+		AccountType:       "CUSTOMER",
+		AllowOverdraft:    true,
+		MaxOverdraftLimit: 0,
+		AllowDebitOut:     true,
+		AllowCreditIn:     true,
+		AllowTransfer:     true,
+	}); err != nil {
+		t.Fatalf("create seed debit account failed: %v", err)
+	}
+	ids := idpkg.NewRuntimeUUIDProvider()
+	txnNo, err := ids.NewUUIDv7()
+	if err != nil {
+		t.Fatalf("new seed txn no failed: %v", err)
+	}
+	outTradeSeed := strings.ReplaceAll(txnNo, "-", "")
+	if len(outTradeSeed) > 24 {
+		outTradeSeed = outTradeSeed[:24]
+	}
+	txn := service.TransferTxn{
+		TxnNo:            txnNo,
+		MerchantNo:       merchantNo,
+		OutTradeNo:       "seed_credit_" + outTradeSeed,
+		BizType:          service.BizTypeTransfer,
+		TransferScene:    service.SceneP2P,
+		DebitAccountNo:   seedDebitAccountNo,
+		CreditAccountNo:  creditAccountNo,
+		Amount:           amount,
+		RefundableAmount: amount,
+		Status:           service.TxnStatusInit,
+	}
+	if creditExpireAt != nil {
+		txn.CreditExpireAt = creditExpireAt.UTC()
+	}
+	if err := repo.CreateTransferTxn(txn); err != nil {
+		t.Fatalf("create seed credit txn failed: %v", err)
+	}
+	debitApplied, err := repo.ApplyTxnStage(txnNo, service.TxnStatusInit)
+	if err != nil {
+		t.Fatalf("apply seed debit stage failed: %v", err)
+	}
+	if !debitApplied.Applied {
+		t.Fatalf("seed debit stage not applied: txn_no=%s status=%s", txnNo, debitApplied.CurrentStatus)
+	}
+	creditApplied, err := repo.ApplyTxnStage(txnNo, service.TxnStatusPaySuccess)
+	if err != nil {
+		t.Fatalf("apply seed credit stage failed: %v", err)
+	}
+	if !creditApplied.Applied {
+		t.Fatalf("seed credit stage not applied: txn_no=%s status=%s", txnNo, creditApplied.CurrentStatus)
+	}
 }
 
 func queryAccountChangesByTxnNo(t *testing.T, pool *pgxpool.Pool, txnNo string) []pgAccountChange {

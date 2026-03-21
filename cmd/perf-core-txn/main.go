@@ -1038,6 +1038,61 @@ func collectSucceededTxnNos(rows []resultRow) []string {
 	return out
 }
 
+func seedAccountBalanceByIssue(
+	ctx context.Context,
+	repo *db.Repository,
+	ids interface{ NewUUIDv7() (string, error) },
+	merchant service.Merchant,
+	creditAccountNo string,
+	amount int64,
+	creditExpireAt *time.Time,
+) error {
+	if amount <= 0 {
+		return nil
+	}
+	txnNo, err := ids.NewUUIDv7()
+	if err != nil {
+		return fmt.Errorf("new seed txn no: %w", err)
+	}
+	outTradeSeed := strings.ReplaceAll(txnNo, "-", "")
+	if len(outTradeSeed) > 24 {
+		outTradeSeed = outTradeSeed[:24]
+	}
+	txn := service.TransferTxn{
+		TxnNo:            txnNo,
+		MerchantNo:       merchant.MerchantNo,
+		OutTradeNo:       "perf_seed_credit_" + outTradeSeed,
+		BizType:          service.BizTypeTransfer,
+		TransferScene:    service.SceneIssue,
+		DebitAccountNo:   merchant.BudgetAccountNo,
+		CreditAccountNo:  creditAccountNo,
+		Amount:           amount,
+		RefundableAmount: amount,
+		Status:           service.TxnStatusInit,
+	}
+	if creditExpireAt != nil {
+		txn.CreditExpireAt = creditExpireAt.UTC()
+	}
+	if err := repo.CreateTransferTxn(txn); err != nil {
+		return fmt.Errorf("create seed txn: %w", err)
+	}
+	debitStage, err := repo.ApplyTxnStage(txnNo, service.TxnStatusInit)
+	if err != nil {
+		return fmt.Errorf("apply seed debit stage: %w", err)
+	}
+	if !debitStage.Applied {
+		return fmt.Errorf("seed debit stage not applied, status=%s", debitStage.CurrentStatus)
+	}
+	creditStage, err := repo.ApplyTxnStage(txnNo, service.TxnStatusPaySuccess)
+	if err != nil {
+		return fmt.Errorf("apply seed credit stage: %w", err)
+	}
+	if !creditStage.Applied {
+		return fmt.Errorf("seed credit stage not applied, status=%s", creditStage.CurrentStatus)
+	}
+	return nil
+}
+
 func setupPerfServer(
 	ctx context.Context,
 	pool *pgxpool.Pool,
@@ -1167,7 +1222,7 @@ func setupPerfServer(
 		AllowCreditIn:     true,
 		AllowTransfer:     true,
 		BookEnabled:       true,
-		Balance:           bookToBookSeedBalance,
+		Balance:           0,
 	}); err != nil {
 		return nil, fmt.Errorf("create book-to-book from account: %w", err)
 	}
@@ -1186,16 +1241,9 @@ func setupPerfServer(
 	}); err != nil {
 		return nil, fmt.Errorf("create book-to-book target account: %w", err)
 	}
-	seedBookNo, err := ids.NewUUIDv7()
-	if err != nil {
-		return nil, fmt.Errorf("new book-to-book seed book no: %w", err)
-	}
 	seedExpireAt := time.Now().UTC().AddDate(1, 0, 0)
-	if _, err := pool.Exec(ctx, `
-INSERT INTO account_book (book_no, account_no, expire_at, balance)
-VALUES ($1::uuid, $2, $3::date, $4)
-`, seedBookNo, bookToBookFromAccountNo, seedExpireAt, bookToBookSeedBalance); err != nil {
-		return nil, fmt.Errorf("seed book-to-book from account book row: %w", err)
+	if err := seedAccountBalanceByIssue(ctx, repo, ids, merchant, bookToBookFromAccountNo, bookToBookSeedBalance, &seedExpireAt); err != nil {
+		return nil, fmt.Errorf("seed book-to-book from account by credit txn: %w", err)
 	}
 	secret, _, err := secretManager.RotateSecret(context.Background(), merchant.MerchantNo)
 	if err != nil {

@@ -15,12 +15,6 @@ FROM merchant
 WHERE merchant_no = sqlc.arg(merchant_no)
 LIMIT 1;
 
--- name: GetMerchantByID :one
-SELECT merchant_id::text, merchant_no, name, budget_account_no, receivable_account_no
-FROM merchant
-WHERE merchant_id = sqlc.arg(merchant_id)
-LIMIT 1;
-
 -- name: CreateAccount :exec
 INSERT INTO account (
   account_no, merchant_no, customer_no, account_type,
@@ -38,7 +32,7 @@ INSERT INTO account (
   sqlc.arg(allow_credit_in),
   sqlc.arg(allow_transfer),
   sqlc.arg(book_enabled),
-  sqlc.arg(balance)
+  0
 );
 
 -- name: InitCodeSequence :exec

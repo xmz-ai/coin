@@ -334,7 +334,6 @@ func setupWorkerTransferFixture(t *testing.T) (*db.Repository, *pgxpool.Pool, se
 		AllowDebitOut: true,
 		AllowCreditIn: true,
 		AllowTransfer: true,
-		Balance:       1000,
 	}); err != nil {
 		t.Fatalf("create debit account failed: %v", err)
 	}
@@ -350,6 +349,7 @@ func setupWorkerTransferFixture(t *testing.T) (*db.Repository, *pgxpool.Pool, se
 	}); err != nil {
 		t.Fatalf("create credit account failed: %v", err)
 	}
+	seedAccountBalanceByCredit(t, repo, merchant.MerchantNo, debitAccountNo, 1000, nil)
 
 	return repo, pool, merchant, debitAccountNo, creditAccountNo
 }

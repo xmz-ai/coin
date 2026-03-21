@@ -145,7 +145,6 @@ func newCoreTxnBenchmarkServices(b *testing.B) (*db.Repository, string, *service
 		AllowDebitOut:     true,
 		AllowCreditIn:     true,
 		AllowTransfer:     true,
-		Balance:           1_000_000_000_000_000,
 	}); err != nil {
 		b.Fatalf("create debit account failed: %v", err)
 	}
@@ -162,6 +161,7 @@ func newCoreTxnBenchmarkServices(b *testing.B) (*db.Repository, string, *service
 	}); err != nil {
 		b.Fatalf("create credit account failed: %v", err)
 	}
+	seedAccountBalanceByCredit(b, repo, merchant.MerchantNo, benchDebitAccountNo, 1_000_000_000_000_000, nil)
 
 	transferSvc := service.NewTransferService(repo, ids)
 	processor := service.NewTransferAsyncProcessor(repo)

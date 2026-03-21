@@ -266,7 +266,7 @@ INSERT INTO account (
   $8,
   $9,
   $10,
-  $11
+  0
 )
 `
 
@@ -281,7 +281,6 @@ type CreateAccountParams struct {
 	AllowCreditIn     bool
 	AllowTransfer     bool
 	BookEnabled       bool
-	Balance           int64
 }
 
 func (q *Queries) CreateAccount(ctx context.Context, arg CreateAccountParams) error {
@@ -296,7 +295,6 @@ func (q *Queries) CreateAccount(ctx context.Context, arg CreateAccountParams) er
 		arg.AllowCreditIn,
 		arg.AllowTransfer,
 		arg.BookEnabled,
-		arg.Balance,
 	)
 	return err
 }
@@ -757,34 +755,6 @@ func (q *Queries) GetMaxSecretVersion(ctx context.Context, merchantNo string) (i
 	var max_secret_version int32
 	err := row.Scan(&max_secret_version)
 	return max_secret_version, err
-}
-
-const getMerchantByID = `-- name: GetMerchantByID :one
-SELECT merchant_id::text, merchant_no, name, budget_account_no, receivable_account_no
-FROM merchant
-WHERE merchant_id = $1
-LIMIT 1
-`
-
-type GetMerchantByIDRow struct {
-	MerchantID          string
-	MerchantNo          string
-	Name                string
-	BudgetAccountNo     string
-	ReceivableAccountNo string
-}
-
-func (q *Queries) GetMerchantByID(ctx context.Context, merchantID pgtype.UUID) (GetMerchantByIDRow, error) {
-	row := q.db.QueryRow(ctx, getMerchantByID, merchantID)
-	var i GetMerchantByIDRow
-	err := row.Scan(
-		&i.MerchantID,
-		&i.MerchantNo,
-		&i.Name,
-		&i.BudgetAccountNo,
-		&i.ReceivableAccountNo,
-	)
-	return i, err
 }
 
 const getMerchantByNo = `-- name: GetMerchantByNo :one

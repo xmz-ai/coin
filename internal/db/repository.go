@@ -143,7 +143,6 @@ func (r *Repository) CreateAccount(a service.Account) error {
 		AllowCreditIn:     a.AllowCreditIn,
 		AllowTransfer:     a.AllowTransfer,
 		BookEnabled:       a.BookEnabled,
-		Balance:           a.Balance,
 	})
 	if isUniqueViolation(err) {
 		return service.ErrAccountNoExists
@@ -276,31 +275,6 @@ func (r *Repository) GetCustomerByOutUserID(merchantNo, outUserID string) (servi
 		MerchantNo:       row.MerchantNo,
 		OutUserID:        row.OutUserID,
 		DefaultAccountNo: strings.TrimSpace(row.DefaultAccountNo),
-	}, true
-}
-
-func (r *Repository) GetMerchantByID(merchantID string) (service.Merchant, bool) {
-	ctx, cancel := r.withTimeout()
-	defer cancel()
-
-	merchantUUID, err := parseUUID(merchantID)
-	if err != nil {
-		return service.Merchant{}, false
-	}
-
-	row, err := r.queries.GetMerchantByID(ctx, merchantUUID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return service.Merchant{}, false
-	}
-	if err != nil {
-		return service.Merchant{}, false
-	}
-	return service.Merchant{
-		MerchantID:          row.MerchantID,
-		MerchantNo:          row.MerchantNo,
-		Name:                row.Name,
-		BudgetAccountNo:     row.BudgetAccountNo,
-		ReceivableAccountNo: row.ReceivableAccountNo,
 	}, true
 }
 
