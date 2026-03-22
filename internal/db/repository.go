@@ -22,6 +22,8 @@ import (
 
 const opTimeout = 3 * time.Second
 
+var noExpireBookDate = time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)
+
 type Repository struct {
 	pool                 *pgxpool.Pool
 	queries              *dbsqlc.Queries
@@ -131,8 +133,14 @@ func (r *Repository) CreateAccount(a service.Account) error {
 	defer cancel()
 
 	customerNo := strings.TrimSpace(a.CustomerNo)
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := r.queries.WithTx(tx)
 
-	err := r.queries.CreateAccount(ctx, dbsqlc.CreateAccountParams{
+	err = qtx.CreateAccount(ctx, dbsqlc.CreateAccountParams{
 		AccountNo:         a.AccountNo,
 		MerchantNo:        a.MerchantNo,
 		CustomerNo:        nullableText(customerNo),
@@ -150,16 +158,36 @@ func (r *Repository) CreateAccount(a service.Account) error {
 	if err != nil {
 		return err
 	}
+	if a.BookEnabled {
+		noExpireBookNo, err := idpkg.NewRuntimeUUIDProvider().NewUUIDv7()
+		if err != nil {
+			return err
+		}
+		if _, err := qtx.UpsertAccountBookBalance(ctx, dbsqlc.UpsertAccountBookBalanceParams{
+			BookNo:    noExpireBookNo,
+			AccountNo: a.AccountNo,
+			ExpireAt:  toPGDate(noExpireBookDate),
+			Delta:     0,
+		}); err != nil {
+			return err
+		}
+	}
 
 	if customerNo == "" {
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
 		return nil
 	}
-	_, err = r.queries.SetCustomerDefaultAccountIfEmpty(ctx, dbsqlc.SetCustomerDefaultAccountIfEmptyParams{
+	_, err = qtx.SetCustomerDefaultAccountIfEmpty(ctx, dbsqlc.SetCustomerDefaultAccountIfEmptyParams{
 		DefaultAccountNo: nullableText(a.AccountNo),
 		MerchantNo:       a.MerchantNo,
 		CustomerNo:       customerNo,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (r *Repository) NewMerchantNo() (string, error) {
@@ -667,7 +695,16 @@ func (r *Repository) ApplyTxnStage(txnNo, expectedStatus string) (service.TxnSta
 			if result.CreditAccountNo == "" {
 				return result, service.ErrAccountResolveFailed
 			}
-			if err := applyAccountCreditTx(ctx, qtx, txnUUID, result.CreditAccountNo, stage.Amount, pgDatePtr(stage.CreditExpireAt)); err != nil {
+			if err := applyTransferCreditTx(
+				ctx,
+				qtx,
+				txnUUID,
+				result.DebitAccountNo,
+				result.CreditAccountNo,
+				stage.TransferScene,
+				stage.Amount,
+				pgDatePtr(stage.CreditExpireAt),
+			); err != nil {
 				return result, err
 			}
 		case service.BizTypeRefund:
@@ -805,7 +842,16 @@ func (r *Repository) ApplyTransferCreditStage(txnNo, creditAccountNo string, amo
 	if creditAccountNo != "" && stage.CreditAccountNo != "" && creditAccountNo != stage.CreditAccountNo {
 		return false, service.ErrAccountResolveFailed
 	}
-	if err := applyAccountCreditTx(ctx, qtx, txnUUID, stageCreditAccountNo, amount, pgDatePtr(stage.CreditExpireAt)); err != nil {
+	if err := applyTransferCreditTx(
+		ctx,
+		qtx,
+		txnUUID,
+		stage.DebitAccountNo,
+		stageCreditAccountNo,
+		stage.TransferScene,
+		amount,
+		pgDatePtr(stage.CreditExpireAt),
+	); err != nil {
 		return false, err
 	}
 	if err := qtx.UpdateTransferTxnStatus(ctx, dbsqlc.UpdateTransferTxnStatusParams{
@@ -1126,6 +1172,51 @@ type bookCreditPart struct {
 	Amount   int64
 }
 
+func buildTransferBookCreditParts(
+	ctx context.Context,
+	q *dbsqlc.Queries,
+	txnUUID pgtype.UUID,
+	debitAccountNo string,
+	amount int64,
+) ([]bookCreditPart, bool, error) {
+	if !txnUUID.Valid || strings.TrimSpace(debitAccountNo) == "" || amount <= 0 {
+		return nil, false, service.ErrAccountResolveFailed
+	}
+
+	debitBookChanges, err := q.ListOriginDebitBookChanges(ctx, dbsqlc.ListOriginDebitBookChangesParams{
+		TxnNo:     txnUUID,
+		AccountNo: debitAccountNo,
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	if len(debitBookChanges) == 0 {
+		return nil, false, nil
+	}
+
+	parts := make([]bookCreditPart, 0, len(debitBookChanges))
+	sum := int64(0)
+	for _, change := range debitBookChanges {
+		partAmount := -change.Delta
+		if partAmount <= 0 {
+			continue
+		}
+		expireAt := pgDateToTime(change.ExpireAt)
+		if expireAt.IsZero() {
+			return nil, true, service.ErrAccountResolveFailed
+		}
+		parts = append(parts, bookCreditPart{
+			ExpireAt: expireAt,
+			Amount:   partAmount,
+		})
+		sum += partAmount
+	}
+	if len(parts) == 0 || sum != amount {
+		return nil, true, service.ErrAccountResolveFailed
+	}
+	return parts, true, nil
+}
+
 func buildRefundBookCreditParts(
 	ctx context.Context,
 	q *dbsqlc.Queries,
@@ -1239,12 +1330,16 @@ func applyBookCreditPartsTx(
 	credit service.Account,
 	amount int64,
 	parts []bookCreditPart,
+	traceErr error,
 ) error {
+	if traceErr == nil {
+		traceErr = service.ErrAccountResolveFailed
+	}
 	if amount <= 0 || strings.TrimSpace(credit.AccountNo) == "" {
 		return service.ErrAccountResolveFailed
 	}
 	if !credit.BookEnabled || len(parts) == 0 {
-		return service.ErrRefundOriginBookTraceMissing
+		return traceErr
 	}
 
 	type plannedBookPart struct {
@@ -1260,7 +1355,7 @@ func applyBookCreditPartsTx(
 
 	for _, part := range parts {
 		if part.Amount <= 0 || part.ExpireAt.IsZero() {
-			return service.ErrRefundOriginBookTraceMissing
+			return traceErr
 		}
 		sum += part.Amount
 
@@ -1300,21 +1395,11 @@ func applyBookCreditPartsTx(
 	}
 
 	if sum != amount {
-		return service.ErrRefundOriginBookTraceMissing
+		return traceErr
 	}
 
 	creditBefore := credit.Balance
 	creditAfter := creditBefore + amount
-	if err := q.InsertAccountChange(ctx, dbsqlc.InsertAccountChangeParams{
-		TxnNo:         txnUUID,
-		AccountNo:     credit.AccountNo,
-		Delta:         amount,
-		BalanceBefore: creditBefore,
-		BalanceAfter:  creditAfter,
-	}); err != nil {
-		return err
-	}
-
 	for _, item := range planned {
 		if err := q.InsertAccountBookChange(ctx, dbsqlc.InsertAccountBookChangeParams{
 			TxnNo:         txnUUID,
@@ -1328,6 +1413,15 @@ func applyBookCreditPartsTx(
 			return err
 		}
 	}
+	if err := q.InsertAccountChange(ctx, dbsqlc.InsertAccountChangeParams{
+		TxnNo:         txnUUID,
+		AccountNo:     credit.AccountNo,
+		Delta:         amount,
+		BalanceBefore: creditBefore,
+		BalanceAfter:  creditAfter,
+	}); err != nil {
+		return err
+	}
 
 	for _, item := range planned {
 		book, err := q.UpsertAccountBookBalance(ctx, dbsqlc.UpsertAccountBookBalanceParams{
@@ -1340,7 +1434,7 @@ func applyBookCreditPartsTx(
 			return err
 		}
 		if book.Balance != item.BalanceAfter {
-			return service.ErrRefundOriginBookTraceMissing
+			return traceErr
 		}
 	}
 
@@ -1404,9 +1498,13 @@ func applyAccountDebitTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype.
 	debit := accountFromGetAccountForUpdateRow(debitRow)
 
 	if debit.BookEnabled {
+		if err := validateDebitBalanceOnly(debit, amount); err != nil {
+			return err
+		}
 		books, err := q.ListAvailableAccountBooksForUpdate(ctx, dbsqlc.ListAvailableAccountBooksForUpdateParams{
-			AccountNo: debit.AccountNo,
-			NowUtc:    toPGDate(time.Now().UTC()),
+			AccountNo:  debit.AccountNo,
+			NowUtc:     toPGDate(time.Now().UTC()),
+			NoExpireAt: toPGDate(noExpireBookDate),
 		})
 		if err != nil {
 			return err
@@ -1426,22 +1524,36 @@ func applyAccountDebitTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype.
 			if left == 0 {
 				break
 			}
-			if book.Balance <= 0 {
+			isNoExpire := book.ExpireAt.Valid && normalizeUTCDate(book.ExpireAt.Time).Equal(noExpireBookDate)
+			if !isNoExpire && book.Balance <= 0 {
 				continue
 			}
-			use := book.Balance
-			if use > left {
-				use = left
+
+			delta := int64(0)
+			after := book.Balance
+			if isNoExpire {
+				delta = -left
+				after = book.Balance - left
+				left = 0
+			} else {
+				use := book.Balance
+				if use > left {
+					use = left
+				}
+				if use <= 0 {
+					continue
+				}
+				delta = -use
+				after = book.Balance - use
+				left -= use
 			}
-			after := book.Balance - use
 			changes = append(changes, bookChange{
 				BookNo:        book.BookNo,
 				ExpireAt:      book.ExpireAt,
-				Delta:         -use,
+				Delta:         delta,
 				BalanceBefore: book.Balance,
 				BalanceAfter:  after,
 			})
-			left -= use
 		}
 		if left > 0 {
 			return service.ErrInsufficientBalance
@@ -1449,15 +1561,6 @@ func applyAccountDebitTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype.
 
 		debitBefore := debit.Balance
 		debitAfter := debitBefore - amount
-		if err := q.InsertAccountChange(ctx, dbsqlc.InsertAccountChangeParams{
-			TxnNo:         txnUUID,
-			AccountNo:     debit.AccountNo,
-			Delta:         -amount,
-			BalanceBefore: debitBefore,
-			BalanceAfter:  debitAfter,
-		}); err != nil {
-			return err
-		}
 		for _, change := range changes {
 			if err := q.InsertAccountBookChange(ctx, dbsqlc.InsertAccountBookChangeParams{
 				TxnNo:         txnUUID,
@@ -1470,6 +1573,15 @@ func applyAccountDebitTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype.
 			}); err != nil {
 				return err
 			}
+		}
+		if err := q.InsertAccountChange(ctx, dbsqlc.InsertAccountChangeParams{
+			TxnNo:         txnUUID,
+			AccountNo:     debit.AccountNo,
+			Delta:         -amount,
+			BalanceBefore: debitBefore,
+			BalanceAfter:  debitAfter,
+		}); err != nil {
+			return err
 		}
 
 		bookNos := make([]string, 0, len(changes))
@@ -1534,6 +1646,40 @@ func applyAccountDebitTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype.
 	return nil
 }
 
+func applyTransferCreditTx(
+	ctx context.Context,
+	q *dbsqlc.Queries,
+	txnUUID pgtype.UUID,
+	debitAccountNo, creditAccountNo, transferScene string,
+	amount int64,
+	creditExpireAt *time.Time,
+) error {
+	if strings.TrimSpace(creditAccountNo) == "" || amount <= 0 {
+		return service.ErrAccountResolveFailed
+	}
+
+	creditRow, err := q.GetAccountForUpdateByNo(ctx, creditAccountNo)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return service.ErrAccountResolveFailed
+	}
+	if err != nil {
+		return err
+	}
+	creditAccount := accountFromGetAccountForUpdateRow(creditRow)
+
+	if strings.TrimSpace(transferScene) == service.SceneP2P && creditAccount.BookEnabled {
+		parts, hasBookDebitTrace, err := buildTransferBookCreditParts(ctx, q, txnUUID, debitAccountNo, amount)
+		if err != nil {
+			return err
+		}
+		if hasBookDebitTrace {
+			return applyBookCreditPartsTx(ctx, q, txnUUID, creditAccount, amount, parts, service.ErrAccountResolveFailed)
+		}
+	}
+
+	return applyAccountCreditWithAccountTx(ctx, q, txnUUID, creditAccount, amount, creditExpireAt)
+}
+
 func applyAccountCreditTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype.UUID, creditAccountNo string, amount int64, creditExpireAt *time.Time) error {
 	if creditAccountNo == "" || amount <= 0 {
 		return service.ErrAccountResolveFailed
@@ -1548,12 +1694,26 @@ func applyAccountCreditTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype
 	}
 
 	credit := accountFromGetAccountForUpdateRow(creditRow)
+	return applyAccountCreditWithAccountTx(ctx, q, txnUUID, credit, amount, creditExpireAt)
+}
+
+func applyAccountCreditWithAccountTx(
+	ctx context.Context,
+	q *dbsqlc.Queries,
+	txnUUID pgtype.UUID,
+	credit service.Account,
+	amount int64,
+	creditExpireAt *time.Time,
+) error {
+	if strings.TrimSpace(credit.AccountNo) == "" || amount <= 0 {
+		return service.ErrAccountResolveFailed
+	}
 
 	if credit.BookEnabled {
-		if creditExpireAt == nil || creditExpireAt.IsZero() {
-			return service.ErrExpireAtRequired
+		expireAt := noExpireBookDate
+		if creditExpireAt != nil && !creditExpireAt.IsZero() {
+			expireAt = creditExpireAt.UTC()
 		}
-		expireAt := creditExpireAt.UTC()
 		expireDate := toPGDate(expireAt)
 		bookNo := pgtype.UUID{}
 		bookBefore := int64(0)
@@ -1582,15 +1742,6 @@ func applyAccountCreditTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype
 
 		creditBefore := credit.Balance
 		creditAfter := creditBefore + amount
-		if err := q.InsertAccountChange(ctx, dbsqlc.InsertAccountChangeParams{
-			TxnNo:         txnUUID,
-			AccountNo:     credit.AccountNo,
-			Delta:         amount,
-			BalanceBefore: creditBefore,
-			BalanceAfter:  creditAfter,
-		}); err != nil {
-			return err
-		}
 		if err := q.InsertAccountBookChange(ctx, dbsqlc.InsertAccountBookChangeParams{
 			TxnNo:         txnUUID,
 			AccountNo:     credit.AccountNo,
@@ -1599,6 +1750,15 @@ func applyAccountCreditTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype
 			BalanceBefore: bookBefore,
 			BalanceAfter:  bookAfter,
 			ExpireAt:      expireDate,
+		}); err != nil {
+			return err
+		}
+		if err := q.InsertAccountChange(ctx, dbsqlc.InsertAccountChangeParams{
+			TxnNo:         txnUUID,
+			AccountNo:     credit.AccountNo,
+			Delta:         amount,
+			BalanceBefore: creditBefore,
+			BalanceAfter:  creditAfter,
 		}); err != nil {
 			return err
 		}
@@ -1715,7 +1875,7 @@ func applyRefundCreditTx(
 	if err != nil {
 		return err
 	}
-	if err := applyBookCreditPartsTx(ctx, q, txnUUID, creditAccount, amount, parts); err != nil {
+	if err := applyBookCreditPartsTx(ctx, q, txnUUID, creditAccount, amount, parts, service.ErrRefundOriginBookTraceMissing); err != nil {
 		return err
 	}
 	return nil

@@ -384,9 +384,15 @@ SELECT
   b.balance
 FROM account_book b
 WHERE b.account_no = sqlc.arg(account_no)
-  AND b.expire_at > sqlc.arg(now_utc)::date
-  AND b.balance > 0
-ORDER BY b.expire_at ASC, b.book_no ASC;
+  AND (
+    (b.expire_at > sqlc.arg(now_utc)::date AND b.balance > 0)
+    OR b.expire_at = sqlc.arg(no_expire_at)::date
+  )
+ORDER BY
+  CASE WHEN b.expire_at = sqlc.arg(no_expire_at)::date THEN 1 ELSE 0 END ASC,
+  b.expire_at ASC,
+  b.book_no ASC
+FOR UPDATE OF b;
 
 -- name: GetAccountBookForUpdateByAccountExpire :one
 SELECT

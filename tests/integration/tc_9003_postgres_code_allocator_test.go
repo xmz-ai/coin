@@ -1,10 +1,12 @@
 package integration
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/xmz-ai/coin/internal/db"
 	idpkg "github.com/xmz-ai/coin/internal/platform/id"
@@ -167,5 +169,62 @@ func TestTC9005PostgresAccountNoConflictDoesNotOverwrite(t *testing.T) {
 	}
 	if stored.AllowOverdraft {
 		t.Fatalf("account allow_overdraft overwritten: %+v", stored)
+	}
+}
+
+func TestTC9006CreateBookEnabledAccountAutoInitNoExpireBook(t *testing.T) {
+	pool := setupPostgresPool(t)
+	repo := db.NewRepository(pool)
+
+	ids := idpkg.NewFixedUUIDProvider([]string{
+		"01956f4e-7b3e-7a4d-9f6b-4d9de4f7c002",
+	})
+	ms := service.NewMerchantService(repo, ids)
+
+	merchant, err := ms.CreateMerchant("", "demo-book-init")
+	if err != nil {
+		t.Fatalf("create merchant failed: %v", err)
+	}
+	accountNo, err := repo.NewAccountNo(merchant.MerchantNo, "CUSTOMER")
+	if err != nil {
+		t.Fatalf("new account_no failed: %v", err)
+	}
+
+	if err := repo.CreateAccount(service.Account{
+		AccountNo:      accountNo,
+		MerchantNo:     merchant.MerchantNo,
+		AccountType:    "CUSTOMER",
+		AllowDebitOut:  true,
+		AllowCreditIn:  true,
+		AllowTransfer:  true,
+		BookEnabled:    true,
+		AllowOverdraft: false,
+	}); err != nil {
+		t.Fatalf("create book-enabled account failed: %v", err)
+	}
+
+	books := queryAccountBooksByAccount(t, pool, accountNo)
+	if len(books) != 1 {
+		t.Fatalf("expected 1 no-expire account_book row, got %d rows=%+v", len(books), books)
+	}
+	noExpire := time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)
+	if !books[0].ExpireAt.Equal(noExpire) || books[0].Balance != 0 {
+		t.Fatalf("unexpected no-expire account_book row: %+v", books[0])
+	}
+
+	var sum int64
+	if err := pool.QueryRow(context.Background(), `
+SELECT COALESCE(SUM(balance), 0)::bigint
+FROM account_book
+WHERE account_no = $1
+`, accountNo).Scan(&sum); err != nil {
+		t.Fatalf("query account_book sum failed: %v", err)
+	}
+	account, ok := repo.GetAccount(accountNo)
+	if !ok {
+		t.Fatalf("account not found: %s", accountNo)
+	}
+	if account.Balance != sum {
+		t.Fatalf("expected account.balance == sum(account_book.balance), got account=%d sum=%d", account.Balance, sum)
 	}
 }
