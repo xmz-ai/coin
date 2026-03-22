@@ -1,12 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -30,6 +27,7 @@ import (
 	idpkg "github.com/xmz-ai/coin/internal/platform/id"
 	"github.com/xmz-ai/coin/internal/platform/security"
 	"github.com/xmz-ai/coin/internal/service"
+	coinsdk "github.com/xmz-ai/coin/sdk/go/coin"
 )
 
 const (
@@ -370,69 +368,56 @@ func run(cfg perfConfig) error {
 		fmt.Printf("[perf] cpu_profile enabled path=%s\n", cfg.CPUProfilePath)
 	}
 
-	httpClient := &http.Client{Timeout: cfg.RequestTimeout}
-	fireBookTransfer := func(nonce string) resultRow {
-		outTradeNo := "ord_perf_book_transfer_" + nonce
-		payload := map[string]any{
-			"out_trade_no":      outTradeNo,
-			"transfer_scene":    "P2P",
-			"from_account_no":   runtimeEnv.TransferFromAccountNo,
-			"to_account_no":     runtimeEnv.TransferBookToAccount,
-			"to_expire_in_days": bookToBookTransferExpiryIn,
-			"amount":            1,
-		}
-		return fireAPIPostOnce(httpClient, runtimeEnv.Server.URL, runtimeEnv.MerchantNo, runtimeEnv.Secret, nonce, "/api/v1/transactions/transfer", outTradeNo, payload, cfg.MaxBodyBytes, runtimeEnv.WebhookSink, true)
+	sdkClient, err := coinsdk.NewClient(coinsdk.ClientOptions{
+		BaseURL:        runtimeEnv.Server.URL,
+		MerchantNo:     runtimeEnv.MerchantNo,
+		MerchantSecret: runtimeEnv.Secret,
+		Timeout:        cfg.RequestTimeout,
+		UserAgent:      "coin-perf-core-txn",
+	})
+	if err != nil {
+		return fmt.Errorf("init sdk client: %w", err)
 	}
-	fireBookRefund := func(nonce, originTxnNo string) resultRow {
-		outTradeNo := "ord_perf_book_refund_" + nonce
-		payload := map[string]any{
-			"out_trade_no":     outTradeNo,
-			"refund_of_txn_no": originTxnNo,
-			"amount":           1,
-		}
-		return fireAPIPostOnce(httpClient, runtimeEnv.Server.URL, runtimeEnv.MerchantNo, runtimeEnv.Secret, nonce, "/api/v1/transactions/refund", outTradeNo, payload, cfg.MaxBodyBytes, runtimeEnv.WebhookSink, true)
-	}
-	fireTransfer := func(nonce string) resultRow {
-		outTradeNo := "ord_perf_transfer_" + nonce
-		payload := map[string]any{
-			"out_trade_no":    outTradeNo,
-			"transfer_scene":  "P2P",
-			"from_account_no": runtimeEnv.TransferFromAccountNo,
-			"to_account_no":   runtimeEnv.TransferToAccountNo,
-			"amount":          1,
-		}
-		return fireAPIPostOnce(httpClient, runtimeEnv.Server.URL, runtimeEnv.MerchantNo, runtimeEnv.Secret, nonce, "/api/v1/transactions/transfer", outTradeNo, payload, cfg.MaxBodyBytes, runtimeEnv.WebhookSink, true)
-	}
-	fireRefund := func(nonce, originTxnNo string) resultRow {
-		outTradeNo := "ord_perf_refund_" + nonce
-		payload := map[string]any{
-			"out_trade_no":     outTradeNo,
-			"refund_of_txn_no": originTxnNo,
-			"amount":           1,
-		}
-		return fireAPIPostOnce(httpClient, runtimeEnv.Server.URL, runtimeEnv.MerchantNo, runtimeEnv.Secret, nonce, "/api/v1/transactions/refund", outTradeNo, payload, cfg.MaxBodyBytes, runtimeEnv.WebhookSink, true)
-	}
-	fireBookToBookTransfer := func(nonce string) resultRow {
-		outTradeNo := "ord_perf_book_to_book_transfer_" + nonce
-		payload := map[string]any{
-			"out_trade_no":      outTradeNo,
-			"transfer_scene":    "P2P",
-			"from_account_no":   runtimeEnv.BookToBookFromAccountNo,
-			"to_account_no":     runtimeEnv.BookToBookTargetAccountNo,
-			"to_expire_in_days": bookToBookTransferExpiryIn,
-			"amount":            1,
-		}
-		return fireAPIPostOnce(httpClient, runtimeEnv.Server.URL, runtimeEnv.MerchantNo, runtimeEnv.Secret, nonce, "/api/v1/transactions/transfer", outTradeNo, payload, cfg.MaxBodyBytes, runtimeEnv.WebhookSink, true)
-	}
-	fireBookToBookRefund := func(nonce, originTxnNo string) resultRow {
-		outTradeNo := "ord_perf_book_to_book_refund_" + nonce
-		payload := map[string]any{
-			"out_trade_no":     outTradeNo,
-			"refund_of_txn_no": originTxnNo,
-			"amount":           1,
-		}
-		return fireAPIPostOnce(httpClient, runtimeEnv.Server.URL, runtimeEnv.MerchantNo, runtimeEnv.Secret, nonce, "/api/v1/transactions/refund", outTradeNo, payload, cfg.MaxBodyBytes, runtimeEnv.WebhookSink, true)
-	}
+
+	fireBookTransfer := newSDKTransferFireFn(
+		sdkClient,
+		runtimeEnv.WebhookSink,
+		"ord_perf_book_transfer_",
+		runtimeEnv.TransferFromAccountNo,
+		runtimeEnv.TransferBookToAccount,
+		bookToBookTransferExpiryIn,
+	)
+	fireBookRefund := newSDKRefundFireFn(
+		sdkClient,
+		runtimeEnv.WebhookSink,
+		"ord_perf_book_refund_",
+	)
+	fireTransfer := newSDKTransferFireFn(
+		sdkClient,
+		runtimeEnv.WebhookSink,
+		"ord_perf_transfer_",
+		runtimeEnv.TransferFromAccountNo,
+		runtimeEnv.TransferToAccountNo,
+		0,
+	)
+	fireRefund := newSDKRefundFireFn(
+		sdkClient,
+		runtimeEnv.WebhookSink,
+		"ord_perf_refund_",
+	)
+	fireBookToBookTransfer := newSDKTransferFireFn(
+		sdkClient,
+		runtimeEnv.WebhookSink,
+		"ord_perf_book_to_book_transfer_",
+		runtimeEnv.BookToBookFromAccountNo,
+		runtimeEnv.BookToBookTargetAccountNo,
+		bookToBookTransferExpiryIn,
+	)
+	fireBookToBookRefund := newSDKRefundFireFn(
+		sdkClient,
+		runtimeEnv.WebhookSink,
+		"ord_perf_book_to_book_refund_",
+	)
 
 	if cfg.WarmupRequests > 0 {
 		for i := 0; i < cfg.WarmupRequests; i++ {
@@ -1489,13 +1474,52 @@ func runLoadByOriginTxnNos(
 	return aggregate(rows, submitElapsed, time.Since(start), mode)
 }
 
-func fireAPIPostOnce(
-	client *http.Client,
-	baseURL, merchantNo, secret, nonce, path, outTradeNo string,
-	payload map[string]any,
-	maxBodyBytes int64,
+func newSDKTransferFireFn(
+	client *coinsdk.Client,
+	sink *webhookSink,
+	outTradePrefix, fromAccountNo, toAccountNo string,
+	toExpireInDays int64,
+) scenarioFireFn {
+	return func(nonce string) resultRow {
+		outTradeNo := outTradePrefix + nonce
+		return fireSDKSubmitOnce(outTradeNo, sink, true, func(ctx context.Context) (coinsdk.TxnSubmitResponse, error) {
+			req := coinsdk.TransferRequest{
+				OutTradeNo:    outTradeNo,
+				TransferScene: service.SceneP2P,
+				FromAccountNo: fromAccountNo,
+				ToAccountNo:   toAccountNo,
+				Amount:        1,
+			}
+			if toExpireInDays > 0 {
+				req.ToExpireInDays = toExpireInDays
+			}
+			return client.Transactions.Transfer(ctx, req)
+		})
+	}
+}
+
+func newSDKRefundFireFn(
+	client *coinsdk.Client,
+	sink *webhookSink,
+	outTradePrefix string,
+) refundFireFn {
+	return func(nonce, originTxnNo string) resultRow {
+		outTradeNo := outTradePrefix + nonce
+		return fireSDKSubmitOnce(outTradeNo, sink, true, func(ctx context.Context) (coinsdk.TxnSubmitResponse, error) {
+			return client.Transactions.Refund(ctx, coinsdk.RefundRequest{
+				OutTradeNo:    outTradeNo,
+				RefundOfTxnNo: originTxnNo,
+				Amount:        1,
+			})
+		})
+	}
+}
+
+func fireSDKSubmitOnce(
+	outTradeNo string,
 	sink *webhookSink,
 	requireWebhook bool,
+	submit func(context.Context) (coinsdk.TxnSubmitResponse, error),
 ) resultRow {
 	var done <-chan time.Time
 	if requireWebhook {
@@ -1510,62 +1534,31 @@ func fireAPIPostOnce(
 		}
 	}
 
-	rawBody, err := json.Marshal(payload)
-	if err != nil {
-		cancelWait()
-		return resultRow{TransportErr: err.Error()}
-	}
-	if int64(len(rawBody)) > maxBodyBytes {
-		cancelWait()
-		return resultRow{TransportErr: "request body too large"}
-	}
-
-	ts := strconv.FormatInt(time.Now().UTC().UnixMilli(), 10)
-	signature := signRequest(http.MethodPost, path, merchantNo, ts, nonce, rawBody, secret)
-
-	req, err := http.NewRequest(http.MethodPost, baseURL+path, bytes.NewReader(rawBody))
-	if err != nil {
-		cancelWait()
-		return resultRow{TransportErr: err.Error()}
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Merchant-No", merchantNo)
-	req.Header.Set("X-Timestamp", ts)
-	req.Header.Set("X-Nonce", nonce)
-	req.Header.Set("X-Signature", signature)
-
 	submitStart := time.Now()
-	resp, err := client.Do(req)
+	resp, err := submit(context.Background())
 	submitLatency := time.Since(submitStart)
 	if err != nil {
+		var apiErr *coinsdk.APIError
+		if errors.As(err, &apiErr) {
+			row := resultRow{
+				StatusCode:      apiErr.HTTPStatus,
+				Code:            apiErr.Code,
+				SubmitLatency:   submitLatency,
+				SubmitStartedAt: submitStart,
+			}
+			cancelWait()
+			return row
+		}
 		cancelWait()
 		return resultRow{SubmitLatency: submitLatency, TransportErr: err.Error()}
 	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
-	if err != nil {
-		cancelWait()
-		return resultRow{StatusCode: resp.StatusCode, SubmitLatency: submitLatency, TransportErr: "read response: " + err.Error()}
-	}
-
-	var parsed map[string]any
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		cancelWait()
-		return resultRow{StatusCode: resp.StatusCode, SubmitLatency: submitLatency, TransportErr: "decode response: " + err.Error()}
-	}
-	code, _ := parsed["code"].(string)
-	txnNo := ""
-	if dataMap, ok := parsed["data"].(map[string]any); ok {
-		if v, ok := dataMap["txn_no"].(string); ok {
-			txnNo = strings.TrimSpace(v)
-		}
-	}
-	row := resultRow{StatusCode: resp.StatusCode, Code: code, TxnNo: txnNo, SubmitLatency: submitLatency, SubmitStartedAt: submitStart}
-	row.SubmitOK = resp.StatusCode == http.StatusCreated && code == "SUCCESS"
-	if !row.SubmitOK {
-		cancelWait()
-		return row
+	row := resultRow{
+		StatusCode:      http.StatusCreated,
+		Code:            "SUCCESS",
+		TxnNo:           resp.TxnNo,
+		SubmitLatency:   submitLatency,
+		SubmitStartedAt: submitStart,
+		SubmitOK:        true,
 	}
 	if !requireWebhook {
 		return row
@@ -1607,21 +1600,6 @@ func awaitWebhookResult(row *resultRow, webhookWaitTimeout time.Duration) {
 	}
 }
 
-func signRequest(method, path, merchantNo, ts, nonce string, body []byte, secret string) string {
-	bodyHash := sha256.Sum256(body)
-	signing := strings.Join([]string{
-		method,
-		path,
-		merchantNo,
-		ts,
-		nonce,
-		hex.EncodeToString(bodyHash[:]),
-	}, "\n")
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write([]byte(signing))
-	return hex.EncodeToString(mac.Sum(nil))
-}
-
 func aggregate(rows []resultRow, submitElapsed, elapsed time.Duration, mode string) metrics {
 	m := metrics{
 		Mode:               mode,
@@ -1636,7 +1614,7 @@ func aggregate(rows []resultRow, submitElapsed, elapsed time.Duration, mode stri
 
 	for _, r := range rows {
 		submitLatencies = append(submitLatencies, r.SubmitLatency)
-		if strings.TrimSpace(r.Code) != "" {
+		if r.Code != "" {
 			m.ErrorCodeHistogram[r.Code]++
 		}
 
