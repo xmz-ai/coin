@@ -7,6 +7,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.4.3
 	github.com/redis/go-redis/v9 v9.2.1
+	github.com/xmz-ai/coin/sdk/go/coin v0.0.0
 )
 
 require (
@@ -43,3 +44,5 @@ require (
 	google.golang.org/protobuf v1.30.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/xmz-ai/coin/sdk/go/coin => ./sdk/go/coin
