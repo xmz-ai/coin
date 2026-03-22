@@ -457,23 +457,29 @@ WHERE txn_no = $2::uuid
 	}
 
 	creditBooks := queryAccountBooksByAccount(t, pool, creditAccountNo)
-	if len(creditBooks) != 2 {
-		t.Fatalf("expected 2 credit account_book rows, got %d", len(creditBooks))
+	if len(creditBooks) != 3 {
+		t.Fatalf("expected 3 credit account_book rows, got %d", len(creditBooks))
 	}
-	if creditBooks[0].Balance != 50 || creditBooks[1].Balance != 120 {
+	if creditBooks[0].Balance != 70 || creditBooks[1].Balance != 50 || creditBooks[2].Balance != 50 {
 		t.Fatalf("unexpected credit account_book balances: %+v", creditBooks)
 	}
-	if !creditBooks[0].ExpireAt.Equal(creditSeedExpire) || !creditBooks[1].ExpireAt.Equal(creditExpire) {
+	if !creditBooks[0].ExpireAt.Equal(debitExpire1) || !creditBooks[1].ExpireAt.Equal(debitExpire2) || !creditBooks[2].ExpireAt.Equal(creditSeedExpire) {
 		t.Fatalf("unexpected credit account_book expire_at: %+v", creditBooks)
+	}
+	for _, item := range creditBooks {
+		if item.ExpireAt.Equal(creditExpire) {
+			t.Fatalf("book->book transfer should ignore credit_expire_at, got credit account_book rows=%+v", creditBooks)
+		}
 	}
 
 	bookLogs := queryBookChangesByTxnNo(t, pool, txnNo)
-	if len(bookLogs) != 3 {
-		t.Fatalf("expected 3 account_book_change_log rows, got %d", len(bookLogs))
+	if len(bookLogs) != 4 {
+		t.Fatalf("expected 4 account_book_change_log rows, got %d", len(bookLogs))
 	}
 
 	var debitBookDelta, creditBookDelta int64
 	var debitBookRows, creditBookRows int
+	creditExpiries := make([]time.Time, 0, 2)
 	for _, item := range bookLogs {
 		if item.AccountNo == debitAccountNo {
 			debitBookRows++
@@ -483,13 +489,17 @@ WHERE txn_no = $2::uuid
 		if item.AccountNo == creditAccountNo {
 			creditBookRows++
 			creditBookDelta += item.Delta
+			creditExpiries = append(creditExpiries, item.ExpireAt)
 		}
 	}
 	if debitBookRows != 2 || debitBookDelta != -120 {
 		t.Fatalf("unexpected debit book logs rows=%d delta=%d logs=%+v", debitBookRows, debitBookDelta, bookLogs)
 	}
-	if creditBookRows != 1 || creditBookDelta != 120 {
+	if creditBookRows != 2 || creditBookDelta != 120 {
 		t.Fatalf("unexpected credit book logs rows=%d delta=%d logs=%+v", creditBookRows, creditBookDelta, bookLogs)
+	}
+	if len(creditExpiries) != 2 || !creditExpiries[0].Equal(debitExpire1) || !creditExpiries[1].Equal(debitExpire2) {
+		t.Fatalf("unexpected credit book log expire_at list=%+v", creditExpiries)
 	}
 }
 

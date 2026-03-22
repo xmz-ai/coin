@@ -249,17 +249,15 @@ func (h *BusinessHandler) handleCredit(c *gin.Context) {
 	}
 	var creditExpireAt *time.Time
 	if creditAccount.BookEnabled {
-		if req.ExpireInDays <= 0 {
-			writeError(c, http.StatusBadRequest, "INVALID_PARAM", "expire_in_days is required for expiry account")
-			return
+		if req.ExpireInDays > 0 {
+			expireAt, err := calcExpireAtByDays(h.nowFn(), req.ExpireInDays)
+			if err != nil {
+				writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid expire_in_days")
+				return
+			}
+			normalizedExpireAt := normalizeExpiryDayUTC(expireAt)
+			creditExpireAt = &normalizedExpireAt
 		}
-		expireAt, err := calcExpireAtByDays(h.nowFn(), req.ExpireInDays)
-		if err != nil {
-			writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid expire_in_days")
-			return
-		}
-		normalizedExpireAt := normalizeExpiryDayUTC(expireAt)
-		creditExpireAt = &normalizedExpireAt
 	}
 
 	txn, err := h.transfer.Submit(service.TransferRequest{
@@ -291,7 +289,7 @@ func (h *BusinessHandler) handleCredit(c *gin.Context) {
 }
 
 func (h *BusinessHandler) handleDebit(c *gin.Context) {
-	if h == nil || h.transfer == nil || h.query == nil || h.merchants == nil || h.transferRouter == nil || h.asyncTransfer == nil || h.accountResolver == nil {
+	if h == nil || h.transfer == nil || h.query == nil || h.merchants == nil || h.transferRouter == nil || h.asyncTransfer == nil || h.accountResolver == nil || h.accounts == nil {
 		writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "business handler not configured")
 		return
 	}
@@ -385,6 +383,15 @@ func (h *BusinessHandler) handleDebit(c *gin.Context) {
 	})
 	if err != nil {
 		writeTransferError(c, err)
+		return
+	}
+	creditAccount, ok := h.accounts.GetAccount(resolved.CreditAccountNo)
+	if !ok {
+		writeError(c, http.StatusNotFound, "ACCOUNT_NOT_FOUND", "account not found")
+		return
+	}
+	if creditAccount.BookEnabled {
+		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "consume credit account does not support book")
 		return
 	}
 
@@ -521,13 +528,18 @@ func (h *BusinessHandler) handleTransfer(c *gin.Context) {
 		return
 	}
 
+	fromAccount, ok := h.accounts.GetAccount(resolved.DebitAccountNo)
+	if !ok {
+		writeError(c, http.StatusNotFound, "ACCOUNT_NOT_FOUND", "account not found")
+		return
+	}
 	toAccount, ok := h.accounts.GetAccount(resolved.CreditAccountNo)
 	if !ok {
 		writeError(c, http.StatusNotFound, "ACCOUNT_NOT_FOUND", "account not found")
 		return
 	}
 	var creditExpireAt *time.Time
-	if toAccount.BookEnabled {
+	if toAccount.BookEnabled && !fromAccount.BookEnabled {
 		if req.ToExpireInDays <= 0 {
 			writeError(c, http.StatusBadRequest, "INVALID_PARAM", "to_expire_in_days is required for expiry account")
 			return

@@ -97,7 +97,7 @@ func TestTC1102APICreditDuplicateReturns409(t *testing.T) {
 	}
 }
 
-func TestTC1102APICreditBookEnabledRequiresExpireInDays(t *testing.T) {
+func TestTC1102APICreditBookEnabledWithoutExpireInDaysUsesNoExpireBook(t *testing.T) {
 	r, repo, pool, merchantNo, secret := newTxnAPITestServer(t)
 
 	creditAccount, ok := repo.GetAccount(testCreditAccountNo)
@@ -113,12 +113,35 @@ func TestTC1102APICreditBookEnabledRequiresExpireInDays(t *testing.T) {
 	})
 	resp := httptest.NewRecorder()
 	r.ServeHTTP(resp, req)
-	if resp.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d body=%s", resp.Code, resp.Body.String())
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%s", resp.Code, resp.Body.String())
 	}
 	body := decodeJSONMap(t, resp.Body.Bytes())
-	if body["code"] != "INVALID_PARAM" {
-		t.Fatalf("expected INVALID_PARAM, got %v", body["code"])
+	txnNo, _ := body["data"].(map[string]any)["txn_no"].(string)
+	if txnNo == "" {
+		t.Fatalf("expected txn_no in response")
+	}
+	waitTxnStatus(t, r, merchantNo, secret, txnNo, service.TxnStatusRecvSuccess)
+
+	txn, ok := repo.GetTransferTxn(txnNo)
+	if !ok {
+		t.Fatalf("txn not found")
+	}
+	if !txn.CreditExpireAt.IsZero() {
+		t.Fatalf("expected credit_expire_at empty on submit, got %s", txn.CreditExpireAt.UTC())
+	}
+
+	books := queryAccountBooksByAccount(t, pool, creditAccount.AccountNo)
+	noExpire := time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)
+	var noExpireFound bool
+	for _, item := range books {
+		if item.ExpireAt.Equal(noExpire) && item.Balance == 100 {
+			noExpireFound = true
+			break
+		}
+	}
+	if !noExpireFound {
+		t.Fatalf("expected no-expire account_book row with balance=100, got %+v", books)
 	}
 }
 
@@ -398,6 +421,31 @@ func TestTC1106APIDebitSuccessAndDuplicate409(t *testing.T) {
 	body := decodeJSONMap(t, dupResp.Body.Bytes())
 	if body["code"] != "DUPLICATE_OUT_TRADE_NO" {
 		t.Fatalf("expected DUPLICATE_OUT_TRADE_NO, got %v", body["code"])
+	}
+}
+
+func TestTC1106APIDebitRejectsBookEnabledCreditAccount(t *testing.T) {
+	r, repo, pool, merchantNo, secret := newTxnAPITestServer(t)
+
+	setAccountBookEnabled(t, pool, testCreditAccountNo, true)
+	req := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/debit", merchantNo, secret, "nonce-1106-book-credit", map[string]any{
+		"out_trade_no":      "ord_1106_book_credit",
+		"transfer_scene":    "CONSUME",
+		"debit_account_no":  testDebitAccountNo,
+		"credit_account_no": testCreditAccountNo,
+		"amount":            10,
+	})
+	resp := httptest.NewRecorder()
+	r.ServeHTTP(resp, req)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	body := decodeJSONMap(t, resp.Body.Bytes())
+	if body["code"] != "INVALID_PARAM" {
+		t.Fatalf("expected INVALID_PARAM, got %v", body["code"])
+	}
+	if got := repo.TxnCount(); got != 0 {
+		t.Fatalf("expected no txn created, got %d", got)
 	}
 }
 
@@ -918,6 +966,85 @@ func TestTC1118APITransferBookEnabledAcceptsToExpireInDays(t *testing.T) {
 	want := time.Date(2024, 3, 10, 0, 0, 0, 0, time.UTC)
 	if !txn.CreditExpireAt.UTC().Equal(want) {
 		t.Fatalf("unexpected normalized credit_expire_at: got=%s want=%s", txn.CreditExpireAt.UTC(), want)
+	}
+}
+
+func TestTC1118APITransferBookToBookIgnoresToExpireInDaysAndKeepsDebitExpireParts(t *testing.T) {
+	r, repo, pool, merchantNo, secret := newTxnAPITestServer(t)
+
+	setAccountBookEnabled(t, pool, testDebitAccountNo, true)
+	setAccountBookEnabled(t, pool, testCreditAccountNo, true)
+
+	today := time.Now().UTC()
+	debitExpire1 := time.Date(today.Year(), today.Month(), today.Day()+5, 0, 0, 0, 0, time.UTC)
+	debitExpire2 := time.Date(today.Year(), today.Month(), today.Day()+9, 0, 0, 0, 0, time.UTC)
+	if _, err := pool.Exec(context.Background(), `
+UPDATE account
+SET balance = 120
+WHERE account_no = $1
+`, testDebitAccountNo); err != nil {
+		t.Fatalf("reset debit balance failed: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+UPDATE account
+SET balance = 0
+WHERE account_no = $1
+`, testCreditAccountNo); err != nil {
+		t.Fatalf("reset credit balance failed: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO account_book (book_no, account_no, expire_at, balance)
+VALUES
+  ('01956f4e-1118-7118-8118-111811181181'::uuid, $1, $2::date, 70),
+  ('01956f4e-1118-7118-8118-111811181182'::uuid, $1, $3::date, 50)
+`, testDebitAccountNo, debitExpire1, debitExpire2); err != nil {
+		t.Fatalf("seed debit account books failed: %v", err)
+	}
+
+	req := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/transfer", merchantNo, secret, "nonce-1118-book2book", map[string]any{
+		"out_trade_no":      "ord_1118_book2book",
+		"from_account_no":   testDebitAccountNo,
+		"to_account_no":     testCreditAccountNo,
+		"amount":            120,
+		"to_expire_in_days": 1,
+		"transfer_scene":    "P2P",
+	})
+	resp := httptest.NewRecorder()
+	r.ServeHTTP(resp, req)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%s", resp.Code, resp.Body.String())
+	}
+
+	body := decodeJSONMap(t, resp.Body.Bytes())
+	txnNo, _ := body["data"].(map[string]any)["txn_no"].(string)
+	if txnNo == "" {
+		t.Fatalf("expected txn_no in response")
+	}
+	waitTxnStatus(t, r, merchantNo, secret, txnNo, service.TxnStatusRecvSuccess)
+
+	txn, ok := repo.GetTransferTxn(txnNo)
+	if !ok {
+		t.Fatalf("txn not found")
+	}
+	if !txn.CreditExpireAt.IsZero() {
+		t.Fatalf("book->book should not persist credit_expire_at, got=%s", txn.CreditExpireAt.UTC())
+	}
+
+	bookLogs := queryBookChangesByTxnNo(t, pool, txnNo)
+	creditLogs := make([]pgBookChange, 0, len(bookLogs))
+	for _, item := range bookLogs {
+		if item.AccountNo == testCreditAccountNo {
+			creditLogs = append(creditLogs, item)
+		}
+	}
+	if len(creditLogs) != 2 {
+		t.Fatalf("expected 2 credit-side book logs, got %d logs=%+v", len(creditLogs), bookLogs)
+	}
+	if creditLogs[0].Delta != 70 || !creditLogs[0].ExpireAt.Equal(debitExpire1) {
+		t.Fatalf("unexpected first credit-side book log: %+v", creditLogs[0])
+	}
+	if creditLogs[1].Delta != 50 || !creditLogs[1].ExpireAt.Equal(debitExpire2) {
+		t.Fatalf("unexpected second credit-side book log: %+v", creditLogs[1])
 	}
 }
 

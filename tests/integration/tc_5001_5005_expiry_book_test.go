@@ -140,8 +140,9 @@ func TestTC5003ExpireAtEqualNowExcluded(t *testing.T) {
 	}
 }
 
-func TestTC5004ExpiryCreditRequiresExpireAt(t *testing.T) {
+func TestTC5004ExpiryCreditWithoutExpireAtUsesNoExpireBook(t *testing.T) {
 	repo, pool, _, _, creditAccountNo, txnNo := setupPostgresTransferFixture(t, service.TxnStatusPaySuccess, 100)
+	noExpire := time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)
 
 	if _, err := pool.Exec(context.Background(), `
 	UPDATE account
@@ -152,11 +153,33 @@ func TestTC5004ExpiryCreditRequiresExpireAt(t *testing.T) {
 	}
 
 	applied, err := repo.ApplyTransferCreditStage(txnNo, creditAccountNo, 100)
-	if !errors.Is(err, service.ErrExpireAtRequired) {
-		t.Fatalf("expected ErrExpireAtRequired, got applied=%v err=%v", applied, err)
+	if err != nil {
+		t.Fatalf("expected success, got applied=%v err=%v", applied, err)
 	}
-	if applied {
-		t.Fatalf("credit stage should not apply when credit_expire_at is missing")
+	if !applied {
+		t.Fatalf("credit stage should apply when credit_expire_at is missing")
+	}
+
+	account, ok := repo.GetAccount(creditAccountNo)
+	if !ok {
+		t.Fatalf("credit account not found")
+	}
+	if account.Balance != 100 {
+		t.Fatalf("unexpected account balance: got=%d want=%d", account.Balance, 100)
+	}
+	books := queryAccountBooksByAccount(t, pool, creditAccountNo)
+	if len(books) != 1 {
+		t.Fatalf("expected 1 no-expire account_book row, got %d rows=%+v", len(books), books)
+	}
+	if !books[0].ExpireAt.Equal(noExpire) || books[0].Balance != 100 {
+		t.Fatalf("unexpected no-expire account_book row: %+v", books[0])
+	}
+	bookLogs := queryBookChangesByTxnNo(t, pool, txnNo)
+	if len(bookLogs) != 1 {
+		t.Fatalf("expected 1 account_book_change_log row, got %d", len(bookLogs))
+	}
+	if !bookLogs[0].ExpireAt.Equal(noExpire) || bookLogs[0].Delta != 100 || bookLogs[0].BalanceAfter != 100 {
+		t.Fatalf("unexpected no-expire account_book_change_log row: %+v", bookLogs[0])
 	}
 }
 
@@ -201,5 +224,97 @@ func TestTC5005AccountBalanceEqualsBookSum(t *testing.T) {
 	}
 	if account.Balance != sum {
 		t.Fatalf("expected account.balance == sum(account_book.balance), got account=%d sum=%d books=%+v", account.Balance, sum, books)
+	}
+}
+
+func TestTC5006BookDebitFallsBackToNoExpireBookWhenAllowOverdraft(t *testing.T) {
+	repo, pool, _, debitAccountNo, _, txnNo := setupPostgresTransferFixture(t, service.TxnStatusInit, 80)
+	noExpire := time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)
+
+	if _, err := pool.Exec(context.Background(), `
+	UPDATE account
+	SET book_enabled = true, allow_overdraft = true, max_overdraft_limit = 100, balance = 0
+	WHERE account_no = $1
+	`, debitAccountNo); err != nil {
+		t.Fatalf("enable debit book overdraft account failed: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+	INSERT INTO account_book (book_no, account_no, expire_at, balance)
+	VALUES ('01956f4e-5006-7500-8500-500650065006'::uuid, $1, $2::date, 0)
+	`, debitAccountNo, noExpire); err != nil {
+		t.Fatalf("insert no-expire account_book failed: %v", err)
+	}
+
+	applied, err := repo.ApplyTransferDebitStage(txnNo, debitAccountNo, 80)
+	if err != nil {
+		t.Fatalf("apply debit stage failed: %v", err)
+	}
+	if !applied {
+		t.Fatalf("expected debit stage applied")
+	}
+
+	account, ok := repo.GetAccount(debitAccountNo)
+	if !ok {
+		t.Fatalf("debit account not found")
+	}
+	if account.Balance != -80 {
+		t.Fatalf("unexpected account balance after overdraft debit: got=%d want=%d", account.Balance, -80)
+	}
+	books := queryAccountBooksByAccount(t, pool, debitAccountNo)
+	if len(books) != 1 {
+		t.Fatalf("expected only no-expire account_book row, got %d rows=%+v", len(books), books)
+	}
+	if !books[0].ExpireAt.Equal(noExpire) || books[0].Balance != -80 {
+		t.Fatalf("unexpected no-expire book row after overdraft debit: %+v", books[0])
+	}
+	bookLogs := queryBookChangesByTxnNo(t, pool, txnNo)
+	if len(bookLogs) != 1 {
+		t.Fatalf("expected 1 account_book_change_log row, got %d", len(bookLogs))
+	}
+	if !bookLogs[0].ExpireAt.Equal(noExpire) || bookLogs[0].Delta != -80 || bookLogs[0].BalanceAfter != -80 {
+		t.Fatalf("unexpected no-expire book change row: %+v", bookLogs[0])
+	}
+}
+
+func TestTC5007BookDebitInsufficientWithoutOverdraftEvenWithNoExpireBook(t *testing.T) {
+	repo, pool, _, debitAccountNo, _, txnNo := setupPostgresTransferFixture(t, service.TxnStatusInit, 1)
+	noExpire := time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)
+
+	if _, err := pool.Exec(context.Background(), `
+	UPDATE account
+	SET book_enabled = true, allow_overdraft = false, max_overdraft_limit = 0, balance = 0
+	WHERE account_no = $1
+	`, debitAccountNo); err != nil {
+		t.Fatalf("enable debit book non-overdraft account failed: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+	INSERT INTO account_book (book_no, account_no, expire_at, balance)
+	VALUES ('01956f4e-5007-7500-8500-500750075007'::uuid, $1, $2::date, 0)
+	`, debitAccountNo, noExpire); err != nil {
+		t.Fatalf("insert no-expire account_book failed: %v", err)
+	}
+
+	applied, err := repo.ApplyTransferDebitStage(txnNo, debitAccountNo, 1)
+	if !errors.Is(err, service.ErrInsufficientBalance) {
+		t.Fatalf("expected ErrInsufficientBalance, got applied=%v err=%v", applied, err)
+	}
+	if applied {
+		t.Fatalf("debit stage should not apply")
+	}
+
+	account, ok := repo.GetAccount(debitAccountNo)
+	if !ok {
+		t.Fatalf("debit account not found")
+	}
+	if account.Balance != 0 {
+		t.Fatalf("unexpected account balance after failed debit: %d", account.Balance)
+	}
+	books := queryAccountBooksByAccount(t, pool, debitAccountNo)
+	if len(books) != 1 || books[0].Balance != 0 || !books[0].ExpireAt.Equal(noExpire) {
+		t.Fatalf("unexpected no-expire book rows after failed debit: %+v", books)
+	}
+	bookLogs := queryBookChangesByTxnNo(t, pool, txnNo)
+	if len(bookLogs) != 0 {
+		t.Fatalf("unexpected account_book_change_log rows after failed debit: %+v", bookLogs)
 	}
 }

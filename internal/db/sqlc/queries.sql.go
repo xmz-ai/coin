@@ -1211,14 +1211,21 @@ SELECT
   b.balance
 FROM account_book b
 WHERE b.account_no = $1
-  AND b.expire_at > $2::date
-  AND b.balance > 0
-ORDER BY b.expire_at ASC, b.book_no ASC
+  AND (
+    (b.expire_at > $2::date AND b.balance > 0)
+    OR b.expire_at = $3::date
+  )
+ORDER BY
+  CASE WHEN b.expire_at = $3::date THEN 1 ELSE 0 END ASC,
+  b.expire_at ASC,
+  b.book_no ASC
+FOR UPDATE OF b
 `
 
 type ListAvailableAccountBooksForUpdateParams struct {
-	AccountNo string
-	NowUtc    pgtype.Date
+	AccountNo  string
+	NowUtc     pgtype.Date
+	NoExpireAt pgtype.Date
 }
 
 type ListAvailableAccountBooksForUpdateRow struct {
@@ -1229,7 +1236,7 @@ type ListAvailableAccountBooksForUpdateRow struct {
 }
 
 func (q *Queries) ListAvailableAccountBooksForUpdate(ctx context.Context, arg ListAvailableAccountBooksForUpdateParams) ([]ListAvailableAccountBooksForUpdateRow, error) {
-	rows, err := q.db.Query(ctx, listAvailableAccountBooksForUpdate, arg.AccountNo, arg.NowUtc)
+	rows, err := q.db.Query(ctx, listAvailableAccountBooksForUpdate, arg.AccountNo, arg.NowUtc, arg.NoExpireAt)
 	if err != nil {
 		return nil, err
 	}
