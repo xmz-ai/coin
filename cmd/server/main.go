@@ -99,6 +99,25 @@ func main() {
 		Business:        businessHandler,
 		MerchantCreator: merchantService,
 	})
+	if err := api.RegisterAdminRoutes(r, api.AdminRoutesOptions{
+		Enabled:           cfg.AdminEnabled,
+		Repo:              repo,
+		MerchantService:   merchantService,
+		CustomerService:   customerService,
+		TransferService:   transferService,
+		TransferRouter:    transferRoutingService,
+		AsyncTransfer:     asyncTransferProcessor,
+		AccountResolver:   accountResolver,
+		QueryService:      queryService,
+		SecretRotator:     secretManager,
+		JWTSecret:         cfg.AdminJWTSecret,
+		AccessTokenTTL:    time.Duration(cfg.AdminAccessTokenTTLSeconds) * time.Second,
+		RefreshTokenTTL:   time.Duration(cfg.AdminRefreshTokenTTLSeconds) * time.Second,
+		BootstrapUsername: cfg.AdminBootstrapUsername,
+		BootstrapPassword: cfg.AdminBootstrapPassword,
+	}); err != nil {
+		log.Fatalf("register admin routes failed: %v", err)
+	}
 	if err := r.Run(cfg.HTTPAddr); err != nil {
 		log.Fatalf("http server failed: %v", err)
 	}

@@ -1,0 +1,146 @@
+:root {
+  --bg: #f3f5ef;
+  --panel: #ffffff;
+  --ink: #1b2430;
+  --muted: #586673;
+  --brand: #0f8f7a;
+  --brand-dark: #08584b;
+  --stroke: #d9e1dc;
+  --warning: #c84422;
+  --font-grotesk: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+  --font-mono: "IBM Plex Mono", "Menlo", "SFMono-Regular", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  background:
+    radial-gradient(circle at 20% 10%, #d8efe9 0, transparent 35%),
+    radial-gradient(circle at 80% 0, #f3dccd 0, transparent 40%),
+    var(--bg);
+  color: var(--ink);
+  font-family: var(--font-grotesk), sans-serif;
+}
+
+.shell-root {
+  min-height: 100vh;
+  background: transparent;
+}
+
+.shell-sider {
+  background: linear-gradient(180deg, #132027 0%, #1b2a32 100%) !important;
+  border-right: 1px solid #2a3c47;
+}
+
+.shell-logo {
+  color: #f5fff8;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  font-size: 18px;
+  margin: 20px 16px;
+}
+
+.shell-header {
+  background: transparent !important;
+  border-bottom: 1px solid var(--stroke);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  height: 68px;
+  padding: 0 24px !important;
+}
+
+.shell-header-title {
+  color: var(--ink);
+  font-weight: 700;
+  margin-right: 10px;
+}
+
+.shell-header-subtitle {
+  color: var(--muted);
+  font-family: var(--font-mono), monospace;
+}
+
+.shell-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.shell-username {
+  color: var(--brand-dark);
+  font-family: var(--font-mono), monospace;
+}
+
+.shell-content {
+  margin: 20px;
+  padding: 20px;
+  border: 1px solid var(--stroke);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--panel), #f6faf8 35%);
+}
+
+.shell-loading {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-family: var(--font-mono), monospace;
+}
+
+.login-wrap {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 430px;
+  padding: 28px;
+  border-radius: 18px;
+  border: 1px solid var(--stroke);
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 12px 28px rgba(26, 40, 33, 0.08);
+}
+
+.page-title {
+  margin: 0 0 18px;
+  font-size: 24px;
+  letter-spacing: 0.03em;
+}
+
+.page-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.page-card {
+  grid-column: span 12;
+}
+
+@media (min-width: 980px) {
+  .page-card.half {
+    grid-column: span 6;
+  }
+}
+
+.result-box {
+  margin-top: 10px;
+  border: 1px dashed var(--stroke);
+  border-radius: 12px;
+  padding: 10px;
+  font-family: var(--font-mono), monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

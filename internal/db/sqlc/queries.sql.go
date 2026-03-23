@@ -1321,7 +1321,7 @@ SELECT
   COALESCE(t.error_msg, '') AS error_msg,
   t.created_at
 FROM txn t
-WHERE t.merchant_no = $1
+WHERE ($1::text = '' OR t.merchant_no = $1::text)
   AND (
     NOT $2::bool
     OR EXISTS (

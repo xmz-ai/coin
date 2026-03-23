@@ -13,6 +13,12 @@ const (
 type Config struct {
 	HTTPAddr                     string
 	PprofEnabled                 bool
+	AdminEnabled                 bool
+	AdminJWTSecret               string
+	AdminAccessTokenTTLSeconds   int
+	AdminRefreshTokenTTLSeconds  int
+	AdminBootstrapUsername       string
+	AdminBootstrapPassword       string
 	PostgresDSN                  string
 	PostgresMaxConns             int
 	RedisAddr                    string
@@ -58,11 +64,20 @@ func Load() Config {
 	webhookWorkerIntervalMS, _ := strconv.Atoi(getenv("WEBHOOK_WORKER_INTERVAL_MS", "1000"))
 	webhookAsyncWorkers, _ := strconv.Atoi(getenv("WEBHOOK_ASYNC_WORKERS", "16"))
 	webhookAsyncQueueSize, _ := strconv.Atoi(getenv("WEBHOOK_ASYNC_QUEUE_SIZE", "65536"))
+	adminAccessTokenTTLSeconds, _ := strconv.Atoi(getenv("ADMIN_ACCESS_TOKEN_TTL_SECONDS", "1800"))
+	adminRefreshTokenTTLSeconds, _ := strconv.Atoi(getenv("ADMIN_REFRESH_TOKEN_TTL_SECONDS", "604800"))
 	pprofEnabled := getenvBool("PPROF_ENABLED", false)
 	txnAsyncProfileEnabled := getenvBool("TXN_ASYNC_PROFILE_ENABLED", false)
+	adminEnabled := getenvBool("ADMIN_ENABLED", true)
 	return Config{
 		HTTPAddr:                     getenv("HTTP_ADDR", ":8080"),
 		PprofEnabled:                 pprofEnabled,
+		AdminEnabled:                 adminEnabled,
+		AdminJWTSecret:               getenv("ADMIN_JWT_SECRET", "dev_admin_jwt_secret_change_me"),
+		AdminAccessTokenTTLSeconds:   adminAccessTokenTTLSeconds,
+		AdminRefreshTokenTTLSeconds:  adminRefreshTokenTTLSeconds,
+		AdminBootstrapUsername:       getenv("ADMIN_BOOTSTRAP_USERNAME", "admin"),
+		AdminBootstrapPassword:       getenv("ADMIN_BOOTSTRAP_PASSWORD", "admin123456"),
 		PostgresDSN:                  getenv("POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"),
 		PostgresMaxConns:             postgresMaxConns,
 		RedisAddr:                    getenv("REDIS_ADDR", "localhost:6379"),
