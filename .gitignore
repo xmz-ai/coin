@@ -5,5 +5,8 @@ handoff.md
 handoff.nd
 node_modules/
 .next/
+.env
+.idea/
+/server
 deploy/docker/.env
 deploy/docker/admin_setup_result.json

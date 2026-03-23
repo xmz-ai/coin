@@ -41,6 +41,7 @@ type Config struct {
 	WebhookAsyncWorkers          int
 	WebhookAsyncQueueSize        int
 	WebhookRetryBackoffMinute    []int
+	AutoMigrate                  bool
 }
 
 func Load() Config {
@@ -66,8 +67,10 @@ func Load() Config {
 	adminRefreshTokenTTLSeconds, _ := strconv.Atoi(getenv("ADMIN_REFRESH_TOKEN_TTL_SECONDS", "604800"))
 	pprofEnabled := getenvBool("PPROF_ENABLED", false)
 	txnAsyncProfileEnabled := getenvBool("TXN_ASYNC_PROFILE_ENABLED", false)
+	autoMigrate := getenvBool("AUTO_MIGRATE", true)
 	adminEnabled := getenvBool("ADMIN_ENABLED", true)
 	return Config{
+		AutoMigrate:                  autoMigrate,
 		HTTPAddr:                     getenv("HTTP_ADDR", ":8080"),
 		PprofEnabled:                 pprofEnabled,
 		AdminEnabled:                 adminEnabled,
