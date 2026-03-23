@@ -2068,11 +2068,12 @@ func pgTimestampToTime(ts pgtype.Timestamptz) time.Time {
 func insertOutboxEventTx(ctx context.Context, tx pgx.Tx, txnUUID pgtype.UUID, merchantNo, outTradeNo string) error {
 	qtx := dbsqlc.New(tx)
 	return qtx.InsertOutboxEvent(ctx, dbsqlc.InsertOutboxEventParams{
-		EventID:    deterministicOutboxEventID(txnUUID, "TxnSucceeded"),
-		TxnNo:      txnUUID,
-		MerchantNo: merchantNo,
-		OutTradeNo: nullIfEmpty(outTradeNo),
-		Status:     "PENDING",
+		EventID:           deterministicOutboxEventID(txnUUID, "TxnSucceeded"),
+		TxnNo:             txnUUID,
+		MerchantNo:        merchantNo,
+		OutTradeNo:        nullIfEmpty(outTradeNo),
+		Status:            "PENDING",
+		WebhookMerchantNo: merchantNo,
 	})
 }
 

@@ -139,6 +139,7 @@ func TestTC1125APITransferBalanceAndChangeLogs(t *testing.T) {
 
 func TestTC1126APIRefundBalanceAndChangeLogs(t *testing.T) {
 	r, repo, pool, merchantNo, secret := newTxnAPITestServer(t)
+	ensureWebhookEnabledForMerchant(t, repo, merchantNo)
 
 	debitBefore, _ := repo.GetAccount(testDebitAccountNo)
 	creditBefore, _ := repo.GetAccount(testCreditAccountNo)
