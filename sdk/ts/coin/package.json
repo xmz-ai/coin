@@ -1,0 +1,32 @@
+{
+  "name": "@xmz-ai/coin",
+  "version": "0.1.0",
+  "description": "Coin merchant SDK for Node.js / TypeScript",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "VERSION",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^5.4.0",
+    "vitest": "^3.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xmz-ai/coin.git",
+    "directory": "sdk/ts/coin"
+  },
+  "license": "MIT"
+}

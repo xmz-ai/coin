@@ -25,3 +25,15 @@
 - name: "release:sdk-go:major"
   description: "Bump Go SDK major version (X.x.x)"
   color: "D93F0B"
+
+- name: "release:sdk-ts:patch"
+  description: "Bump TS SDK patch version (x.x.X)"
+  color: "0E8A16"
+
+- name: "release:sdk-ts:minor"
+  description: "Bump TS SDK minor version (x.X.x)"
+  color: "1D76DB"
+
+- name: "release:sdk-ts:major"
+  description: "Bump TS SDK major version (X.x.x)"
+  color: "D93F0B"
