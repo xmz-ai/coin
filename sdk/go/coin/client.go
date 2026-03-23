@@ -50,6 +50,7 @@ type Client struct {
 	nonce          func() string
 	userAgent      string
 
+	Customers    *CustomersAPI
 	Merchant     *MerchantAPI
 	Transactions *TransactionsAPI
 }
@@ -105,6 +106,7 @@ func NewClient(opts ClientOptions) (*Client, error) {
 		nonce:          nonceFn,
 		userAgent:      strings.TrimSpace(opts.UserAgent),
 	}
+	c.Customers = &CustomersAPI{client: c}
 	c.Merchant = &MerchantAPI{client: c}
 	c.Transactions = &TransactionsAPI{client: c}
 	return c, nil
