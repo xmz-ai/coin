@@ -26,7 +26,8 @@ jobs:
           script: |
             const labels = (context.payload.pull_request.labels || []).map((l) => l.name);
             const coreLabels = labels.filter((x) => /^release:core:(major|minor|patch)$/.test(x));
-            const sdkLabels = labels.filter((x) => /^release:sdk-go:(major|minor|patch)$/.test(x));
+            const sdkGoLabels = labels.filter((x) => /^release:sdk-go:(major|minor|patch)$/.test(x));
+            const sdkTsLabels = labels.filter((x) => /^release:sdk-ts:(major|minor|patch)$/.test(x));
             const none = labels.includes("release:none");
 
             if (none) {
@@ -34,22 +35,24 @@ jobs:
               core.notice("release:none detected, skip release.");
               return;
             }
-            if (coreLabels.length > 1 || sdkLabels.length > 1) {
-              core.setFailed(`conflicting labels: core=${coreLabels.join(",")} sdk=${sdkLabels.join(",")}`);
+            if (coreLabels.length > 1 || sdkGoLabels.length > 1 || sdkTsLabels.length > 1) {
+              core.setFailed(`conflicting labels: core=${coreLabels.join(",")} sdk-go=${sdkGoLabels.join(",")} sdk-ts=${sdkTsLabels.join(",")}`);
               return;
             }
-            if (coreLabels.length === 0 && sdkLabels.length === 0) {
+            if (coreLabels.length === 0 && sdkGoLabels.length === 0 && sdkTsLabels.length === 0) {
               core.setOutput("skip", "true");
               core.notice("no release label found, skip release.");
               return;
             }
 
             const coreLevel = coreLabels.length === 1 ? coreLabels[0].split(":").pop() : "";
-            const sdkLevel = sdkLabels.length === 1 ? sdkLabels[0].split(":").pop() : "";
+            const sdkGoLevel = sdkGoLabels.length === 1 ? sdkGoLabels[0].split(":").pop() : "";
+            const sdkTsLevel = sdkTsLabels.length === 1 ? sdkTsLabels[0].split(":").pop() : "";
             core.setOutput("skip", "false");
             core.setOutput("core_level", coreLevel);
-            core.setOutput("sdk_level", sdkLevel);
-            core.notice(`release plan core=${coreLevel || "none"} sdk=${sdkLevel || "none"}`);
+            core.setOutput("sdk_level", sdkGoLevel);
+            core.setOutput("sdk_ts_level", sdkTsLevel);
+            core.notice(`release plan core=${coreLevel || "none"} sdk-go=${sdkGoLevel || "none"} sdk-ts=${sdkTsLevel || "none"}`);
 
       - name: Stop if skipped
         if: steps.parse.outputs.skip == 'true'
@@ -93,6 +96,19 @@ jobs:
             echo "sdk_tag=${sdk_tag}" >> "$GITHUB_OUTPUT"
           fi
 
+          sdk_ts_level="${{ steps.parse.outputs.sdk_ts_level }}"
+          sdk_ts_tag=""
+
+          if [[ -n "${sdk_ts_level}" ]]; then
+            current="$(cat sdk/ts/coin/VERSION | tr -d ' \n\r\t')"
+            next="$(scripts/release/bump_semver.sh "${current}" "${sdk_ts_level}")"
+            echo "${next}" > sdk/ts/coin/VERSION
+            cd sdk/ts/coin && npm pkg set version="${next}" && cd ../../..
+            sdk_ts_tag="sdk/ts/coin/v${next}"
+            echo "sdk_ts_version=${next}" >> "$GITHUB_OUTPUT"
+            echo "sdk_ts_tag=${sdk_ts_tag}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Commit version bumps
         if: steps.parse.outputs.skip != 'true'
         run: |
@@ -103,7 +119,7 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add VERSION sdk/go/coin/VERSION || true
+          git add VERSION sdk/go/coin/VERSION sdk/ts/coin/VERSION sdk/ts/coin/package.json || true
           git commit -m "chore(release): bump version from PR #${{ github.event.pull_request.number }}"
           git push origin HEAD:main
 
@@ -129,5 +145,15 @@ jobs:
             else
               git tag "${sdk_tag}"
               git push origin "${sdk_tag}"
+            fi
+          fi
+
+          sdk_ts_tag="${{ steps.bump.outputs.sdk_ts_tag }}"
+          if [[ -n "${sdk_ts_tag}" ]]; then
+            if git rev-parse "${sdk_ts_tag}" >/dev/null 2>&1; then
+              echo "sdk-ts tag exists: ${sdk_ts_tag}"
+            else
+              git tag "${sdk_ts_tag}"
+              git push origin "${sdk_ts_tag}"
             fi
           fi
