@@ -1,5 +1,6 @@
 import { createHmac, createHash, randomBytes } from "node:crypto";
 import { CoinAPIError } from "./error.js";
+import { CustomersAPI } from "./customers.js";
 import { MerchantAPI } from "./merchant.js";
 import { TransactionsAPI } from "./transactions.js";
 import type { ClientOptions } from "./types.js";
@@ -24,6 +25,7 @@ export class CoinClient {
   /** @internal */ readonly _nonce: () => string;
   /** @internal */ readonly _userAgent: string;
 
+  readonly customers: CustomersAPI;
   readonly merchant: MerchantAPI;
   readonly transactions: TransactionsAPI;
 
@@ -54,6 +56,7 @@ export class CoinClient {
     this._nonce = opts.nonceGenerator ?? (() => randomBytes(16).toString("hex"));
     this._userAgent = (opts.userAgent ?? "").trim();
 
+    this.customers = new CustomersAPI(this);
     this.merchant = new MerchantAPI(this);
     this.transactions = new TransactionsAPI(this);
   }

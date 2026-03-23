@@ -84,6 +84,13 @@ export interface ListTransactionsResponse {
   next_page_token: string;
 }
 
+export interface CustomerBalance {
+  out_user_id: string;
+  account_no: string;
+  balance: number;
+  book_enabled: boolean;
+}
+
 export interface MerchantProfile {
   merchant_no: string;
   name: string;
