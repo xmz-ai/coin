@@ -1,0 +1,16 @@
+.git
+.cache
+.claude
+
+core_sqls.md
+handoff.md
+perf.md
+refund.md
+trans.md
+
+web/admin/.next
+web/admin/node_modules
+web/admin/npm-debug.log*
+
+tests
+scripts/test
