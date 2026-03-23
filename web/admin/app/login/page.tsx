@@ -14,16 +14,52 @@ type LoginResponse = {
   };
 };
 
+type SetupStatusResponse = {
+  initialized: boolean;
+};
+
 export default function LoginPage(): JSX.Element {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
+  const [booting, setBooting] = useState(true);
   const [errMsg, setErrMsg] = useState("");
 
   useEffect(() => {
-    if (getAccessToken()) {
-      router.replace("/dashboard");
-    }
+    let active = true;
+    const checkSetup = async (): Promise<void> => {
+      if (getAccessToken()) {
+        router.replace("/dashboard");
+        return;
+      }
+      try {
+        const status = await apiRequest<SetupStatusResponse>("/setup/status", {}, { auth: false });
+        if (!active) {
+          return;
+        }
+        if (!status.initialized) {
+          router.replace("/setup");
+          return;
+        }
+      } catch {
+        if (!active) {
+          return;
+        }
+        router.replace("/setup");
+        return;
+      }
+      if (active) {
+        setBooting(false);
+      }
+    };
+    void checkSetup();
+    return () => {
+      active = false;
+    };
   }, [router]);
+
+  if (booting) {
+    return <div className="shell-loading">正在检查首次初始化状态...</div>;
+  }
 
   return (
     <div className="login-wrap">

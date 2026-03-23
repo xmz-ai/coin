@@ -7,6 +7,8 @@
 
 ## 2. 登录接口
 
+- `GET /admin/api/v1/setup/status`
+- `POST /admin/api/v1/setup/initialize`
 - `POST /admin/api/v1/auth/login`
 - `POST /admin/api/v1/auth/refresh`
 - `GET /admin/api/v1/auth/me`
@@ -45,10 +47,14 @@
 
 ## 4. 数据表
 
-新增迁移：`migrations/000011_admin_console.up.sql`
+新增迁移：
+
+- `migrations/000011_admin_console.up.sql`
+- `migrations/000012_admin_setup_state.up.sql`
 
 - `admin_user`
 - `admin_audit_log`
+- `admin_setup_state`
 
 ## 5. 关键环境变量
 
@@ -56,14 +62,12 @@
 - `ADMIN_JWT_SECRET`（默认 `dev_admin_jwt_secret_change_me`）
 - `ADMIN_ACCESS_TOKEN_TTL_SECONDS`（默认 `1800`）
 - `ADMIN_REFRESH_TOKEN_TTL_SECONDS`（默认 `604800`）
-- `ADMIN_BOOTSTRAP_USERNAME`（默认 `admin`）
-- `ADMIN_BOOTSTRAP_PASSWORD`（默认 `admin123456`）
 
-> 上线前请显式覆盖默认账号与 JWT secret。
+> 首次启动请先调用 setup 初始化管理员与默认商户；上线前请显式覆盖 `ADMIN_JWT_SECRET`。
 
 ## 6. Web 控制台
 
 目录：`web/admin`
 
 - Next.js + React + Ant Design
-- 页面：`/login /dashboard /merchants /customers /accounts /transactions /notify`
+- 页面：`/setup /setup/success /login /dashboard /merchants /customers /accounts /transactions /notify`

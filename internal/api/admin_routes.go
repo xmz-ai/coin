@@ -25,22 +25,20 @@ type adminAsyncTxnDispatcher interface {
 }
 
 type AdminRoutesOptions struct {
-	Enabled           bool
-	Repo              *db.Repository
-	MerchantService   *service.MerchantService
-	CustomerService   *service.CustomerService
-	TransferService   *service.TransferService
-	TransferRouter    *service.TransferRoutingService
-	AsyncTransfer     adminAsyncDispatcher
-	AccountResolver   *service.AccountResolver
-	QueryService      *service.TxnQueryService
-	SecretRotator     MerchantSecretRotator
-	JWTSecret         string
-	AccessTokenTTL    time.Duration
-	RefreshTokenTTL   time.Duration
-	BootstrapUsername string
-	BootstrapPassword string
-	NowFn             func() time.Time
+	Enabled         bool
+	Repo            *db.Repository
+	MerchantService *service.MerchantService
+	CustomerService *service.CustomerService
+	TransferService *service.TransferService
+	TransferRouter  *service.TransferRoutingService
+	AsyncTransfer   adminAsyncDispatcher
+	AccountResolver *service.AccountResolver
+	QueryService    *service.TxnQueryService
+	SecretRotator   MerchantSecretRotator
+	JWTSecret       string
+	AccessTokenTTL  time.Duration
+	RefreshTokenTTL time.Duration
+	NowFn           func() time.Time
 }
 
 func RegisterAdminRoutes(r *gin.Engine, opts AdminRoutesOptions) error {
@@ -63,7 +61,8 @@ func RegisterAdminRoutes(r *gin.Engine, opts AdminRoutesOptions) error {
 	if err != nil {
 		return err
 	}
-	if err := authController.BootstrapDefaultUser(opts.BootstrapUsername, opts.BootstrapPassword); err != nil {
+	setupController, err := newAdminSetupController(opts.Repo, opts.MerchantService, opts.SecretRotator)
+	if err != nil {
 		return err
 	}
 
@@ -81,6 +80,8 @@ func RegisterAdminRoutes(r *gin.Engine, opts AdminRoutesOptions) error {
 	}
 
 	base := r.Group("/admin/api/v1")
+	base.GET("/setup/status", setupController.handleStatus)
+	base.POST("/setup/initialize", setupController.handleInitialize)
 	base.POST("/auth/login", authController.handleLogin)
 	base.POST("/auth/refresh", authController.handleRefresh)
 

@@ -112,6 +112,76 @@ body {
   box-shadow: 0 12px 28px rgba(26, 40, 33, 0.08);
 }
 
+.setup-card {
+  max-width: 560px;
+}
+
+.setup-success-card {
+  max-width: 760px;
+}
+
+.setup-success-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.setup-success-icon {
+  color: var(--brand);
+  font-size: 26px;
+  margin-top: 4px;
+}
+
+.setup-credential-list {
+  border: 1px solid var(--stroke);
+  border-radius: 14px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.setup-credential-row {
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid #eef3ef;
+}
+
+.setup-credential-row:last-child {
+  border-bottom: 0;
+}
+
+.setup-credential-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.setup-credential-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.setup-credential-value,
+.setup-credential-secret {
+  font-family: var(--font-mono), monospace;
+  word-break: break-all;
+}
+
+.setup-credential-secret {
+  color: var(--warning);
+}
+
+.setup-success-actions {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .page-title {
   margin: 0 0 18px;
   font-size: 24px;
@@ -143,4 +213,24 @@ body {
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.setup-result {
+  margin-top: 16px;
+}
+
+.setup-secret {
+  color: var(--warning);
+}
+
+@media (max-width: 768px) {
+  .setup-credential-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .setup-success-actions {
+    justify-content: stretch;
+    flex-direction: column;
+  }
 }
