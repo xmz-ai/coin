@@ -2,3 +2,5 @@
 perf.md
 core_sqls.md
 handoff.md
+node_modules/
+.next/

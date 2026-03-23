@@ -248,7 +248,7 @@ SELECT
   COALESCE(t.error_msg, '') AS error_msg,
   t.created_at
 FROM txn t
-WHERE t.merchant_no = sqlc.arg(merchant_no)
+WHERE (sqlc.arg(merchant_no)::text = '' OR t.merchant_no = sqlc.arg(merchant_no)::text)
   AND (
     NOT sqlc.arg(has_out_user_id)::bool
     OR EXISTS (
