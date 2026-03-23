@@ -132,6 +132,18 @@ type AdminAccountFilter struct {
 	PageSize   int
 }
 
+type AdminSetupState struct {
+	Initialized              bool
+	InitializedAdminUsername string
+	DefaultMerchantNo        string
+	InitializedAt            *time.Time
+	UpdatedAt                time.Time
+}
+
+var ErrAdminUserExists = errors.New("admin user exists")
+
+const adminSetupAdvisoryLockKey int64 = 22060323
+
 func (r *Repository) EnsureAdminUser(username, passwordHash string) error {
 	if r == nil {
 		return errors.New("repository is nil")
@@ -154,6 +166,217 @@ func (r *Repository) EnsureAdminUser(username, passwordHash string) error {
 			status = 'ACTIVE',
 			updated_at = NOW()
 	`, fixedUsername, fixedHash)
+	return err
+}
+
+func (r *Repository) CreateAdminUser(username, passwordHash string) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+	fixedUsername := strings.TrimSpace(username)
+	fixedHash := strings.TrimSpace(passwordHash)
+	if fixedUsername == "" || fixedHash == "" {
+		return errors.New("username and password_hash are required")
+	}
+
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO admin_user (username, password_hash, status, created_at, updated_at)
+		VALUES ($1, $2, 'ACTIVE', NOW(), NOW())
+	`, fixedUsername, fixedHash)
+	if isUniqueViolation(err) {
+		return ErrAdminUserExists
+	}
+	return err
+}
+
+func (r *Repository) CountAdminUsers() (int64, error) {
+	if r == nil {
+		return 0, errors.New("repository is nil")
+	}
+
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	var count int64
+	if err := r.pool.QueryRow(ctx, `SELECT COUNT(*)::bigint FROM admin_user`).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func (r *Repository) WithAdminSetupLock(fn func() error) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+	if fn == nil {
+		return errors.New("admin setup lock callback is nil")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	conn, err := r.pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, adminSetupAdvisoryLockKey); err != nil {
+		return err
+	}
+	defer func() {
+		unlockCtx, unlockCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer unlockCancel()
+		_, _ = conn.Exec(unlockCtx, `SELECT pg_advisory_unlock($1)`, adminSetupAdvisoryLockKey)
+	}()
+
+	return fn()
+}
+
+func (r *Repository) GetAdminSetupState() (AdminSetupState, error) {
+	if r == nil {
+		return AdminSetupState{}, errors.New("repository is nil")
+	}
+
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	if err := r.ensureAdminSetupStateRow(ctx); err != nil {
+		return AdminSetupState{}, err
+	}
+
+	var out AdminSetupState
+	var initializedAt pgtype.Timestamptz
+	if err := r.pool.QueryRow(ctx, `
+		SELECT initialized, initialized_admin_username, default_merchant_no, initialized_at, updated_at
+		FROM admin_setup_state
+		WHERE id = 1
+		LIMIT 1
+	`).Scan(
+		&out.Initialized,
+		&out.InitializedAdminUsername,
+		&out.DefaultMerchantNo,
+		&initializedAt,
+		&out.UpdatedAt,
+	); err != nil {
+		return AdminSetupState{}, err
+	}
+	if initializedAt.Valid {
+		v := initializedAt.Time.UTC()
+		out.InitializedAt = &v
+	}
+	out.InitializedAdminUsername = strings.TrimSpace(out.InitializedAdminUsername)
+	out.DefaultMerchantNo = strings.TrimSpace(out.DefaultMerchantNo)
+	out.UpdatedAt = out.UpdatedAt.UTC()
+	return out, nil
+}
+
+func (r *Repository) SaveAdminSetupProgress(adminUsername, defaultMerchantNo string) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	if err := r.ensureAdminSetupStateRow(ctx); err != nil {
+		return err
+	}
+
+	_, err := r.pool.Exec(ctx, `
+		UPDATE admin_setup_state
+		SET initialized_admin_username = CASE
+				WHEN NULLIF($1, '') IS NULL THEN initialized_admin_username
+				ELSE $1
+			END,
+			default_merchant_no = CASE
+				WHEN NULLIF($2, '') IS NULL THEN default_merchant_no
+				ELSE $2
+			END,
+			updated_at = NOW()
+		WHERE id = 1
+	`, strings.TrimSpace(adminUsername), strings.TrimSpace(defaultMerchantNo))
+	return err
+}
+
+func (r *Repository) MarkAdminSetupInitialized(adminUsername, defaultMerchantNo string) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	if err := r.ensureAdminSetupStateRow(ctx); err != nil {
+		return err
+	}
+
+	_, err := r.pool.Exec(ctx, `
+		UPDATE admin_setup_state
+		SET initialized = TRUE,
+			initialized_admin_username = CASE
+				WHEN NULLIF($1, '') IS NULL THEN initialized_admin_username
+				ELSE $1
+			END,
+			default_merchant_no = CASE
+				WHEN NULLIF($2, '') IS NULL THEN default_merchant_no
+				ELSE $2
+			END,
+			initialized_at = COALESCE(initialized_at, NOW()),
+			updated_at = NOW()
+		WHERE id = 1
+	`, strings.TrimSpace(adminUsername), strings.TrimSpace(defaultMerchantNo))
+	return err
+}
+
+func (r *Repository) ensureAdminSetupStateRow(ctx context.Context) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+	if ctx == nil {
+		return errors.New("context is nil")
+	}
+	if err := r.ensureAdminSetupStateTable(ctx); err != nil {
+		return err
+	}
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO admin_setup_state (
+			id,
+			initialized,
+			initialized_admin_username,
+			default_merchant_no
+		) VALUES (
+			1,
+			FALSE,
+			'',
+			''
+		)
+		ON CONFLICT (id) DO NOTHING
+	`)
+	return err
+}
+
+func (r *Repository) ensureAdminSetupStateTable(ctx context.Context) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+	if ctx == nil {
+		return errors.New("context is nil")
+	}
+	_, err := r.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS admin_setup_state (
+			id SMALLINT PRIMARY KEY CHECK (id = 1),
+			initialized BOOLEAN NOT NULL DEFAULT FALSE,
+			initialized_admin_username VARCHAR(64) NOT NULL DEFAULT '',
+			default_merchant_no VARCHAR(16) NOT NULL DEFAULT '',
+			initialized_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)
+	`)
 	return err
 }
 

@@ -18,13 +18,16 @@ Override with env var:
 
 ## Login
 
-Use bootstrap credentials configured in server env:
+On first startup, open `/setup` to initialize:
 
-- `ADMIN_BOOTSTRAP_USERNAME` (default `admin`)
-- `ADMIN_BOOTSTRAP_PASSWORD` (default `admin123456`)
+- admin username/password
+- default merchant
+- merchant secret (shown in setup result)
 
 ## MVP Pages
 
+- `/setup`
+- `/setup/success`
 - `/login`
 - `/dashboard`
 - `/merchants`

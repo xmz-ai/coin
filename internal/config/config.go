@@ -17,8 +17,6 @@ type Config struct {
 	AdminJWTSecret               string
 	AdminAccessTokenTTLSeconds   int
 	AdminRefreshTokenTTLSeconds  int
-	AdminBootstrapUsername       string
-	AdminBootstrapPassword       string
 	PostgresDSN                  string
 	PostgresMaxConns             int
 	RedisAddr                    string
@@ -76,8 +74,6 @@ func Load() Config {
 		AdminJWTSecret:               getenv("ADMIN_JWT_SECRET", "dev_admin_jwt_secret_change_me"),
 		AdminAccessTokenTTLSeconds:   adminAccessTokenTTLSeconds,
 		AdminRefreshTokenTTLSeconds:  adminRefreshTokenTTLSeconds,
-		AdminBootstrapUsername:       getenv("ADMIN_BOOTSTRAP_USERNAME", "admin"),
-		AdminBootstrapPassword:       getenv("ADMIN_BOOTSTRAP_PASSWORD", "admin123456"),
 		PostgresDSN:                  getenv("POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"),
 		PostgresMaxConns:             postgresMaxConns,
 		RedisAddr:                    getenv("REDIS_ADDR", "localhost:6379"),
