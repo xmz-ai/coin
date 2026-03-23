@@ -1,0 +1,133 @@
+name: Release Bump On Merge
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: release-bump-main
+  cancel-in-progress: false
+
+jobs:
+  bump-and-tag:
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Parse release labels
+        id: parse
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = (context.payload.pull_request.labels || []).map((l) => l.name);
+            const coreLabels = labels.filter((x) => /^release:core:(major|minor|patch)$/.test(x));
+            const sdkLabels = labels.filter((x) => /^release:sdk-go:(major|minor|patch)$/.test(x));
+            const none = labels.includes("release:none");
+
+            if (none) {
+              core.setOutput("skip", "true");
+              core.notice("release:none detected, skip release.");
+              return;
+            }
+            if (coreLabels.length > 1 || sdkLabels.length > 1) {
+              core.setFailed(`conflicting labels: core=${coreLabels.join(",")} sdk=${sdkLabels.join(",")}`);
+              return;
+            }
+            if (coreLabels.length === 0 && sdkLabels.length === 0) {
+              core.setOutput("skip", "true");
+              core.notice("no release label found, skip release.");
+              return;
+            }
+
+            const coreLevel = coreLabels.length === 1 ? coreLabels[0].split(":").pop() : "";
+            const sdkLevel = sdkLabels.length === 1 ? sdkLabels[0].split(":").pop() : "";
+            core.setOutput("skip", "false");
+            core.setOutput("core_level", coreLevel);
+            core.setOutput("sdk_level", sdkLevel);
+            core.notice(`release plan core=${coreLevel || "none"} sdk=${sdkLevel || "none"}`);
+
+      - name: Stop if skipped
+        if: steps.parse.outputs.skip == 'true'
+        run: echo "skip release."
+
+      - name: Checkout main
+        if: steps.parse.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Bump versions
+        if: steps.parse.outputs.skip != 'true'
+        id: bump
+        run: |
+          set -euo pipefail
+          chmod +x scripts/release/bump_semver.sh
+
+          core_level="${{ steps.parse.outputs.core_level }}"
+          sdk_level="${{ steps.parse.outputs.sdk_level }}"
+
+          core_tag=""
+          sdk_tag=""
+
+          if [[ -n "${core_level}" ]]; then
+            current="$(cat VERSION | tr -d ' \n\r\t')"
+            next="$(scripts/release/bump_semver.sh "${current}" "${core_level}")"
+            echo "${next}" > VERSION
+            core_tag="v${next}"
+            echo "core_version=${next}" >> "$GITHUB_OUTPUT"
+            echo "core_tag=${core_tag}" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [[ -n "${sdk_level}" ]]; then
+            current="$(cat sdk/go/coin/VERSION | tr -d ' \n\r\t')"
+            next="$(scripts/release/bump_semver.sh "${current}" "${sdk_level}")"
+            echo "${next}" > sdk/go/coin/VERSION
+            sdk_tag="sdk/go/coin/v${next}"
+            echo "sdk_version=${next}" >> "$GITHUB_OUTPUT"
+            echo "sdk_tag=${sdk_tag}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit version bumps
+        if: steps.parse.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "no version changes."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add VERSION sdk/go/coin/VERSION || true
+          git commit -m "chore(release): bump version from PR #${{ github.event.pull_request.number }}"
+          git push origin HEAD:main
+
+      - name: Create and push tags
+        if: steps.parse.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          core_tag="${{ steps.bump.outputs.core_tag }}"
+          sdk_tag="${{ steps.bump.outputs.sdk_tag }}"
+
+          if [[ -n "${core_tag}" ]]; then
+            if git rev-parse "${core_tag}" >/dev/null 2>&1; then
+              echo "core tag exists: ${core_tag}"
+            else
+              git tag "${core_tag}"
+              git push origin "${core_tag}"
+            fi
+          fi
+
+          if [[ -n "${sdk_tag}" ]]; then
+            if git rev-parse "${sdk_tag}" >/dev/null 2>&1; then
+              echo "sdk tag exists: ${sdk_tag}"
+            else
+              git tag "${sdk_tag}"
+              git push origin "${sdk_tag}"
+            fi
+          fi

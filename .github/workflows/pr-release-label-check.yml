@@ -1,0 +1,44 @@
+name: PR Release Label Check
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-release-label:
+    if: ${{ github.event.pull_request.base.ref == 'main' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate release labels
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = (context.payload.pull_request.labels || []).map((l) => l.name);
+            const coreLabels = labels.filter((x) => /^release:core:(major|minor|patch)$/.test(x));
+            const sdkLabels = labels.filter((x) => /^release:sdk-go:(major|minor|patch)$/.test(x));
+            const none = labels.includes("release:none");
+
+            if (none && (coreLabels.length > 0 || sdkLabels.length > 0)) {
+              core.setFailed("release:none cannot be combined with release:core:* or release:sdk-go:*");
+              return;
+            }
+            if (coreLabels.length > 1) {
+              core.setFailed(`conflicting core release labels: ${coreLabels.join(", ")}`);
+              return;
+            }
+            if (sdkLabels.length > 1) {
+              core.setFailed(`conflicting sdk release labels: ${sdkLabels.join(", ")}`);
+              return;
+            }
+            if (!none && coreLabels.length === 0 && sdkLabels.length === 0) {
+              core.setFailed(
+                "missing release label. choose one of: " +
+                "release:none, release:core:{patch|minor|major}, release:sdk-go:{patch|minor|major}"
+              );
+              return;
+            }
+
+            core.notice(`release labels ok: ${labels.join(", ")}`);
