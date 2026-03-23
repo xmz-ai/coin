@@ -106,6 +106,25 @@ func TestTC9012PostgresAsyncProcessorWritesTwoLogsAndBalances(t *testing.T) {
 	}
 }
 
+func TestTC9021PostgresSuccessWithoutWebhookConfigSkipsOutbox(t *testing.T) {
+	repo, _, merchant, _, _, txnNo := setupPostgresTransferFixture(t, service.TxnStatusInit, 60)
+	if err := repo.UpsertWebhookConfig(merchant.MerchantNo, "", false); err != nil {
+		t.Fatalf("disable webhook config failed: %v", err)
+	}
+
+	processor := service.NewTransferAsyncProcessor(repo)
+	processor.Enqueue(txnNo)
+	waitTxnStatusRepo(t, repo, txnNo, service.TxnStatusRecvSuccess, 2*time.Second)
+
+	events, err := repo.ClaimDueOutboxEventsByTxnNo(txnNo, 10, time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("claim outbox events failed: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected 0 outbox event when webhook is disabled, got %+v", events)
+	}
+}
+
 func TestTC9013PostgresRefundWritesReverseLogsAndBalances(t *testing.T) {
 	repo, pool, merchant, debitAccountNo, creditAccountNo, _ := setupPostgresTransferFixture(t, service.TxnStatusInit, 200)
 

@@ -1141,7 +1141,7 @@ func (q *Queries) InsertMerchantSecretCredential(ctx context.Context, arg Insert
 const insertOutboxEvent = `-- name: InsertOutboxEvent :exec
 INSERT INTO outbox_event (
   event_id, txn_no, merchant_no, out_trade_no, status, retry_count, next_retry_at, created_at, updated_at
-) VALUES (
+) SELECT
   $1::uuid,
   $2::uuid,
   $3,
@@ -1151,16 +1151,23 @@ INSERT INTO outbox_event (
   NULL,
   NOW(),
   NOW()
+WHERE EXISTS (
+  SELECT 1
+  FROM webhook_config wc
+  WHERE wc.merchant_no = $6
+    AND wc.enabled = TRUE
+    AND BTRIM(wc.url) <> ''
 )
 ON CONFLICT DO NOTHING
 `
 
 type InsertOutboxEventParams struct {
-	EventID    pgtype.UUID
-	TxnNo      pgtype.UUID
-	MerchantNo string
-	OutTradeNo interface{}
-	Status     string
+	EventID           pgtype.UUID
+	TxnNo             pgtype.UUID
+	MerchantNo        string
+	OutTradeNo        interface{}
+	Status            string
+	WebhookMerchantNo string
 }
 
 func (q *Queries) InsertOutboxEvent(ctx context.Context, arg InsertOutboxEventParams) error {
@@ -1170,6 +1177,7 @@ func (q *Queries) InsertOutboxEvent(ctx context.Context, arg InsertOutboxEventPa
 		arg.MerchantNo,
 		arg.OutTradeNo,
 		arg.Status,
+		arg.WebhookMerchantNo,
 	)
 	return err
 }
