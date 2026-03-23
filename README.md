@@ -103,8 +103,8 @@ scripts/test/gen_core_sqls_from_sql_debug_log.pl /tmp/perf_sql_debug.log core_sq
 ### 部署、压测与交接
 
 - [docs/deploy-docker.md](docs/deploy-docker.md)：Docker 部署与初始化
+- [docs/release-automation.md](docs/release-automation.md)：PR Label 驱动自动发版
 - [perf.md](perf.md)：性能相关记录
-- [handoff.md](handoff.md)：当前阶段交接说明
 
 ### SDK
 
