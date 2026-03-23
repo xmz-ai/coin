@@ -109,6 +109,7 @@ func (h *BusinessHandler) Register(v1 *gin.RouterGroup) {
 	v1.GET("/transactions/:txn_no", h.handleGetByTxnNo)
 	v1.GET("/transactions/by-out-trade-no/:out_trade_no", h.handleGetByOutTradeNo)
 	v1.GET("/transactions", h.handleListTransactions)
+	v1.GET("/customers/balance", h.handleGetCustomerBalance)
 	v1.GET("/webhooks/config", h.handleGetWebhookConfig)
 	v1.PUT("/webhooks/config", h.handlePutWebhookConfig)
 }
@@ -878,6 +879,51 @@ func (h *BusinessHandler) handlePutWebhookConfig(c *gin.Context) {
 			"max_retries": 8,
 			"backoff":     []string{"1m", "5m", "15m", "1h", "6h"},
 		},
+	})
+}
+
+func (h *BusinessHandler) handleGetCustomerBalance(c *gin.Context) {
+	if h == nil || h.accountResolver == nil || h.accounts == nil {
+		writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "business handler not configured")
+		return
+	}
+	merchantNo, ok := MerchantNoFromContext(c)
+	if !ok {
+		writeError(c, http.StatusUnauthorized, "INVALID_SIGNATURE", "merchant context missing")
+		return
+	}
+
+	outUserID := strings.TrimSpace(c.Query("out_user_id"))
+	if outUserID == "" {
+		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "out_user_id is required")
+		return
+	}
+
+	accountNo, err := h.accountResolver.ResolveCustomerAccount(merchantNo, "", outUserID)
+	if err != nil {
+		if errors.Is(err, service.ErrAccountResolveConflict) {
+			writeError(c, http.StatusConflict, "ACCOUNT_RESOLVE_CONFLICT", "account resolve conflict")
+			return
+		}
+		writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "resolve customer account failed")
+		return
+	}
+	if accountNo == "" {
+		writeError(c, http.StatusNotFound, "CUSTOMER_NOT_FOUND", "customer not found")
+		return
+	}
+
+	account, found := h.accounts.GetAccount(accountNo)
+	if !found {
+		writeError(c, http.StatusNotFound, "ACCOUNT_NOT_FOUND", "account not found")
+		return
+	}
+
+	writeSuccess(c, gin.H{
+		"out_user_id":  outUserID,
+		"account_no":   account.AccountNo,
+		"balance":      account.Balance,
+		"book_enabled": account.BookEnabled,
 	})
 }
 
