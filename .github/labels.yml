@@ -1,0 +1,27 @@
+- name: "release:none"
+  description: "No release for this PR"
+  color: "BFDADC"
+
+- name: "release:core:patch"
+  description: "Bump core patch version (x.x.X)"
+  color: "0E8A16"
+
+- name: "release:core:minor"
+  description: "Bump core minor version (x.X.x)"
+  color: "1D76DB"
+
+- name: "release:core:major"
+  description: "Bump core major version (X.x.x)"
+  color: "D93F0B"
+
+- name: "release:sdk-go:patch"
+  description: "Bump Go SDK patch version (x.x.X)"
+  color: "0E8A16"
+
+- name: "release:sdk-go:minor"
+  description: "Bump Go SDK minor version (x.X.x)"
+  color: "1D76DB"
+
+- name: "release:sdk-go:major"
+  description: "Bump Go SDK major version (X.x.x)"
+  color: "D93F0B"

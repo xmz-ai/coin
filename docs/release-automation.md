@@ -33,6 +33,7 @@
 
 ## 3. Workflow 文件
 
+- `.github/workflows/sync-labels.yml`
 - `.github/workflows/pr-release-label-check.yml`
 - `.github/workflows/release-bump-on-merge.yml`
 - `.github/workflows/release-core.yml`
@@ -40,10 +41,8 @@
 
 ## 4. 注意事项
 
-- 需在仓库预先创建以下 labels（名称需完全一致）：
-  - `release:none`
-  - `release:core:patch` `release:core:minor` `release:core:major`
-  - `release:sdk-go:patch` `release:sdk-go:minor` `release:sdk-go:major`
+- Label 由 `.github/labels.yml` + `Sync Labels` workflow 自动同步。
+- 若看不到 label，可在 Actions 手动运行一次 `Sync Labels`（`workflow_dispatch`）。
 - 建议在 GitHub 开启 branch protection，要求 `PR Release Label Check` 必须通过后才可合并。
 - `release:none` 不能和其他 `release:*` label 同时存在。
 - 同一目标不能同时挂多个级别（例如 `release:core:patch` + `release:core:minor`）。
