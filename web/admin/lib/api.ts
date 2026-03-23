@@ -1,4 +1,4 @@
-import { getAccessToken } from "./auth";
+import { clearAuth, getAccessToken } from "./auth";
 
 export type APIEnvelope<T> = {
   code: string;
@@ -19,6 +19,16 @@ export class APIError extends Error {
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_ADMIN_API_BASE ?? "/admin/api/v1";
+
+function redirectToLoginAfterAuthFailure(): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  clearAuth();
+  if (window.location.pathname !== "/login") {
+    window.location.replace("/login");
+  }
+}
 
 export async function apiRequest<T>(
   path: string,
@@ -53,9 +63,17 @@ export async function apiRequest<T>(
     }
   }
 
+  const isAuthRequest = options.auth !== false;
+  const errorCode = envelope?.code ?? "HTTP_ERROR";
   if (!res.ok || !envelope || envelope.code !== "SUCCESS") {
+    if (
+      isAuthRequest &&
+      (res.status === 401 || errorCode === "ADMIN_AUTH_REQUIRED" || errorCode === "ADMIN_AUTH_INVALID")
+    ) {
+      redirectToLoginAfterAuthFailure();
+    }
     throw new APIError(
-      envelope?.code ?? "HTTP_ERROR",
+      errorCode,
       envelope?.message ?? `request failed with ${res.status}`,
       res.status
     );
