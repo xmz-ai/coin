@@ -540,6 +540,7 @@ func TestTC1108APITransferSuccess(t *testing.T) {
 
 func TestTC1109APIRefundSuccess(t *testing.T) {
 	r, repo, _, merchantNo, secret := newTxnAPITestServer(t)
+	ensureWebhookEnabledForMerchant(t, repo, merchantNo)
 
 	originReq := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/transfer", merchantNo, secret, "nonce-1109-origin", map[string]any{
 		"out_trade_no":    "ord_1109_origin",
