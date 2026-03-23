@@ -4,6 +4,9 @@ set -eu
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Load local overrides if present.
+[ -f "$ROOT_DIR/.env" ] && set -a && . "$ROOT_DIR/.env" && set +a
+
 # Backend defaults for local development.
 : "${HTTP_ADDR:=127.0.0.1:8080}"
 : "${POSTGRES_DSN:=postgres://postgres:postgres@localhost:55432/coin_test?sslmode=disable}"

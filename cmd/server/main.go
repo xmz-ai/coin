@@ -8,6 +8,7 @@ import (
 	"github.com/xmz-ai/coin/internal/api"
 	"github.com/xmz-ai/coin/internal/config"
 	"github.com/xmz-ai/coin/internal/db"
+	"github.com/xmz-ai/coin/migrations"
 	idpkg "github.com/xmz-ai/coin/internal/platform/id"
 	"github.com/xmz-ai/coin/internal/platform/security"
 	"github.com/xmz-ai/coin/internal/service"
@@ -22,6 +23,12 @@ func main() {
 		log.Fatalf("postgres connect failed: %v", err)
 	}
 	defer pg.Close()
+
+	if cfg.AutoMigrate {
+		if err := db.AutoMigrate(ctx, pg, migrations.FS); err != nil {
+			log.Fatalf("auto migrate failed: %v", err)
+		}
+	}
 
 	secretCipher, err := security.NewAESGCMCipher(cfg.MerchantSecretPassphrase)
 	if err != nil {
