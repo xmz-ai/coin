@@ -321,6 +321,7 @@ func setupPostgresTransferFixture(t testing.TB, txnStatus string, amount int64) 
 	if err != nil {
 		t.Fatalf("create merchant failed: %v", err)
 	}
+	ensureWebhookEnabledForMerchant(t, repoImpl, merchant.MerchantNo)
 	debitCustomer, err := customerSvc.CreateCustomer(merchant.MerchantNo, "u_9010_debit")
 	if err != nil {
 		t.Fatalf("create debit customer failed: %v", err)
@@ -567,4 +568,11 @@ ORDER BY created_at ASC, id ASC
 		t.Fatalf("iterate outbox_event failed: %v", err)
 	}
 	return out
+}
+
+func ensureWebhookEnabledForMerchant(t testing.TB, repo *db.Repository, merchantNo string) {
+	t.Helper()
+	if err := repo.UpsertWebhookConfig(strings.TrimSpace(merchantNo), "https://merchant.example.com/webhook", true); err != nil {
+		t.Fatalf("upsert webhook config failed: %v", err)
+	}
 }

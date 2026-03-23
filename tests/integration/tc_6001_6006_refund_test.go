@@ -585,6 +585,7 @@ func setupRefundAsyncFixture(t *testing.T) (*db.Repository, *pgxpool.Pool, *serv
 	merchantNo := "1000000000006000"
 	debitAccountNo := "6217701201600000001"
 	creditAccountNo := "6217701201600000002"
+	ensureWebhookEnabledForMerchant(t, repo, merchantNo)
 
 	if err := repo.CreateAccount(service.Account{
 		AccountNo:     debitAccountNo,

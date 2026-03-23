@@ -22,6 +22,7 @@ On first startup, open `/setup` to initialize:
 
 - admin username/password
 - default merchant
+- optional default merchant webhook URL (`https://...` only; leave empty to disable callback and skip outbox enqueue)
 - merchant secret (shown in setup result)
 
 ## MVP Pages

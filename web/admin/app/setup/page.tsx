@@ -68,6 +68,7 @@ export default function SetupPage(): JSX.Element {
             admin_password: string;
             admin_password_confirm: string;
             merchant_name: string;
+            merchant_webhook_url?: string;
           }) => {
             setLoading(true);
             setErrMsg("");
@@ -80,6 +81,7 @@ export default function SetupPage(): JSX.Element {
                     admin_username: values.admin_username,
                     admin_password: values.admin_password,
                     merchant_name: values.merchant_name,
+                    merchant_webhook_url: values.merchant_webhook_url ?? "",
                   }),
                 },
                 { auth: false }
@@ -131,6 +133,24 @@ export default function SetupPage(): JSX.Element {
           </Form.Item>
           <Form.Item label="默认商户名称" name="merchant_name" rules={[{ required: true }, { max: 128 }]}>
             <Input />
+          </Form.Item>
+          <Form.Item
+            label="默认商户回调地址（可选）"
+            name="merchant_webhook_url"
+            rules={[
+              {
+                validator(_, value) {
+                  const v = typeof value === "string" ? value.trim() : "";
+                  if (!v || v.toLowerCase().startsWith("https://")) {
+                    return Promise.resolve();
+                  }
+                  return Promise.reject(new Error("仅支持 https:// 开头"));
+                },
+              },
+            ]}
+            extra="留空则默认不回调，交易成功也不会写入 outbox。"
+          >
+            <Input placeholder="https://example.com/webhook" />
           </Form.Item>
           <Button type="primary" htmlType="submit" block loading={loading}>
             初始化

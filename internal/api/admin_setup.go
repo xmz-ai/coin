@@ -26,9 +26,10 @@ type adminSetupController struct {
 }
 
 type adminSetupInitializeRequest struct {
-	AdminUsername string `json:"admin_username"`
-	AdminPassword string `json:"admin_password"`
-	MerchantName  string `json:"merchant_name"`
+	AdminUsername      string `json:"admin_username"`
+	AdminPassword      string `json:"admin_password"`
+	MerchantName       string `json:"merchant_name"`
+	MerchantWebhookURL string `json:"merchant_webhook_url"`
 }
 
 func newAdminSetupController(repo *db.Repository, merchantService *service.MerchantService, secretRotator MerchantSecretRotator) (*adminSetupController, error) {
@@ -79,6 +80,7 @@ func (s *adminSetupController) handleInitialize(c *gin.Context) {
 	req.AdminUsername = strings.TrimSpace(req.AdminUsername)
 	req.AdminPassword = strings.TrimSpace(req.AdminPassword)
 	req.MerchantName = strings.TrimSpace(req.MerchantName)
+	req.MerchantWebhookURL = strings.TrimSpace(req.MerchantWebhookURL)
 	if !adminSetupUsernamePattern.MatchString(req.AdminUsername) {
 		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid admin_username")
 		return
@@ -89,6 +91,10 @@ func (s *adminSetupController) handleInitialize(c *gin.Context) {
 	}
 	if req.MerchantName == "" {
 		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "merchant_name is required")
+		return
+	}
+	if req.MerchantWebhookURL != "" && !strings.HasPrefix(strings.ToLower(req.MerchantWebhookURL), "https://") {
+		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "merchant_webhook_url must be https")
 		return
 	}
 
@@ -142,6 +148,15 @@ func (s *adminSetupController) handleInitialize(c *gin.Context) {
 		}
 		if err := s.merchantService.UpsertMerchantFeatureConfig(merchantNo, true, true); err != nil {
 			return err
+		}
+		if req.MerchantWebhookURL == "" {
+			if err := s.repo.UpsertWebhookConfig(merchantNo, "", false); err != nil {
+				return err
+			}
+		} else {
+			if err := s.repo.UpsertWebhookConfig(merchantNo, req.MerchantWebhookURL, true); err != nil {
+				return err
+			}
 		}
 
 		secret, version, err := s.secretRotator.RotateSecret(c.Request.Context(), merchantNo)
