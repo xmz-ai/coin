@@ -138,3 +138,10 @@ func mustJSONRequest(t *testing.T, method, path string, payload any) *http.Reque
 	req.Header.Set("Content-Type", "application/json")
 	return req
 }
+
+func mustJSONRequestWithBearer(t *testing.T, method, path, token string, payload any) *http.Request {
+	t.Helper()
+	req := mustJSONRequest(t, method, path, payload)
+	req.Header.Set("Authorization", "Bearer "+token)
+	return req
+}
