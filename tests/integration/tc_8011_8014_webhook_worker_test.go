@@ -350,6 +350,9 @@ func setupWebhookWorkerFixture(t *testing.T) (*db.Repository, *pgxpool.Pool, *db
 	if err != nil {
 		t.Fatalf("create merchant failed: %v", err)
 	}
+	if err := repo.UpsertWebhookConfig(merchant.MerchantNo, "https://merchant.example.com/bootstrap-webhook", true); err != nil {
+		t.Fatalf("bootstrap webhook config failed: %v", err)
+	}
 	debitCustomer, err := customerSvc.CreateCustomer(merchant.MerchantNo, "u_8011_debit")
 	if err != nil {
 		t.Fatalf("create debit customer failed: %v", err)

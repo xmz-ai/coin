@@ -117,6 +117,9 @@ func TestTC2003CreateCustomerAutoCreatesDefaultAccountWhenFeatureEnabled(t *test
 	if account.AccountType != "CUSTOMER" {
 		t.Fatalf("expected account_type CUSTOMER, got %s", account.AccountType)
 	}
+	if !account.BookEnabled {
+		t.Fatalf("expected default customer account book_enabled=true")
+	}
 }
 
 func TestTC2004CustomerUniqueOnMerchantAndOutUserID(t *testing.T) {

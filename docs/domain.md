@@ -135,6 +135,20 @@
 - `book_enabled` 表示“是否启用父账户+子账本模式”，不是“是否已经存在 book 数据”。
 - `book_enabled=true` 时仍允许懒创建账本（首次入账再建 book）。
 
+### Account 属性变更边界
+- 创建即固定，不允许后续变更：
+  - `merchant_no`
+  - `customer_no`
+  - `account_type`
+  - `allow_overdraft`
+  - `max_overdraft_limit`
+  - `book_enabled`
+- 运行时允许调整的能力开关：
+  - `allow_transfer`
+  - `allow_credit_in`
+  - `allow_debit_out`
+- `balance` 只能通过记账流程变更，不能通过管理接口直接修改。
+
 ### Account 关键不变量
 1. `allow_overdraft=false` 时，不允许透支（扣减必须满足 `balance >= amount`）。
 2. `allow_overdraft=true` 时：
