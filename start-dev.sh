@@ -15,6 +15,19 @@ ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Frontend defaults.
 : "${FRONTEND_PORT:=3000}"
 
+port_in_use() {
+  port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+    return $?
+  fi
+  if command -v nc >/dev/null 2>&1; then
+    nc -z 127.0.0.1 "$port" >/dev/null 2>&1
+    return $?
+  fi
+  return 1
+}
+
 node_major_version() {
   node -v 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\).*/\1/p'
 }
@@ -50,6 +63,19 @@ ensure_node_runtime() {
 }
 
 ensure_node_runtime
+
+frontend_port="${FRONTEND_PORT}"
+backend_port="${HTTP_ADDR##*:}"
+
+if port_in_use "$frontend_port"; then
+  echo "[start-dev] Frontend port ${frontend_port} is already in use. Stop the existing process or rerun with FRONTEND_PORT=<port>." >&2
+  exit 1
+fi
+
+if port_in_use "$backend_port"; then
+  echo "[start-dev] Backend port ${backend_port} is already in use. Stop the existing process or rerun with HTTP_ADDR=127.0.0.1:<port>." >&2
+  exit 1
+fi
 
 if [ ! -d "$ROOT_DIR/web/admin/node_modules" ]; then
   echo "[start-dev] Missing web/admin/node_modules. Run 'cd web/admin && npm install' first." >&2
