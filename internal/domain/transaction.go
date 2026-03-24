@@ -6,6 +6,8 @@ type TransferTxn struct {
 	TxnNo            string
 	MerchantNo       string
 	OutTradeNo       string
+	Title            string
+	Remark           string
 	BizType          string
 	TransferScene    string
 	DebitAccountNo   string
@@ -27,6 +29,25 @@ type TxnListFilter struct {
 	Status     string
 	StartTime  *time.Time
 	EndTime    *time.Time
+	PageSize   int
+	PageToken  string
+}
+
+type AccountChangeLog struct {
+	ChangeID      int64
+	TxnNo         string
+	AccountNo     string
+	Delta         int64
+	BalanceBefore int64
+	BalanceAfter  int64
+	Title         string
+	Remark        string
+	CreatedAt     time.Time
+}
+
+type AccountChangeLogListFilter struct {
+	MerchantNo string
+	AccountNo  string
 	PageSize   int
 	PageToken  string
 }
