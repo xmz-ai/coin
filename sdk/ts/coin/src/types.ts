@@ -13,6 +13,8 @@ export interface ClientOptions {
 
 export interface CreditRequest {
   out_trade_no: string;
+  title?: string;
+  remark?: string;
   debit_account_no?: string;
   credit_account_no?: string;
   user_id?: string;
@@ -22,6 +24,8 @@ export interface CreditRequest {
 
 export interface DebitRequest {
   out_trade_no: string;
+  title?: string;
+  remark?: string;
   biz_type?: string;
   transfer_scene?: string;
   debit_account_no?: string;
@@ -33,6 +37,8 @@ export interface DebitRequest {
 
 export interface TransferRequest {
   out_trade_no: string;
+  title?: string;
+  remark?: string;
   biz_type?: string;
   transfer_scene?: string;
   from_account_no?: string;
@@ -45,6 +51,8 @@ export interface TransferRequest {
 
 export interface RefundRequest {
   out_trade_no: string;
+  title?: string;
+  remark?: string;
   biz_type?: string;
   refund_of_txn_no: string;
   amount: number;
@@ -68,6 +76,8 @@ export interface TxnSubmitResponse {
 export interface Txn {
   txn_no: string;
   out_trade_no: string;
+  title: string;
+  remark: string;
   transfer_scene: string;
   status: string;
   amount: number;
@@ -81,6 +91,28 @@ export interface Txn {
 
 export interface ListTransactionsResponse {
   items: Txn[];
+  next_page_token: string;
+}
+
+export interface AccountChangeLog {
+  change_id: number;
+  txn_no: string;
+  account_no: string;
+  delta: number;
+  balance_before: number;
+  balance_after: number;
+  title: string;
+  remark: string;
+  created_at: string;
+}
+
+export interface ListAccountChangeLogsRequest {
+  pageSize?: number;
+  pageToken?: string;
+}
+
+export interface ListAccountChangeLogsResponse {
+  items: AccountChangeLog[];
   next_page_token: string;
 }
 

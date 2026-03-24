@@ -363,7 +363,7 @@ func (q *Queries) CreateMerchant(ctx context.Context, arg CreateMerchantParams) 
 const createTransferTxn = `-- name: CreateTransferTxn :exec
 INSERT INTO txn (
   txn_no, merchant_no, out_trade_no, biz_type, transfer_scene,
-  debit_account_no, credit_account_no, credit_expire_at, amount, status,
+  title, remark, debit_account_no, credit_account_no, credit_expire_at, amount, status,
   refund_of_txn_no, refundable_amount, error_code, error_msg
 ) VALUES (
   NULLIF($1, '')::uuid,
@@ -373,13 +373,15 @@ INSERT INTO txn (
   NULLIF($5, ''),
   NULLIF($6, ''),
   NULLIF($7, ''),
-  $8::date,
-  $9,
-  $10,
-  NULLIF($11, '')::uuid,
+  NULLIF($8, ''),
+  NULLIF($9, ''),
+  $10::date,
+  $11,
   $12,
-  NULLIF($13, ''),
-  NULLIF($14, '')
+  NULLIF($13, '')::uuid,
+  $14,
+  NULLIF($15, ''),
+  NULLIF($16, '')
 )
 `
 
@@ -389,6 +391,8 @@ type CreateTransferTxnParams struct {
 	OutTradeNo       string
 	BizType          string
 	TransferScene    interface{}
+	Title            interface{}
+	Remark           interface{}
 	DebitAccountNo   interface{}
 	CreditAccountNo  interface{}
 	CreditExpireAt   pgtype.Date
@@ -407,6 +411,8 @@ func (q *Queries) CreateTransferTxn(ctx context.Context, arg CreateTransferTxnPa
 		arg.OutTradeNo,
 		arg.BizType,
 		arg.TransferScene,
+		arg.Title,
+		arg.Remark,
 		arg.DebitAccountNo,
 		arg.CreditAccountNo,
 		arg.CreditExpireAt,
@@ -828,6 +834,8 @@ SELECT
   t.txn_no::text AS txn_no,
   t.merchant_no,
   t.out_trade_no,
+  COALESCE(t.title, '') AS title,
+  COALESCE(t.remark, '') AS remark,
   COALESCE(t.biz_type, '') AS biz_type,
   COALESCE(t.transfer_scene, '') AS transfer_scene,
   COALESCE(t.debit_account_no, '') AS debit_account_no,
@@ -849,6 +857,8 @@ type GetTransferTxnByNoRow struct {
 	TxnNo            string
 	MerchantNo       string
 	OutTradeNo       string
+	Title            string
+	Remark           string
 	BizType          string
 	TransferScene    string
 	DebitAccountNo   string
@@ -870,6 +880,8 @@ func (q *Queries) GetTransferTxnByNo(ctx context.Context, txnNo interface{}) (Ge
 		&i.TxnNo,
 		&i.MerchantNo,
 		&i.OutTradeNo,
+		&i.Title,
+		&i.Remark,
 		&i.BizType,
 		&i.TransferScene,
 		&i.DebitAccountNo,
@@ -891,6 +903,8 @@ SELECT
   t.txn_no::text AS txn_no,
   t.merchant_no,
   t.out_trade_no,
+  COALESCE(t.title, '') AS title,
+  COALESCE(t.remark, '') AS remark,
   COALESCE(t.biz_type, '') AS biz_type,
   COALESCE(t.transfer_scene, '') AS transfer_scene,
   COALESCE(t.debit_account_no, '') AS debit_account_no,
@@ -918,6 +932,8 @@ type GetTransferTxnByOutTradeNoRow struct {
 	TxnNo            string
 	MerchantNo       string
 	OutTradeNo       string
+	Title            string
+	Remark           string
 	BizType          string
 	TransferScene    string
 	DebitAccountNo   string
@@ -939,6 +955,8 @@ func (q *Queries) GetTransferTxnByOutTradeNo(ctx context.Context, arg GetTransfe
 		&i.TxnNo,
 		&i.MerchantNo,
 		&i.OutTradeNo,
+		&i.Title,
+		&i.Remark,
 		&i.BizType,
 		&i.TransferScene,
 		&i.DebitAccountNo,
@@ -1211,6 +1229,93 @@ func (q *Queries) LeaseCodeRange(ctx context.Context, arg LeaseCodeRangeParams) 
 	return i, err
 }
 
+const listAccountChangeLogs = `-- name: ListAccountChangeLogs :many
+SELECT
+  acl.change_id,
+  acl.txn_no::text AS txn_no,
+  acl.account_no,
+  acl.delta,
+  acl.balance_before,
+  acl.balance_after,
+  COALESCE(t.title, '') AS title,
+  COALESCE(t.remark, '') AS remark,
+  acl.created_at
+FROM account_change_log acl
+JOIN account a
+  ON a.account_no = acl.account_no
+LEFT JOIN txn t
+  ON t.txn_no = acl.txn_no
+WHERE a.merchant_no = $1
+  AND acl.account_no = $2
+  AND (
+    NOT $3::bool
+    OR (
+      acl.created_at < $4::timestamptz
+      OR (acl.created_at = $4::timestamptz AND acl.change_id < $5)
+    )
+  )
+ORDER BY acl.created_at DESC, acl.change_id DESC
+LIMIT $6
+`
+
+type ListAccountChangeLogsParams struct {
+	MerchantNo      string
+	AccountNo       string
+	HasCursor       bool
+	CursorCreatedAt pgtype.Timestamptz
+	CursorChangeID  int64
+	PageLimit       int32
+}
+
+type ListAccountChangeLogsRow struct {
+	ChangeID      int64
+	TxnNo         string
+	AccountNo     string
+	Delta         int64
+	BalanceBefore int64
+	BalanceAfter  int64
+	Title         string
+	Remark        string
+	CreatedAt     pgtype.Timestamptz
+}
+
+func (q *Queries) ListAccountChangeLogs(ctx context.Context, arg ListAccountChangeLogsParams) ([]ListAccountChangeLogsRow, error) {
+	rows, err := q.db.Query(ctx, listAccountChangeLogs,
+		arg.MerchantNo,
+		arg.AccountNo,
+		arg.HasCursor,
+		arg.CursorCreatedAt,
+		arg.CursorChangeID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAccountChangeLogsRow
+	for rows.Next() {
+		var i ListAccountChangeLogsRow
+		if err := rows.Scan(
+			&i.ChangeID,
+			&i.TxnNo,
+			&i.AccountNo,
+			&i.Delta,
+			&i.BalanceBefore,
+			&i.BalanceAfter,
+			&i.Title,
+			&i.Remark,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAvailableAccountBooksForUpdate = `-- name: ListAvailableAccountBooksForUpdate :many
 SELECT
   b.book_no,
@@ -1316,6 +1421,8 @@ SELECT
   t.txn_no::text AS txn_no,
   t.merchant_no,
   t.out_trade_no,
+  COALESCE(t.title, '') AS title,
+  COALESCE(t.remark, '') AS remark,
   COALESCE(t.biz_type, '') AS biz_type,
   COALESCE(t.transfer_scene, '') AS transfer_scene,
   COALESCE(t.debit_account_no, '') AS debit_account_no,
@@ -1382,6 +1489,8 @@ type ListTransferTxnsRow struct {
 	TxnNo            string
 	MerchantNo       string
 	OutTradeNo       string
+	Title            string
+	Remark           string
 	BizType          string
 	TransferScene    string
 	DebitAccountNo   string
@@ -1425,6 +1534,8 @@ func (q *Queries) ListTransferTxns(ctx context.Context, arg ListTransferTxnsPara
 			&i.TxnNo,
 			&i.MerchantNo,
 			&i.OutTradeNo,
+			&i.Title,
+			&i.Remark,
 			&i.BizType,
 			&i.TransferScene,
 			&i.DebitAccountNo,
@@ -1453,6 +1564,8 @@ SELECT
   t.txn_no::text AS txn_no,
   t.merchant_no,
   t.out_trade_no,
+  COALESCE(t.title, '') AS title,
+  COALESCE(t.remark, '') AS remark,
   COALESCE(t.biz_type, '') AS biz_type,
   COALESCE(t.transfer_scene, '') AS transfer_scene,
   COALESCE(t.debit_account_no, '') AS debit_account_no,
@@ -1480,6 +1593,8 @@ type ListTransferTxnsByStatusRow struct {
 	TxnNo            string
 	MerchantNo       string
 	OutTradeNo       string
+	Title            string
+	Remark           string
 	BizType          string
 	TransferScene    string
 	DebitAccountNo   string
@@ -1507,6 +1622,8 @@ func (q *Queries) ListTransferTxnsByStatus(ctx context.Context, arg ListTransfer
 			&i.TxnNo,
 			&i.MerchantNo,
 			&i.OutTradeNo,
+			&i.Title,
+			&i.Remark,
 			&i.BizType,
 			&i.TransferScene,
 			&i.DebitAccountNo,

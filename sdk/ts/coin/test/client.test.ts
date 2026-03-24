@@ -42,6 +42,8 @@ describe("CoinClient", () => {
       const body = await collectBody(req);
       const parsed: CreditRequest = JSON.parse(body);
       expect(parsed.out_trade_no).toBe("ord_001");
+      expect(parsed.title).toBe("积分发放");
+      expect(parsed.remark).toBe("活动首单赠送");
       expect(parsed.user_id).toBe("u_1");
       expect(parsed.amount).toBe(100);
 
@@ -76,6 +78,8 @@ describe("CoinClient", () => {
 
       const resp = await client.transactions.credit({
         out_trade_no: "ord_001",
+        title: "积分发放",
+        remark: "活动首单赠送",
         user_id: "u_1",
         amount: 100,
       });
@@ -146,7 +150,7 @@ describe("CoinClient", () => {
         request_id: "req_list",
         data: {
           items: [{
-            txn_no: "t1", out_trade_no: "o1", transfer_scene: "ISSUE",
+            txn_no: "t1", out_trade_no: "o1", title: "积分发放", remark: "活动首单赠送", transfer_scene: "ISSUE",
             status: "RECV_SUCCESS", amount: 10, refundable_amount: 10,
             debit_account_no: "a1", credit_account_no: "a2",
             error_code: "", error_msg: "", created_at: "2026-03-22T12:00:00Z",
@@ -178,6 +182,59 @@ describe("CoinClient", () => {
       expect(resp.next_page_token).toBe("tok_2");
       expect(resp.items).toHaveLength(1);
       expect(resp.items[0].txn_no).toBe("t1");
+      expect(resp.items[0].title).toBe("积分发放");
+      expect(resp.items[0].remark).toBe("活动首单赠送");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("lists account change logs", async () => {
+    const server = await startServer(async (req, res) => {
+      const url = new URL(req.url!, `http://${req.headers.host}`);
+      expect(url.pathname).toBe("/api/v1/accounts/6217701201001234567/change-logs");
+      expect(url.searchParams.get("page_size")).toBe("50");
+      expect(url.searchParams.get("page_token")).toBe("tok_acl_1");
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        code: "SUCCESS",
+        message: "ok",
+        request_id: "req_acl",
+        data: {
+          items: [{
+            change_id: 1,
+            txn_no: "t1",
+            account_no: "6217701201001234567",
+            delta: 100,
+            balance_before: 0,
+            balance_after: 100,
+            title: "积分发放",
+            remark: "活动首单赠送",
+            created_at: "2026-03-22T12:00:00Z",
+          }],
+          next_page_token: "tok_acl_2",
+        },
+      }));
+    });
+
+    try {
+      const client = new CoinClient({
+        baseURL: server.url,
+        merchantNo,
+        merchantSecret: secret,
+        now: () => fixedNow,
+        nonceGenerator: () => nonce,
+      });
+
+      const resp = await client.transactions.listAccountChangeLogs("6217701201001234567", {
+        pageSize: 50,
+        pageToken: "tok_acl_1",
+      });
+
+      expect(resp.next_page_token).toBe("tok_acl_2");
+      expect(resp.items).toHaveLength(1);
+      expect(resp.items[0].title).toBe("积分发放");
     } finally {
       server.close();
     }

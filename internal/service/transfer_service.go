@@ -9,6 +9,8 @@ import (
 type TransferRequest struct {
 	MerchantNo       string
 	OutTradeNo       string
+	Title            string
+	Remark           string
 	BizType          string
 	TransferScene    string
 	DebitAccountNo   string
@@ -59,6 +61,8 @@ func (s *TransferService) Submit(req TransferRequest) (TransferTxn, error) {
 		TxnNo:            txnNo,
 		MerchantNo:       req.MerchantNo,
 		OutTradeNo:       req.OutTradeNo,
+		Title:            req.Title,
+		Remark:           req.Remark,
 		BizType:          bizType,
 		TransferScene:    transferScene,
 		DebitAccountNo:   req.DebitAccountNo,

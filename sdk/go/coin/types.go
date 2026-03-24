@@ -21,6 +21,8 @@ type TxnSubmitResponse struct {
 type Txn struct {
 	TxnNo            string    `json:"txn_no"`
 	OutTradeNo       string    `json:"out_trade_no"`
+	Title            string    `json:"title"`
+	Remark           string    `json:"remark"`
 	TransferScene    string    `json:"transfer_scene"`
 	Status           string    `json:"status"`
 	Amount           int64     `json:"amount"`
@@ -39,6 +41,8 @@ type ListTransactionsResponse struct {
 
 type CreditRequest struct {
 	OutTradeNo      string `json:"out_trade_no"`
+	Title           string `json:"title,omitempty"`
+	Remark          string `json:"remark,omitempty"`
 	DebitAccountNo  string `json:"debit_account_no,omitempty"`
 	CreditAccountNo string `json:"credit_account_no,omitempty"`
 	UserID          string `json:"user_id,omitempty"`
@@ -48,6 +52,8 @@ type CreditRequest struct {
 
 type DebitRequest struct {
 	OutTradeNo      string `json:"out_trade_no"`
+	Title           string `json:"title,omitempty"`
+	Remark          string `json:"remark,omitempty"`
 	BizType         string `json:"biz_type,omitempty"`
 	TransferScene   string `json:"transfer_scene,omitempty"`
 	DebitAccountNo  string `json:"debit_account_no,omitempty"`
@@ -59,6 +65,8 @@ type DebitRequest struct {
 
 type TransferRequest struct {
 	OutTradeNo     string `json:"out_trade_no"`
+	Title          string `json:"title,omitempty"`
+	Remark         string `json:"remark,omitempty"`
 	BizType        string `json:"biz_type,omitempty"`
 	TransferScene  string `json:"transfer_scene,omitempty"`
 	FromAccountNo  string `json:"from_account_no,omitempty"`
@@ -71,6 +79,8 @@ type TransferRequest struct {
 
 type RefundRequest struct {
 	OutTradeNo    string `json:"out_trade_no"`
+	Title         string `json:"title,omitempty"`
+	Remark        string `json:"remark,omitempty"`
 	BizType       string `json:"biz_type,omitempty"`
 	RefundOfTxnNo string `json:"refund_of_txn_no"`
 	Amount        int64  `json:"amount"`
@@ -84,4 +94,26 @@ type ListTransactionsRequest struct {
 	OutUserID     string
 	PageSize      int
 	PageToken     string
+}
+
+type AccountChangeLog struct {
+	ChangeID      int64     `json:"change_id"`
+	TxnNo         string    `json:"txn_no"`
+	AccountNo     string    `json:"account_no"`
+	Delta         int64     `json:"delta"`
+	BalanceBefore int64     `json:"balance_before"`
+	BalanceAfter  int64     `json:"balance_after"`
+	Title         string    `json:"title"`
+	Remark        string    `json:"remark"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+type ListAccountChangeLogsRequest struct {
+	PageSize  int
+	PageToken string
+}
+
+type ListAccountChangeLogsResponse struct {
+	Items         []AccountChangeLog `json:"items"`
+	NextPageToken string             `json:"next_page_token"`
 }
