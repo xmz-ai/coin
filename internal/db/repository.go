@@ -50,22 +50,29 @@ func (r *Repository) CreateMerchant(m service.Merchant) error {
 	ctx, cancel := r.withTimeout()
 	defer cancel()
 
-	merchantID, err := parseUUID(m.MerchantID)
+	return r.createMerchant(ctx, r.queries, m)
+}
+
+func (r *Repository) CreateMerchantWithAccounts(m service.Merchant, accounts ...service.Account) error {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
 	}
+	defer func() { _ = tx.Rollback(ctx) }()
 
-	err = r.queries.CreateMerchant(ctx, dbsqlc.CreateMerchantParams{
-		MerchantID:          merchantID,
-		MerchantNo:          m.MerchantNo,
-		Name:                m.Name,
-		BudgetAccountNo:     m.BudgetAccountNo,
-		ReceivableAccountNo: m.ReceivableAccountNo,
-	})
-	if isUniqueViolation(err) {
-		return service.ErrMerchantNoExists
+	qtx := r.queries.WithTx(tx)
+	if err := r.createMerchant(ctx, qtx, m); err != nil {
+		return err
 	}
-	return err
+	for _, account := range accounts {
+		if err := r.createAccount(ctx, qtx, account); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 func (r *Repository) GetMerchantByNo(merchantNo string) (service.Merchant, bool) {
@@ -132,7 +139,6 @@ func (r *Repository) CreateAccount(a service.Account) error {
 	ctx, cancel := r.withTimeout()
 	defer cancel()
 
-	customerNo := strings.TrimSpace(a.CustomerNo)
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
@@ -140,7 +146,34 @@ func (r *Repository) CreateAccount(a service.Account) error {
 	defer func() { _ = tx.Rollback(ctx) }()
 	qtx := r.queries.WithTx(tx)
 
-	err = qtx.CreateAccount(ctx, dbsqlc.CreateAccountParams{
+	if err := r.createAccount(ctx, qtx, a); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (r *Repository) createMerchant(ctx context.Context, q *dbsqlc.Queries, m service.Merchant) error {
+	merchantID, err := parseUUID(m.MerchantID)
+	if err != nil {
+		return err
+	}
+
+	err = q.CreateMerchant(ctx, dbsqlc.CreateMerchantParams{
+		MerchantID:          merchantID,
+		MerchantNo:          m.MerchantNo,
+		Name:                m.Name,
+		BudgetAccountNo:     m.BudgetAccountNo,
+		ReceivableAccountNo: m.ReceivableAccountNo,
+	})
+	if isUniqueViolation(err) {
+		return service.ErrMerchantNoExists
+	}
+	return err
+}
+
+func (r *Repository) createAccount(ctx context.Context, q *dbsqlc.Queries, a service.Account) error {
+	customerNo := strings.TrimSpace(a.CustomerNo)
+	err := q.CreateAccount(ctx, dbsqlc.CreateAccountParams{
 		AccountNo:         a.AccountNo,
 		MerchantNo:        a.MerchantNo,
 		CustomerNo:        nullableText(customerNo),
@@ -163,7 +196,7 @@ func (r *Repository) CreateAccount(a service.Account) error {
 		if err != nil {
 			return err
 		}
-		if _, err := qtx.UpsertAccountBookBalance(ctx, dbsqlc.UpsertAccountBookBalanceParams{
+		if _, err := q.UpsertAccountBookBalance(ctx, dbsqlc.UpsertAccountBookBalanceParams{
 			BookNo:    noExpireBookNo,
 			AccountNo: a.AccountNo,
 			ExpireAt:  toPGDate(noExpireBookDate),
@@ -172,22 +205,15 @@ func (r *Repository) CreateAccount(a service.Account) error {
 			return err
 		}
 	}
-
 	if customerNo == "" {
-		if err := tx.Commit(ctx); err != nil {
-			return err
-		}
 		return nil
 	}
-	_, err = qtx.SetCustomerDefaultAccountIfEmpty(ctx, dbsqlc.SetCustomerDefaultAccountIfEmptyParams{
+	_, err = q.SetCustomerDefaultAccountIfEmpty(ctx, dbsqlc.SetCustomerDefaultAccountIfEmptyParams{
 		DefaultAccountNo: nullableText(a.AccountNo),
 		MerchantNo:       a.MerchantNo,
 		CustomerNo:       customerNo,
 	})
-	if err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return err
 }
 
 func (r *Repository) NewMerchantNo() (string, error) {
