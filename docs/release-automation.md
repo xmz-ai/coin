@@ -30,6 +30,7 @@
 3. tag 推送后自动进入发版流程
    - `Release Core`（`v*`）
    - `Release SDK Go`（`sdk/go/coin/v*`）
+   - `Release SDK TypeScript`（`sdk/ts/coin/v*`）
 
 ## 3. Workflow 文件
 
@@ -46,6 +47,7 @@
 - 建议在 GitHub 开启 branch protection，要求 `PR Release Label Check` 必须通过后才可合并。
 - `release:none` 不能和其他 `release:*` label 同时存在。
 - 同一目标不能同时挂多个级别（例如 `release:core:patch` + `release:core:minor`）。
+- 需要在仓库 Secrets 中配置 `RELEASE_PAT`，并赋予 `contents:write` 权限。`Release Bump On Merge` 必须使用这个 PAT 推送版本提交和 tag；如果改用默认 `GITHUB_TOKEN`，后续 `push.tags` workflow 不会被触发，因此只会打 tag，不会创建 GitHub Release。
 - 首次版本基线：
   - `VERSION = 0.1.0`
   - `sdk/go/coin/VERSION = 0.1.0`
