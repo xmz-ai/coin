@@ -61,6 +61,7 @@ type Repository interface {
 	ListTransferTxnsByStatus(status string, limit int) ([]domain.TransferTxn, error)
 	ListStaleTransferTxnNosByStatus(status string, staleBefore time.Time, limit int) ([]string, error)
 	ListTransferTxns(filter domain.TxnListFilter) ([]domain.TransferTxn, string)
+	ListAccountChangeLogs(filter domain.AccountChangeLogListFilter) ([]domain.AccountChangeLog, string)
 	UpdateTransferTxnStatus(txnNo, status, errorCode, errorMsg string) error
 	TransitionTransferTxnStatus(txnNo, fromStatus, toStatus, errorCode, errorMsg string) (bool, error)
 	UpdateTransferTxnParties(txnNo, debitAccountNo, creditAccountNo string) error

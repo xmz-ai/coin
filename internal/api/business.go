@@ -51,6 +51,7 @@ type TxnQueryStore interface {
 	GetByTxnNo(txnNo string) (service.QueryTxn, bool)
 	GetByOutTradeNo(merchantNo, outTradeNo string) (service.QueryTxn, bool)
 	List(filter service.QueryFilter) ([]service.QueryTxn, string)
+	ListAccountChangeLogs(filter service.AccountChangeLogListFilter) ([]service.AccountChangeLog, string)
 }
 
 type WebhookConfigStore interface {
@@ -109,6 +110,7 @@ func (h *BusinessHandler) Register(v1 *gin.RouterGroup) {
 	v1.GET("/transactions/:txn_no", h.handleGetByTxnNo)
 	v1.GET("/transactions/by-out-trade-no/:out_trade_no", h.handleGetByOutTradeNo)
 	v1.GET("/transactions", h.handleListTransactions)
+	v1.GET("/accounts/:account_no/change-logs", h.handleListAccountChangeLogs)
 	v1.GET("/customers/balance", h.handleGetCustomerBalance)
 	v1.GET("/webhooks/config", h.handleGetWebhookConfig)
 	v1.PUT("/webhooks/config", h.handlePutWebhookConfig)
@@ -116,6 +118,8 @@ func (h *BusinessHandler) Register(v1 *gin.RouterGroup) {
 
 type creditRequest struct {
 	OutTradeNo      string `json:"out_trade_no"`
+	Title           string `json:"title"`
+	Remark          string `json:"remark"`
 	DebitAccountNo  string `json:"debit_account_no"`
 	CreditAccountNo string `json:"credit_account_no"`
 	UserID          string `json:"user_id"`
@@ -125,6 +129,8 @@ type creditRequest struct {
 
 type debitRequest struct {
 	OutTradeNo      string `json:"out_trade_no"`
+	Title           string `json:"title"`
+	Remark          string `json:"remark"`
 	BizType         string `json:"biz_type"`
 	TransferScene   string `json:"transfer_scene"`
 	DebitAccountNo  string `json:"debit_account_no"`
@@ -136,6 +142,8 @@ type debitRequest struct {
 
 type transferRequest struct {
 	OutTradeNo     string `json:"out_trade_no"`
+	Title          string `json:"title"`
+	Remark         string `json:"remark"`
 	BizType        string `json:"biz_type"`
 	TransferScene  string `json:"transfer_scene"`
 	FromAccountNo  string `json:"from_account_no"`
@@ -148,6 +156,8 @@ type transferRequest struct {
 
 type refundRequest struct {
 	OutTradeNo    string `json:"out_trade_no"`
+	Title         string `json:"title"`
+	Remark        string `json:"remark"`
 	BizType       string `json:"biz_type"`
 	RefundOfTxnNo string `json:"refund_of_txn_no"`
 	Amount        int64  `json:"amount"`
@@ -159,6 +169,11 @@ type webhookConfigRequest struct {
 }
 
 var outTradeNoPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+const (
+	maxTxnTitleLen  = 128
+	maxTxnRemarkLen = 512
+)
 
 func (h *BusinessHandler) handleCredit(c *gin.Context) {
 	if h == nil || h.transfer == nil || h.query == nil || h.merchants == nil || h.transferRouter == nil || h.asyncTransfer == nil || h.accountResolver == nil || h.accounts == nil {
@@ -183,6 +198,8 @@ func (h *BusinessHandler) handleCredit(c *gin.Context) {
 	}
 
 	req.OutTradeNo = strings.TrimSpace(req.OutTradeNo)
+	req.Title = strings.TrimSpace(req.Title)
+	req.Remark = strings.TrimSpace(req.Remark)
 	req.DebitAccountNo = strings.TrimSpace(req.DebitAccountNo)
 	req.CreditAccountNo = strings.TrimSpace(req.CreditAccountNo)
 	req.UserID = strings.TrimSpace(req.UserID)
@@ -193,6 +210,10 @@ func (h *BusinessHandler) handleCredit(c *gin.Context) {
 	}
 	if !isValidOutTradeNo(req.OutTradeNo) {
 		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid out_trade_no")
+		return
+	}
+	if !isValidTxnCopy(req.Title, maxTxnTitleLen) || !isValidTxnCopy(req.Remark, maxTxnRemarkLen) {
+		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid title or remark")
 		return
 	}
 	if req.CreditAccountNo == "" && req.UserID == "" {
@@ -264,6 +285,8 @@ func (h *BusinessHandler) handleCredit(c *gin.Context) {
 	txn, err := h.transfer.Submit(service.TransferRequest{
 		MerchantNo:       merchantNo,
 		OutTradeNo:       req.OutTradeNo,
+		Title:            req.Title,
+		Remark:           req.Remark,
 		BizType:          service.BizTypeTransfer,
 		TransferScene:    service.SceneIssue,
 		DebitAccountNo:   resolved.DebitAccountNo,
@@ -312,6 +335,8 @@ func (h *BusinessHandler) handleDebit(c *gin.Context) {
 	}
 
 	req.OutTradeNo = strings.TrimSpace(req.OutTradeNo)
+	req.Title = strings.TrimSpace(req.Title)
+	req.Remark = strings.TrimSpace(req.Remark)
 	req.BizType = strings.TrimSpace(strings.ToUpper(req.BizType))
 	req.TransferScene = strings.TrimSpace(strings.ToUpper(req.TransferScene))
 	req.DebitAccountNo = strings.TrimSpace(req.DebitAccountNo)
@@ -325,6 +350,10 @@ func (h *BusinessHandler) handleDebit(c *gin.Context) {
 	}
 	if !isValidOutTradeNo(req.OutTradeNo) {
 		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid out_trade_no")
+		return
+	}
+	if !isValidTxnCopy(req.Title, maxTxnTitleLen) || !isValidTxnCopy(req.Remark, maxTxnRemarkLen) {
+		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid title or remark")
 		return
 	}
 	if req.DebitAccountNo == "" && req.DebitOutUserID == "" {
@@ -399,6 +428,8 @@ func (h *BusinessHandler) handleDebit(c *gin.Context) {
 	txn, err := h.transfer.Submit(service.TransferRequest{
 		MerchantNo:       merchantNo,
 		OutTradeNo:       req.OutTradeNo,
+		Title:            req.Title,
+		Remark:           req.Remark,
 		BizType:          service.BizTypeTransfer,
 		TransferScene:    service.SceneConsume,
 		DebitAccountNo:   resolved.DebitAccountNo,
@@ -446,6 +477,8 @@ func (h *BusinessHandler) handleTransfer(c *gin.Context) {
 	}
 
 	req.OutTradeNo = strings.TrimSpace(req.OutTradeNo)
+	req.Title = strings.TrimSpace(req.Title)
+	req.Remark = strings.TrimSpace(req.Remark)
 	req.BizType = strings.TrimSpace(strings.ToUpper(req.BizType))
 	req.TransferScene = strings.TrimSpace(strings.ToUpper(req.TransferScene))
 	req.FromAccountNo = strings.TrimSpace(req.FromAccountNo)
@@ -459,6 +492,10 @@ func (h *BusinessHandler) handleTransfer(c *gin.Context) {
 	}
 	if !isValidOutTradeNo(req.OutTradeNo) {
 		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid out_trade_no")
+		return
+	}
+	if !isValidTxnCopy(req.Title, maxTxnTitleLen) || !isValidTxnCopy(req.Remark, maxTxnRemarkLen) {
+		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid title or remark")
 		return
 	}
 	if req.FromAccountNo == "" && req.FromOutUserID == "" {
@@ -557,6 +594,8 @@ func (h *BusinessHandler) handleTransfer(c *gin.Context) {
 	txn, err := h.transfer.Submit(service.TransferRequest{
 		MerchantNo:       merchantNo,
 		OutTradeNo:       req.OutTradeNo,
+		Title:            req.Title,
+		Remark:           req.Remark,
 		BizType:          service.BizTypeTransfer,
 		TransferScene:    service.SceneP2P,
 		DebitAccountNo:   resolved.DebitAccountNo,
@@ -605,6 +644,8 @@ func (h *BusinessHandler) handleRefund(c *gin.Context) {
 	}
 
 	req.OutTradeNo = strings.TrimSpace(req.OutTradeNo)
+	req.Title = strings.TrimSpace(req.Title)
+	req.Remark = strings.TrimSpace(req.Remark)
 	req.BizType = strings.TrimSpace(strings.ToUpper(req.BizType))
 	req.RefundOfTxnNo = strings.TrimSpace(req.RefundOfTxnNo)
 	if req.OutTradeNo == "" || req.RefundOfTxnNo == "" || req.Amount <= 0 {
@@ -613,6 +654,10 @@ func (h *BusinessHandler) handleRefund(c *gin.Context) {
 	}
 	if !isValidOutTradeNo(req.OutTradeNo) {
 		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid out_trade_no")
+		return
+	}
+	if !isValidTxnCopy(req.Title, maxTxnTitleLen) || !isValidTxnCopy(req.Remark, maxTxnRemarkLen) {
+		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid title or remark")
 		return
 	}
 	if !isValidUUID(req.RefundOfTxnNo) {
@@ -627,6 +672,8 @@ func (h *BusinessHandler) handleRefund(c *gin.Context) {
 	txn, err := h.transfer.Submit(service.TransferRequest{
 		MerchantNo:       merchantNo,
 		OutTradeNo:       req.OutTradeNo,
+		Title:            req.Title,
+		Remark:           req.Remark,
 		BizType:          service.BizTypeRefund,
 		TransferScene:    "",
 		Amount:           req.Amount,
@@ -808,6 +855,70 @@ func (h *BusinessHandler) handleListTransactions(c *gin.Context) {
 	})
 }
 
+func (h *BusinessHandler) handleListAccountChangeLogs(c *gin.Context) {
+	if h == nil || h.query == nil || h.accounts == nil {
+		writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "business handler not configured")
+		return
+	}
+
+	merchantNo, ok := MerchantNoFromContext(c)
+	if !ok {
+		writeError(c, http.StatusUnauthorized, "INVALID_SIGNATURE", "merchant context missing")
+		return
+	}
+
+	accountNo := strings.TrimSpace(c.Param("account_no"))
+	if accountNo == "" {
+		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "account_no is required")
+		return
+	}
+	account, found := h.accounts.GetAccount(accountNo)
+	if !found || account.MerchantNo != merchantNo {
+		writeError(c, http.StatusNotFound, "ACCOUNT_NOT_FOUND", "account not found")
+		return
+	}
+
+	pageSize := 20
+	if raw := strings.TrimSpace(c.Query("page_size")); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v <= 0 {
+			writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid page_size")
+			return
+		}
+		if v > 200 {
+			v = 200
+		}
+		pageSize = v
+	}
+
+	items, nextToken := h.query.ListAccountChangeLogs(service.AccountChangeLogListFilter{
+		MerchantNo: merchantNo,
+		AccountNo:  accountNo,
+		PageSize:   pageSize,
+		PageToken:  strings.TrimSpace(c.Query("page_token")),
+	})
+
+	respItems := make([]gin.H, 0, len(items))
+	for _, item := range items {
+		respItems = append(respItems, gin.H{
+			"change_id":      item.ChangeID,
+			"txn_no":         item.TxnNo,
+			"account_no":     item.AccountNo,
+			"delta":          item.Delta,
+			"balance_before": item.BalanceBefore,
+			"balance_after":  item.BalanceAfter,
+			"title":          item.Title,
+			"remark":         item.Remark,
+			"created_at":     item.CreatedAt.UTC().Format(time.RFC3339Nano),
+		})
+	}
+
+	writeSuccess(c, gin.H{
+		"items":           respItems,
+		"next_page_token": nextToken,
+	})
+}
+
 func (h *BusinessHandler) handleGetWebhookConfig(c *gin.Context) {
 	if h == nil || h.webhooks == nil {
 		writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "business handler not configured")
@@ -931,6 +1042,8 @@ func toTxnResponse(item service.QueryTxn) gin.H {
 	return gin.H{
 		"txn_no":            item.TxnNo,
 		"out_trade_no":      item.OutTradeNo,
+		"title":             item.Title,
+		"remark":            item.Remark,
 		"transfer_scene":    item.Scene,
 		"status":            item.Status,
 		"amount":            item.Amount,
@@ -958,6 +1071,10 @@ func normalizeExpiryDayUTC(t time.Time) time.Time {
 
 func isValidOutTradeNo(outTradeNo string) bool {
 	return outTradeNoPattern.MatchString(outTradeNo)
+}
+
+func isValidTxnCopy(v string, limit int) bool {
+	return len(v) <= limit
 }
 
 func isValidUUID(v string) bool {

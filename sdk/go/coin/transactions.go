@@ -147,6 +147,30 @@ func (t *TransactionsAPI) List(ctx context.Context, req ListTransactionsRequest)
 	return out, nil
 }
 
+func (t *TransactionsAPI) ListAccountChangeLogs(ctx context.Context, accountNo string, req ListAccountChangeLogsRequest) (ListAccountChangeLogsResponse, error) {
+	accountNo = strings.TrimSpace(accountNo)
+	if accountNo == "" {
+		return ListAccountChangeLogsResponse{}, fmt.Errorf("account_no is required")
+	}
+
+	query := url.Values{}
+	if req.PageSize > 0 {
+		query.Set("page_size", fmt.Sprintf("%d", req.PageSize))
+	}
+	if v := strings.TrimSpace(req.PageToken); v != "" {
+		query.Set("page_token", v)
+	}
+
+	var out ListAccountChangeLogsResponse
+	if err := t.client.do(ctx, "GET", "/api/v1/accounts/"+url.PathEscape(accountNo)+"/change-logs", query, nil, &out); err != nil {
+		return ListAccountChangeLogsResponse{}, err
+	}
+	if out.Items == nil {
+		out.Items = make([]AccountChangeLog, 0)
+	}
+	return out, nil
+}
+
 func normalizeOutTradeNoAndAmount(outTradeNo string, amount int64) (string, error) {
 	trimmed := strings.TrimSpace(outTradeNo)
 	if trimmed == "" {

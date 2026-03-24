@@ -11,6 +11,8 @@ type QueryTxn struct {
 	OutTradeNo       string
 	MerchantNo       string
 	OutUserID        string
+	Title            string
+	Remark           string
 	Scene            string
 	Status           string
 	Amount           int64
@@ -170,11 +172,20 @@ func (s *TxnQueryService) List(filter QueryFilter) ([]QueryTxn, string) {
 	return page, EncodePageToken(last.CreatedAt, last.TxnNo)
 }
 
+func (s *TxnQueryService) ListAccountChangeLogs(filter AccountChangeLogListFilter) ([]AccountChangeLog, string) {
+	if s.repo == nil {
+		return nil, ""
+	}
+	return s.repo.ListAccountChangeLogs(filter)
+}
+
 func queryTxnFromTransferTxn(txn TransferTxn) QueryTxn {
 	return QueryTxn{
 		TxnNo:            txn.TxnNo,
 		OutTradeNo:       txn.OutTradeNo,
 		MerchantNo:       txn.MerchantNo,
+		Title:            txn.Title,
+		Remark:           txn.Remark,
 		Scene:            txn.TransferScene,
 		Status:           txn.Status,
 		Amount:           txn.Amount,
