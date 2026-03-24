@@ -313,6 +313,7 @@ Response:
 3. `allow_overdraft=true && max_overdraft_limit=0` 表示无限透支。
 4. `max_overdraft_limit < 0` 非法。
 5. `book_enabled=true` 表示启用父账户+子账本模式（不是“已有账本数据”），V1 子账本仅按 `expire_at` 维度切分。
+6. 以下字段创建后固定，不提供变更接口：`merchant_no`、`customer_no`、`account_type`、`allow_overdraft`、`max_overdraft_limit`、`book_enabled`。
 
 ## 3.2 更新账户能力
 
@@ -332,6 +333,8 @@ Response: `SUCCESS`
 
 说明：
 - 可部分更新。
+- 本接口仅允许更新 `allow_transfer`、`allow_credit_in`、`allow_debit_out`。
+- `allow_overdraft`、`max_overdraft_limit`、`book_enabled` 以及账户归属/类型字段均视为开户时确定，不支持运行时修改。
 - 建议记录审计日志（谁在何时改了哪个能力）。
 
 ## 3.3 查询账户余额
