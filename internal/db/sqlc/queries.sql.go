@@ -1981,3 +1981,90 @@ func (q *Queries) UpsertWebhookConfig(ctx context.Context, arg UpsertWebhookConf
 	_, err := q.db.Exec(ctx, upsertWebhookConfig, arg.MerchantNo, arg.Url, arg.Enabled)
 	return err
 }
+
+const listActiveAccountBooks = `-- name: ListActiveAccountBooks :many
+SELECT
+  b.book_no::text AS book_no,
+  b.account_no,
+  b.expire_at,
+  b.balance
+FROM account_book b
+WHERE b.account_no = $1
+  AND b.balance > 0
+  AND b.expire_at >= $2::date
+ORDER BY b.expire_at ASC
+`
+
+type ListActiveAccountBooksParams struct {
+	AccountNo string
+	NowUtc    pgtype.Date
+}
+
+type ListActiveAccountBooksRow struct {
+	BookNo    string
+	AccountNo string
+	ExpireAt  pgtype.Date
+	Balance   int64
+}
+
+func (q *Queries) ListActiveAccountBooks(ctx context.Context, arg ListActiveAccountBooksParams) ([]ListActiveAccountBooksRow, error) {
+	rows, err := q.db.Query(ctx, listActiveAccountBooks, arg.AccountNo, arg.NowUtc)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListActiveAccountBooksRow
+	for rows.Next() {
+		var i ListActiveAccountBooksRow
+		if err := rows.Scan(&i.BookNo, &i.AccountNo, &i.ExpireAt, &i.Balance); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBookCreditChangeLogs = `-- name: ListBookCreditChangeLogs :many
+SELECT
+  bcl.change_id,
+  bcl.txn_no::text AS txn_no,
+  bcl.delta,
+  bcl.created_at,
+  COALESCE(t.title, '') AS title
+FROM account_book_change_log bcl
+LEFT JOIN txn t ON t.txn_no = bcl.txn_no
+WHERE bcl.book_no = $1::uuid
+  AND bcl.delta > 0
+ORDER BY bcl.created_at ASC, bcl.change_id ASC
+`
+
+type ListBookCreditChangeLogsRow struct {
+	ChangeID  int64
+	TxnNo     string
+	Delta     int64
+	CreatedAt pgtype.Timestamptz
+	Title     string
+}
+
+func (q *Queries) ListBookCreditChangeLogs(ctx context.Context, bookNo string) ([]ListBookCreditChangeLogsRow, error) {
+	rows, err := q.db.Query(ctx, listBookCreditChangeLogs, bookNo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListBookCreditChangeLogsRow
+	for rows.Next() {
+		var i ListBookCreditChangeLogsRow
+		if err := rows.Scan(&i.ChangeID, &i.TxnNo, &i.Delta, &i.CreatedAt, &i.Title); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

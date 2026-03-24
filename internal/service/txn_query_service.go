@@ -179,6 +179,20 @@ func (s *TxnQueryService) ListAccountChangeLogs(filter AccountChangeLogListFilte
 	return s.repo.ListAccountChangeLogs(filter)
 }
 
+func (s *TxnQueryService) ListActiveAccountBooks(accountNo string, now time.Time) ([]AccountBook, error) {
+	if s.repo == nil {
+		return nil, nil
+	}
+	return s.repo.ListActiveAccountBooks(accountNo, now)
+}
+
+func (s *TxnQueryService) ListBookCreditChangeLogs(bookNo string) ([]BookCreditChangeLog, error) {
+	if s.repo == nil {
+		return nil, nil
+	}
+	return s.repo.ListBookCreditChangeLogs(bookNo)
+}
+
 func queryTxnFromTransferTxn(txn TransferTxn) QueryTxn {
 	return QueryTxn{
 		TxnNo:            txn.TxnNo,
