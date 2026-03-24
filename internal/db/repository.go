@@ -551,6 +551,56 @@ func (r *Repository) ListAccountChangeLogs(filter service.AccountChangeLogListFi
 	return page, service.EncodeChangeLogPageToken(last.CreatedAt, last.ChangeID)
 }
 
+func (r *Repository) ListActiveAccountBooks(accountNo string, now time.Time) ([]service.AccountBook, error) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	rows, err := r.queries.ListActiveAccountBooks(ctx, dbsqlc.ListActiveAccountBooksParams{
+		AccountNo: accountNo,
+		NowUtc:    toPGDate(now),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]service.AccountBook, 0, len(rows))
+	for _, row := range rows {
+		expireAt := time.Time{}
+		if row.ExpireAt.Valid {
+			expireAt = normalizeUTCDate(row.ExpireAt.Time)
+		}
+		items = append(items, service.AccountBook{
+			BookNo:    row.BookNo,
+			AccountNo: row.AccountNo,
+			ExpireAt:  expireAt,
+			Balance:   row.Balance,
+		})
+	}
+	return items, nil
+}
+
+func (r *Repository) ListBookCreditChangeLogs(bookNo string) ([]service.BookCreditChangeLog, error) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	rows, err := r.queries.ListBookCreditChangeLogs(ctx, bookNo)
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]service.BookCreditChangeLog, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, service.BookCreditChangeLog{
+			ChangeID:  row.ChangeID,
+			TxnNo:     row.TxnNo,
+			Delta:     row.Delta,
+			CreatedAt: pgTimestampToTime(row.CreatedAt),
+			Title:     row.Title,
+		})
+	}
+	return items, nil
+}
+
 func (r *Repository) ListTransferTxnsByStatus(status string, limit int) ([]service.TransferTxn, error) {
 	ctx, cancel := r.withTimeout()
 	defer cancel()
