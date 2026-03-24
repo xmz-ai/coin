@@ -11,7 +11,8 @@ import (
 )
 
 func TestTC2001MerchantOnboardingCreatesBudgetAndReceivableAccounts(t *testing.T) {
-	repo := db.NewRepository(setupPostgresPool(t))
+	pool := setupPostgresPool(t)
+	repo := db.NewRepository(pool)
 	ids := idpkg.NewFixedUUIDProvider([]string{"01956f4e-7b3e-7a4d-9f6b-4d9de4f7c001"})
 	svc := service.NewMerchantService(repo, ids)
 
@@ -39,9 +40,21 @@ func TestTC2001MerchantOnboardingCreatesBudgetAndReceivableAccounts(t *testing.T
 	if !budget.AllowOverdraft || budget.MaxOverdraftLimit != 0 {
 		t.Fatalf("budget account overdraft defaults mismatch: allow_overdraft=%v max_overdraft_limit=%d", budget.AllowOverdraft, budget.MaxOverdraftLimit)
 	}
+	if budget.BookEnabled {
+		t.Fatalf("merchant budget account should not enable book ledger by default")
+	}
 	recv, ok := repo.GetAccount(m.ReceivableAccountNo)
 	if !ok || recv.MerchantNo != m.MerchantNo || recv.AccountType != service.AccountTypeReceivable {
 		t.Fatalf("receivable account binding mismatch")
+	}
+	if recv.BookEnabled {
+		t.Fatalf("merchant receivable account should not enable book ledger by default")
+	}
+	if books := queryAccountBooksByAccount(t, pool, m.BudgetAccountNo); len(books) != 0 {
+		t.Fatalf("merchant budget account should not create account_book rows, got %+v", books)
+	}
+	if books := queryAccountBooksByAccount(t, pool, m.ReceivableAccountNo); len(books) != 0 {
+		t.Fatalf("merchant receivable account should not create account_book rows, got %+v", books)
 	}
 }
 
