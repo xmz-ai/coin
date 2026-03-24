@@ -123,6 +123,29 @@ export interface CustomerBalance {
   book_enabled: boolean;
 }
 
+export interface AccountBook {
+  book_no: string;
+  account_no: string;
+  expire_at: string; // "YYYY-MM-DD"
+  balance: number;
+}
+
+export interface ListBooksResponse {
+  books: AccountBook[];
+}
+
+export interface BookCreditChangeLog {
+  change_id: number;
+  txn_no: string;
+  delta: number;
+  title: string;
+  created_at: string; // RFC3339
+}
+
+export interface ListBookCreditChangeLogsResponse {
+  items: BookCreditChangeLog[];
+}
+
 export interface MerchantProfile {
   merchant_no: string;
   name: string;
