@@ -14,5 +14,8 @@ export type {
   TxnSubmitResponse,
   Txn,
   ListTransactionsResponse,
+  AccountChangeLog,
+  ListAccountChangeLogsRequest,
+  ListAccountChangeLogsResponse,
   MerchantProfile,
 } from "./types.js";

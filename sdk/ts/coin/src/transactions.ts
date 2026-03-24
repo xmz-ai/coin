@@ -8,6 +8,8 @@ import type {
   TxnSubmitResponse,
   Txn,
   ListTransactionsResponse,
+  ListAccountChangeLogsRequest,
+  ListAccountChangeLogsResponse,
 } from "./types.js";
 
 const OUT_TRADE_NO_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
@@ -87,6 +89,22 @@ export class TransactionsAPI {
     const resp = await this.client._do<ListTransactionsResponse>(
       "GET",
       "/api/v1/transactions",
+      Object.keys(query).length > 0 ? query : undefined,
+    );
+    return { ...resp, items: resp.items ?? [] };
+  }
+
+  async listAccountChangeLogs(accountNo: string, req: ListAccountChangeLogsRequest = {}): Promise<ListAccountChangeLogsResponse> {
+    accountNo = (accountNo ?? "").trim();
+    if (!accountNo) throw new Error("account_no is required");
+
+    const query: Record<string, string> = {};
+    if (req.pageSize && req.pageSize > 0) query.page_size = String(req.pageSize);
+    if ((req.pageToken ?? "").trim()) query.page_token = req.pageToken!.trim();
+
+    const resp = await this.client._do<ListAccountChangeLogsResponse>(
+      "GET",
+      `/api/v1/accounts/${encodeURIComponent(accountNo)}/change-logs`,
       Object.keys(query).length > 0 ? query : undefined,
     );
     return { ...resp, items: resp.items ?? [] };

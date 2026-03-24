@@ -13,6 +13,7 @@
 - `GET /api/v1/transactions/{txn_no}`
 - `GET /api/v1/transactions/by-out-trade-no/{out_trade_no}`
 - `GET /api/v1/transactions`
+- `GET /api/v1/accounts/{account_no}/change-logs`
 
 不支持（平台后台能力）：
 - `POST /api/v1/merchants`
@@ -50,6 +51,8 @@ func main() {
 
 	resp, err := client.Transactions.Credit(context.Background(), coin.CreditRequest{
 		OutTradeNo: "ord_issue_001",
+		Title:      "积分发放",
+		Remark:     "活动首单赠送",
 		UserID:     "u_90001",
 		Amount:     1000,
 	})

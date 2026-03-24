@@ -355,6 +355,42 @@ Response:
 }
 ```
 
+## 3.4 查询账户流水
+
+- `GET /api/v1/accounts/{account_no}/change-logs`
+
+Query 参数：
+- `page_size`（默认 20，最大 200）
+- `page_token`（游标，编码 `created_at + change_id`）
+
+Response:
+
+```json
+{
+  "code": "SUCCESS",
+  "data": {
+    "items": [
+      {
+        "change_id": 1001,
+        "txn_no": "01956f4e-9d22-73bc-8e11-3f5e9c7a2001",
+        "account_no": "6217701201001234567",
+        "delta": 1000,
+        "balance_before": 0,
+        "balance_after": 1000,
+        "title": "积分发放",
+        "remark": "活动首单赠送",
+        "created_at": "2026-03-12T11:30:00.000Z"
+      }
+    ],
+    "next_page_token": ""
+  }
+}
+```
+
+说明：
+- 仅允许查询当前鉴权商户下账户。
+- `title` / `remark` 来自关联交易主单，不在流水表冗余存储。
+
 ---
 
 ## 4. 交易接口
@@ -374,6 +410,8 @@ Request:
 ```json
 {
   "out_trade_no": "ord_90001",
+  "title": "积分发放",
+  "remark": "活动首单赠送",
   "user_id": "u_90001",
   "amount": 1000,
   "expire_in_days": 30
@@ -417,6 +455,8 @@ Request:
 ```json
 {
   "out_trade_no": "ord_90002",
+  "title": "消费扣减",
+  "remark": "订单 #A1001",
   "biz_type": "TRANSFER",
   "transfer_scene": "CONSUME",
   "debit_out_user_id": "u_90001",
@@ -461,6 +501,8 @@ Request:
 ```json
 {
   "out_trade_no": "ord_90003",
+  "title": "用户转账",
+  "remark": "好友代付",
   "biz_type": "TRANSFER",
   "transfer_scene": "P2P",
   "from_out_user_id": "u_90001",
@@ -494,6 +536,8 @@ Request:
 ```json
 {
   "out_trade_no": "ord_90004_refund_1",
+  "title": "退款",
+  "remark": "订单取消退回",
   "biz_type": "REFUND",
   "refund_of_txn_no": "01956f4e-9d22-73bc-8e11-3f5e9c7a2001",
   "amount": 200
@@ -518,7 +562,7 @@ Request:
 - `GET /api/v1/transactions/{txn_no}`
 - `GET /api/v1/transactions/by-out-trade-no/{out_trade_no}`
 
-返回主单状态、明细、错误码、可退余额。
+返回主单状态、明细、错误码、可退余额，以及调用方提交的 `title` / `remark`。
 
 ## 4.6 交易列表查询
 
@@ -547,6 +591,8 @@ Response:
       {
         "txn_no": "01956f4e-9d22-73bc-8e11-3f5e9c7a2001",
         "out_trade_no": "ord_90001",
+        "title": "积分发放",
+        "remark": "活动首单赠送",
         "transfer_scene": "ISSUE",
         "amount": 1000,
         "status": "RECV_SUCCESS",

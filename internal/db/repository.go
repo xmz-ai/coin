@@ -397,6 +397,8 @@ func (r *Repository) CreateTransferTxn(txn service.TransferTxn) error {
 		TxnNo:            txn.TxnNo,
 		MerchantNo:       txn.MerchantNo,
 		OutTradeNo:       txn.OutTradeNo,
+		Title:            nullIfEmpty(txn.Title),
+		Remark:           nullIfEmpty(txn.Remark),
 		BizType:          txn.BizType,
 		TransferScene:    nullIfEmpty(txn.TransferScene),
 		DebitAccountNo:   nullIfEmpty(txn.DebitAccountNo),
@@ -499,6 +501,54 @@ func (r *Repository) ListTransferTxns(filter service.TxnListFilter) ([]service.T
 	page := items[:pageSize]
 	last := page[len(page)-1]
 	return page, service.EncodePageToken(last.CreatedAt, last.TxnNo)
+}
+
+func (r *Repository) ListAccountChangeLogs(filter service.AccountChangeLogListFilter) ([]service.AccountChangeLog, string) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	pageSize := filter.PageSize
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if pageSize > 200 {
+		pageSize = 200
+	}
+
+	cursorAt, cursorChangeID, hasCursor := service.DecodeChangeLogPageToken(filter.PageToken)
+	rows, err := r.queries.ListAccountChangeLogs(ctx, dbsqlc.ListAccountChangeLogsParams{
+		MerchantNo:      filter.MerchantNo,
+		AccountNo:       filter.AccountNo,
+		HasCursor:       hasCursor,
+		CursorCreatedAt: nullableTimestamp(&cursorAt, hasCursor),
+		CursorChangeID:  cursorChangeID,
+		PageLimit:       int32(pageSize + 1),
+	})
+	if err != nil {
+		return nil, ""
+	}
+
+	items := make([]service.AccountChangeLog, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, service.AccountChangeLog{
+			ChangeID:      row.ChangeID,
+			TxnNo:         row.TxnNo,
+			AccountNo:     row.AccountNo,
+			Delta:         row.Delta,
+			BalanceBefore: row.BalanceBefore,
+			BalanceAfter:  row.BalanceAfter,
+			Title:         row.Title,
+			Remark:        row.Remark,
+			CreatedAt:     pgTimestampToTime(row.CreatedAt),
+		})
+	}
+
+	if len(items) <= pageSize {
+		return items, ""
+	}
+	page := items[:pageSize]
+	last := page[len(page)-1]
+	return page, service.EncodeChangeLogPageToken(last.CreatedAt, last.ChangeID)
 }
 
 func (r *Repository) ListTransferTxnsByStatus(status string, limit int) ([]service.TransferTxn, error) {
@@ -1944,6 +1994,8 @@ func transferTxnFromByNoRow(row dbsqlc.GetTransferTxnByNoRow) service.TransferTx
 		TxnNo:            row.TxnNo,
 		MerchantNo:       row.MerchantNo,
 		OutTradeNo:       row.OutTradeNo,
+		Title:            row.Title,
+		Remark:           row.Remark,
 		BizType:          row.BizType,
 		TransferScene:    row.TransferScene,
 		DebitAccountNo:   row.DebitAccountNo,
@@ -1963,6 +2015,8 @@ func transferTxnFromByOutTradeRow(row dbsqlc.GetTransferTxnByOutTradeNoRow) serv
 		TxnNo:            row.TxnNo,
 		MerchantNo:       row.MerchantNo,
 		OutTradeNo:       row.OutTradeNo,
+		Title:            row.Title,
+		Remark:           row.Remark,
 		BizType:          row.BizType,
 		TransferScene:    row.TransferScene,
 		DebitAccountNo:   row.DebitAccountNo,
@@ -1982,6 +2036,8 @@ func transferTxnFromListRow(row dbsqlc.ListTransferTxnsRow) service.TransferTxn 
 		TxnNo:            row.TxnNo,
 		MerchantNo:       row.MerchantNo,
 		OutTradeNo:       row.OutTradeNo,
+		Title:            row.Title,
+		Remark:           row.Remark,
 		BizType:          row.BizType,
 		TransferScene:    row.TransferScene,
 		DebitAccountNo:   row.DebitAccountNo,
@@ -2001,6 +2057,8 @@ func transferTxnFromListByStatusRow(row dbsqlc.ListTransferTxnsByStatusRow) serv
 		TxnNo:            row.TxnNo,
 		MerchantNo:       row.MerchantNo,
 		OutTradeNo:       row.OutTradeNo,
+		Title:            row.Title,
+		Remark:           row.Remark,
 		BizType:          row.BizType,
 		TransferScene:    row.TransferScene,
 		DebitAccountNo:   row.DebitAccountNo,

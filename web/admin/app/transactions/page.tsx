@@ -23,6 +23,8 @@ import { APIError, apiRequest } from "../../lib/api";
 type TxnItem = {
   txn_no: string;
   out_trade_no: string;
+  title: string;
+  remark: string;
   transfer_scene: string;
   status: string;
   amount: number;
@@ -153,6 +155,8 @@ export default function TransactionsPage(): JSX.Element {
     { title: "Created At", dataIndex: "created_at", key: "created_at", width: 220 },
     { title: "Txn No", dataIndex: "txn_no", key: "txn_no", width: 260 },
     { title: "Out Trade", dataIndex: "out_trade_no", key: "out_trade_no", width: 170 },
+    { title: "Title", dataIndex: "title", key: "title", width: 180 },
+    { title: "Remark", dataIndex: "remark", key: "remark", width: 220 },
     { title: "Scene", dataIndex: "transfer_scene", key: "transfer_scene", width: 110 },
     {
       title: "Status",
@@ -241,7 +245,7 @@ export default function TransactionsPage(): JSX.Element {
           dataSource={rows}
           loading={loading}
           pagination={false}
-          scroll={{ x: 1700 }}
+          scroll={{ x: 2100 }}
         />
       </Card>
 
@@ -259,6 +263,8 @@ export default function TransactionsPage(): JSX.Element {
                     void submitTxn("/transactions/credit", {
                       merchant_no: values.merchant_no,
                       out_trade_no: values.out_trade_no,
+                      title: values.title,
+                      remark: values.remark,
                       user_id: values.user_id,
                       credit_account_no: values.credit_account_no,
                       debit_account_no: values.debit_account_no,
@@ -269,6 +275,8 @@ export default function TransactionsPage(): JSX.Element {
                 >
                   <Form.Item name="merchant_no" label="merchant_no" rules={[{ required: true }]}><Input /></Form.Item>
                   <Form.Item name="out_trade_no" label="out_trade_no" rules={[{ required: true }]}><Input /></Form.Item>
+                  <Form.Item name="title" label="title"><Input /></Form.Item>
+                  <Form.Item name="remark" label="remark"><Input.TextArea rows={3} /></Form.Item>
                   <Form.Item name="user_id" label="user_id"><Input /></Form.Item>
                   <Form.Item name="credit_account_no" label="credit_account_no"><Input /></Form.Item>
                   <Form.Item name="debit_account_no" label="debit_account_no"><Input /></Form.Item>
@@ -289,6 +297,8 @@ export default function TransactionsPage(): JSX.Element {
                     void submitTxn("/transactions/debit", {
                       merchant_no: values.merchant_no,
                       out_trade_no: values.out_trade_no,
+                      title: values.title,
+                      remark: values.remark,
                       debit_account_no: values.debit_account_no,
                       debit_out_user_id: values.debit_out_user_id,
                       credit_account_no: values.credit_account_no,
@@ -299,6 +309,8 @@ export default function TransactionsPage(): JSX.Element {
                 >
                   <Form.Item name="merchant_no" label="merchant_no" rules={[{ required: true }]}><Input /></Form.Item>
                   <Form.Item name="out_trade_no" label="out_trade_no" rules={[{ required: true }]}><Input /></Form.Item>
+                  <Form.Item name="title" label="title"><Input /></Form.Item>
+                  <Form.Item name="remark" label="remark"><Input.TextArea rows={3} /></Form.Item>
                   <Form.Item name="debit_account_no" label="debit_account_no"><Input /></Form.Item>
                   <Form.Item name="debit_out_user_id" label="debit_out_user_id"><Input /></Form.Item>
                   <Form.Item name="credit_account_no" label="credit_account_no"><Input /></Form.Item>
@@ -319,6 +331,8 @@ export default function TransactionsPage(): JSX.Element {
                     void submitTxn("/transactions/transfer", {
                       merchant_no: values.merchant_no,
                       out_trade_no: values.out_trade_no,
+                      title: values.title,
+                      remark: values.remark,
                       from_account_no: values.from_account_no,
                       from_out_user_id: values.from_out_user_id,
                       to_account_no: values.to_account_no,
@@ -330,6 +344,8 @@ export default function TransactionsPage(): JSX.Element {
                 >
                   <Form.Item name="merchant_no" label="merchant_no" rules={[{ required: true }]}><Input /></Form.Item>
                   <Form.Item name="out_trade_no" label="out_trade_no" rules={[{ required: true }]}><Input /></Form.Item>
+                  <Form.Item name="title" label="title"><Input /></Form.Item>
+                  <Form.Item name="remark" label="remark"><Input.TextArea rows={3} /></Form.Item>
                   <Form.Item name="from_account_no" label="from_account_no"><Input /></Form.Item>
                   <Form.Item name="from_out_user_id" label="from_out_user_id"><Input /></Form.Item>
                   <Form.Item name="to_account_no" label="to_account_no"><Input /></Form.Item>
@@ -351,6 +367,8 @@ export default function TransactionsPage(): JSX.Element {
                     void submitTxn("/transactions/refund", {
                       merchant_no: values.merchant_no,
                       out_trade_no: values.out_trade_no,
+                      title: values.title,
+                      remark: values.remark,
                       refund_of_txn_no: values.refund_of_txn_no,
                       amount: Number(values.amount),
                     })
@@ -358,6 +376,8 @@ export default function TransactionsPage(): JSX.Element {
                 >
                   <Form.Item name="merchant_no" label="merchant_no" rules={[{ required: true }]}><Input /></Form.Item>
                   <Form.Item name="out_trade_no" label="out_trade_no" rules={[{ required: true }]}><Input /></Form.Item>
+                  <Form.Item name="title" label="title"><Input /></Form.Item>
+                  <Form.Item name="remark" label="remark"><Input.TextArea rows={3} /></Form.Item>
                   <Form.Item name="refund_of_txn_no" label="refund_of_txn_no" rules={[{ required: true }]}><Input /></Form.Item>
                   <Form.Item name="amount" label="amount" rules={[{ required: true }]}><Input /></Form.Item>
                   <Button loading={submitting} type="primary" htmlType="submit">提交</Button>
