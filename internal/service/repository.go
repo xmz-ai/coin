@@ -40,6 +40,7 @@ type TxnStageApplyResult struct {
 // Production should provide a DB-backed implementation; tests can provide fakes.
 type Repository interface {
 	CreateMerchant(m domain.Merchant) error
+	CreateMerchantWithAccounts(m domain.Merchant, accounts ...domain.Account) error
 	GetMerchantByNo(merchantNo string) (domain.Merchant, bool)
 	UpsertMerchantFeatureConfig(merchantNo string, autoCreateAccountOnCustomerCreate, autoCreateCustomerOnCredit bool) error
 	GetMerchantFeatureConfig(merchantNo string) (MerchantFeatureConfig, bool, error)

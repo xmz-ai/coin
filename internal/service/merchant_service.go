@@ -62,31 +62,27 @@ func (s *MerchantService) CreateMerchant(merchantNo, name string) (Merchant, err
 		BudgetAccountNo:     budget,
 		ReceivableAccountNo: recv,
 	}
-	if err := s.repo.CreateMerchant(m); err != nil {
-		return Merchant{}, err
-	}
-
-	if err := s.repo.CreateAccount(Account{
-		AccountNo:         budget,
-		MerchantNo:        resolvedMerchantNo,
-		AccountType:       AccountTypeBudget,
-		AllowOverdraft:    true,
-		MaxOverdraftLimit: 0,
-		AllowDebitOut:     true,
-		AllowCreditIn:     true,
-		AllowTransfer:     true,
-		Balance:           0,
-	}); err != nil {
-		return Merchant{}, err
-	}
-	if err := s.repo.CreateAccount(Account{
-		AccountNo:     recv,
-		MerchantNo:    resolvedMerchantNo,
-		AccountType:   AccountTypeReceivable,
-		AllowDebitOut: true,
-		AllowCreditIn: true,
-		AllowTransfer: true,
-	}); err != nil {
+	if err := s.repo.CreateMerchantWithAccounts(m,
+		Account{
+			AccountNo:         budget,
+			MerchantNo:        resolvedMerchantNo,
+			AccountType:       AccountTypeBudget,
+			AllowOverdraft:    true,
+			MaxOverdraftLimit: 0,
+			AllowDebitOut:     true,
+			AllowCreditIn:     true,
+			AllowTransfer:     true,
+			Balance:           0,
+		},
+		Account{
+			AccountNo:     recv,
+			MerchantNo:    resolvedMerchantNo,
+			AccountType:   AccountTypeReceivable,
+			AllowDebitOut: true,
+			AllowCreditIn: true,
+			AllowTransfer: true,
+		},
+	); err != nil {
 		return Merchant{}, err
 	}
 	return m, nil
