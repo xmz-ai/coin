@@ -120,6 +120,8 @@ CREATE TABLE IF NOT EXISTS txn (
   txn_no UUID PRIMARY KEY,
   merchant_no VARCHAR(16) NOT NULL,
   out_trade_no VARCHAR(64) NOT NULL,
+  title VARCHAR(128),
+  remark VARCHAR(512),
   biz_type VARCHAR(32) NOT NULL CHECK (biz_type IN ('TRANSFER', 'REFUND')),
   transfer_scene VARCHAR(32),
   debit_account_no VARCHAR(19),

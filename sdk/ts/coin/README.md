@@ -13,6 +13,7 @@
 - `GET /api/v1/transactions/{txn_no}`
 - `GET /api/v1/transactions/by-out-trade-no/{out_trade_no}`
 - `GET /api/v1/transactions`
+- `GET /api/v1/accounts/{account_no}/change-logs`
 
 不支持（平台后台能力）：
 - `POST /api/v1/merchants`
@@ -38,6 +39,8 @@ const client = new CoinClient({
 
 const resp = await client.transactions.credit({
   out_trade_no: "ord_issue_001",
+  title: "积分发放",
+  remark: "活动首单赠送",
   user_id: "u_90001",
   amount: 1000,
 });

@@ -250,10 +250,12 @@ func TestTC1130APICreditByUserIDReturnsNotFoundWhenAutoCreateDisabled(t *testing
 }
 
 func TestTC1103APIGetByOutTradeNo(t *testing.T) {
-	r, _, _, merchantNo, secret := newTxnAPITestServer(t)
+	r, repo, _, merchantNo, secret := newTxnAPITestServer(t)
 
 	createReq := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/credit", merchantNo, secret, "nonce-1103-1", map[string]any{
 		"out_trade_no": "ord_1103",
+		"title":        "发放奖励",
+		"remark":       "活动首单赠送",
 		"user_id":      "u_1101",
 		"amount":       100,
 	})
@@ -274,6 +276,21 @@ func TestTC1103APIGetByOutTradeNo(t *testing.T) {
 	data := body["data"].(map[string]any)
 	if data["out_trade_no"] != "ord_1103" {
 		t.Fatalf("unexpected out_trade_no: %v", data["out_trade_no"])
+	}
+	if data["title"] != "发放奖励" {
+		t.Fatalf("unexpected title: %v", data["title"])
+	}
+	if data["remark"] != "活动首单赠送" {
+		t.Fatalf("unexpected remark: %v", data["remark"])
+	}
+
+	txnNo := data["txn_no"].(string)
+	txn, ok := repo.GetTransferTxn(txnNo)
+	if !ok {
+		t.Fatalf("txn not found")
+	}
+	if txn.Title != "发放奖励" || txn.Remark != "活动首单赠送" {
+		t.Fatalf("unexpected txn copy fields: %+v", txn)
 	}
 }
 
@@ -305,6 +322,61 @@ func TestTC1104APIGetByTxnNo(t *testing.T) {
 	data := body["data"].(map[string]any)
 	if data["txn_no"] != txnNo {
 		t.Fatalf("unexpected txn_no: %v", data["txn_no"])
+	}
+}
+
+func TestTC1104APIListAccountChangeLogsIncludesTxnCopy(t *testing.T) {
+	r, repo, _, merchantNo, secret := newTxnAPITestServer(t)
+
+	createReq := signedAPIRequest(t, http.MethodPost, "/api/v1/transactions/credit", merchantNo, secret, "nonce-1104-copy", map[string]any{
+		"out_trade_no": "ord_1104_copy",
+		"title":        "积分发放",
+		"remark":       "运营补偿",
+		"user_id":      "u_1101",
+		"amount":       100,
+	})
+	createResp := httptest.NewRecorder()
+	r.ServeHTTP(createResp, createReq)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("create expected 201, got %d body=%s", createResp.Code, createResp.Body.String())
+	}
+
+	createBody := decodeJSONMap(t, createResp.Body.Bytes())
+	txnNo := createBody["data"].(map[string]any)["txn_no"].(string)
+	waitTxnStatus(t, r, merchantNo, secret, txnNo, service.TxnStatusRecvSuccess)
+
+	account, ok := repo.GetAccount(testCreditAccountNo)
+	if !ok {
+		t.Fatalf("account not found")
+	}
+
+	queryReq := signedAPIRequest(t, http.MethodGet, "/api/v1/accounts/"+account.AccountNo+"/change-logs", merchantNo, secret, "nonce-1104-copy-query", nil)
+	queryResp := httptest.NewRecorder()
+	r.ServeHTTP(queryResp, queryReq)
+	if queryResp.Code != http.StatusOK {
+		t.Fatalf("query expected 200, got %d body=%s", queryResp.Code, queryResp.Body.String())
+	}
+
+	body := decodeJSONMap(t, queryResp.Body.Bytes())
+	items := body["data"].(map[string]any)["items"].([]any)
+	if len(items) == 0 {
+		t.Fatalf("expected change logs")
+	}
+	first := items[0].(map[string]any)
+	if first["txn_no"] != txnNo {
+		t.Fatalf("unexpected txn_no: %v", first["txn_no"])
+	}
+	if first["title"] != "积分发放" {
+		t.Fatalf("unexpected title: %v", first["title"])
+	}
+	if first["remark"] != "运营补偿" {
+		t.Fatalf("unexpected remark: %v", first["remark"])
+	}
+	if _, ok := first["balance_before"]; !ok {
+		t.Fatalf("expected balance_before in response")
+	}
+	if _, ok := first["balance_after"]; !ok {
+		t.Fatalf("expected balance_after in response")
 	}
 }
 
