@@ -150,7 +150,7 @@ WHERE c.merchant_no = sqlc.arg(merchant_no)
 -- name: CreateTransferTxn :exec
 INSERT INTO txn (
   txn_no, merchant_no, out_trade_no, biz_type, transfer_scene,
-  debit_account_no, credit_account_no, credit_expire_at, amount, status,
+  title, remark, debit_account_no, credit_account_no, credit_expire_at, amount, status,
   refund_of_txn_no, refundable_amount, error_code, error_msg
 ) VALUES (
   NULLIF(sqlc.arg(txn_no), '')::uuid,
@@ -158,6 +158,8 @@ INSERT INTO txn (
   sqlc.arg(out_trade_no),
   sqlc.arg(biz_type),
   NULLIF(sqlc.arg(transfer_scene), ''),
+  NULLIF(sqlc.arg(title), ''),
+  NULLIF(sqlc.arg(remark), ''),
   NULLIF(sqlc.arg(debit_account_no), ''),
   NULLIF(sqlc.arg(credit_account_no), ''),
   sqlc.narg(credit_expire_at)::date,
@@ -174,6 +176,8 @@ SELECT
   t.txn_no::text AS txn_no,
   t.merchant_no,
   t.out_trade_no,
+  COALESCE(t.title, '') AS title,
+  COALESCE(t.remark, '') AS remark,
   COALESCE(t.biz_type, '') AS biz_type,
   COALESCE(t.transfer_scene, '') AS transfer_scene,
   COALESCE(t.debit_account_no, '') AS debit_account_no,
@@ -213,6 +217,8 @@ SELECT
   t.txn_no::text AS txn_no,
   t.merchant_no,
   t.out_trade_no,
+  COALESCE(t.title, '') AS title,
+  COALESCE(t.remark, '') AS remark,
   COALESCE(t.biz_type, '') AS biz_type,
   COALESCE(t.transfer_scene, '') AS transfer_scene,
   COALESCE(t.debit_account_no, '') AS debit_account_no,
@@ -235,6 +241,8 @@ SELECT
   t.txn_no::text AS txn_no,
   t.merchant_no,
   t.out_trade_no,
+  COALESCE(t.title, '') AS title,
+  COALESCE(t.remark, '') AS remark,
   COALESCE(t.biz_type, '') AS biz_type,
   COALESCE(t.transfer_scene, '') AS transfer_scene,
   COALESCE(t.debit_account_no, '') AS debit_account_no,
@@ -283,6 +291,8 @@ SELECT
   t.txn_no::text AS txn_no,
   t.merchant_no,
   t.out_trade_no,
+  COALESCE(t.title, '') AS title,
+  COALESCE(t.remark, '') AS remark,
   COALESCE(t.biz_type, '') AS biz_type,
   COALESCE(t.transfer_scene, '') AS transfer_scene,
   COALESCE(t.debit_account_no, '') AS debit_account_no,
@@ -298,6 +308,34 @@ SELECT
 FROM txn t
 WHERE t.status = sqlc.arg(status)
 ORDER BY t.updated_at ASC, t.txn_no ASC
+LIMIT sqlc.arg(page_limit);
+
+-- name: ListAccountChangeLogs :many
+SELECT
+  acl.change_id,
+  acl.txn_no::text AS txn_no,
+  acl.account_no,
+  acl.delta,
+  acl.balance_before,
+  acl.balance_after,
+  COALESCE(t.title, '') AS title,
+  COALESCE(t.remark, '') AS remark,
+  acl.created_at
+FROM account_change_log acl
+JOIN account a
+  ON a.account_no = acl.account_no
+LEFT JOIN txn t
+  ON t.txn_no = acl.txn_no
+WHERE a.merchant_no = sqlc.arg(merchant_no)
+  AND acl.account_no = sqlc.arg(account_no)
+  AND (
+    NOT sqlc.arg(has_cursor)::bool
+    OR (
+      acl.created_at < sqlc.arg(cursor_created_at)::timestamptz
+      OR (acl.created_at = sqlc.arg(cursor_created_at)::timestamptz AND acl.change_id < sqlc.arg(cursor_change_id))
+    )
+  )
+ORDER BY acl.created_at DESC, acl.change_id DESC
 LIMIT sqlc.arg(page_limit);
 
 -- name: UpdateTransferTxnStatus :exec

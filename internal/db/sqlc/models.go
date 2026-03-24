@@ -126,6 +126,8 @@ type Txn struct {
 	CreatedAt        pgtype.Timestamptz
 	UpdatedAt        pgtype.Timestamptz
 	CreditExpireAt   pgtype.Date
+	Title            pgtype.Text
+	Remark           pgtype.Text
 }
 
 type WebhookConfig struct {
