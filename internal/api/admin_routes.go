@@ -190,6 +190,8 @@ type adminPatchAccountCapabilityRequest struct {
 type adminCreditRequest struct {
 	MerchantNo      string `json:"merchant_no"`
 	OutTradeNo      string `json:"out_trade_no"`
+	Title           string `json:"title"`
+	Remark          string `json:"remark"`
 	DebitAccountNo  string `json:"debit_account_no"`
 	CreditAccountNo string `json:"credit_account_no"`
 	UserID          string `json:"user_id"`
@@ -200,6 +202,8 @@ type adminCreditRequest struct {
 type adminDebitRequest struct {
 	MerchantNo      string `json:"merchant_no"`
 	OutTradeNo      string `json:"out_trade_no"`
+	Title           string `json:"title"`
+	Remark          string `json:"remark"`
 	BizType         string `json:"biz_type"`
 	TransferScene   string `json:"transfer_scene"`
 	DebitAccountNo  string `json:"debit_account_no"`
@@ -212,6 +216,8 @@ type adminDebitRequest struct {
 type adminTransferRequest struct {
 	MerchantNo     string `json:"merchant_no"`
 	OutTradeNo     string `json:"out_trade_no"`
+	Title          string `json:"title"`
+	Remark         string `json:"remark"`
 	BizType        string `json:"biz_type"`
 	TransferScene  string `json:"transfer_scene"`
 	FromAccountNo  string `json:"from_account_no"`
@@ -225,6 +231,8 @@ type adminTransferRequest struct {
 type adminRefundRequest struct {
 	MerchantNo    string `json:"merchant_no"`
 	OutTradeNo    string `json:"out_trade_no"`
+	Title         string `json:"title"`
+	Remark        string `json:"remark"`
 	BizType       string `json:"biz_type"`
 	RefundOfTxnNo string `json:"refund_of_txn_no"`
 	Amount        int64  `json:"amount"`
@@ -975,6 +983,8 @@ func (h *AdminHandler) handleAdminCredit(c *gin.Context) {
 	}
 	req.MerchantNo = strings.TrimSpace(req.MerchantNo)
 	req.OutTradeNo = strings.TrimSpace(req.OutTradeNo)
+	req.Title = strings.TrimSpace(req.Title)
+	req.Remark = strings.TrimSpace(req.Remark)
 	req.DebitAccountNo = strings.TrimSpace(req.DebitAccountNo)
 	req.CreditAccountNo = strings.TrimSpace(req.CreditAccountNo)
 	req.UserID = strings.TrimSpace(req.UserID)
@@ -984,6 +994,10 @@ func (h *AdminHandler) handleAdminCredit(c *gin.Context) {
 	}
 	if !isValidOutTradeNo(req.OutTradeNo) {
 		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid out_trade_no")
+		return
+	}
+	if !isValidTxnCopy(req.Title, maxTxnTitleLen) || !isValidTxnCopy(req.Remark, maxTxnRemarkLen) {
+		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid title or remark")
 		return
 	}
 	if _, ok := h.merchantService.GetMerchantConfigByNo(req.MerchantNo); !ok {
@@ -1059,6 +1073,8 @@ func (h *AdminHandler) handleAdminCredit(c *gin.Context) {
 	txn, err := h.transfer.Submit(service.TransferRequest{
 		MerchantNo:       req.MerchantNo,
 		OutTradeNo:       req.OutTradeNo,
+		Title:            req.Title,
+		Remark:           req.Remark,
 		BizType:          service.BizTypeTransfer,
 		TransferScene:    service.SceneIssue,
 		DebitAccountNo:   resolved.DebitAccountNo,
@@ -1103,6 +1119,8 @@ func (h *AdminHandler) handleAdminDebit(c *gin.Context) {
 	}
 	req.MerchantNo = strings.TrimSpace(req.MerchantNo)
 	req.OutTradeNo = strings.TrimSpace(req.OutTradeNo)
+	req.Title = strings.TrimSpace(req.Title)
+	req.Remark = strings.TrimSpace(req.Remark)
 	req.BizType = strings.TrimSpace(strings.ToUpper(req.BizType))
 	req.TransferScene = strings.TrimSpace(strings.ToUpper(req.TransferScene))
 	req.DebitAccountNo = strings.TrimSpace(req.DebitAccountNo)
@@ -1115,6 +1133,10 @@ func (h *AdminHandler) handleAdminDebit(c *gin.Context) {
 	}
 	if !isValidOutTradeNo(req.OutTradeNo) {
 		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid out_trade_no")
+		return
+	}
+	if !isValidTxnCopy(req.Title, maxTxnTitleLen) || !isValidTxnCopy(req.Remark, maxTxnRemarkLen) {
+		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid title or remark")
 		return
 	}
 	if _, ok := h.merchantService.GetMerchantConfigByNo(req.MerchantNo); !ok {
@@ -1168,6 +1190,8 @@ func (h *AdminHandler) handleAdminDebit(c *gin.Context) {
 	txn, err := h.transfer.Submit(service.TransferRequest{
 		MerchantNo:       req.MerchantNo,
 		OutTradeNo:       req.OutTradeNo,
+		Title:            req.Title,
+		Remark:           req.Remark,
 		BizType:          service.BizTypeTransfer,
 		TransferScene:    service.SceneConsume,
 		DebitAccountNo:   resolved.DebitAccountNo,
@@ -1202,6 +1226,8 @@ func (h *AdminHandler) handleAdminTransfer(c *gin.Context) {
 	}
 	req.MerchantNo = strings.TrimSpace(req.MerchantNo)
 	req.OutTradeNo = strings.TrimSpace(req.OutTradeNo)
+	req.Title = strings.TrimSpace(req.Title)
+	req.Remark = strings.TrimSpace(req.Remark)
 	req.BizType = strings.TrimSpace(strings.ToUpper(req.BizType))
 	req.TransferScene = strings.TrimSpace(strings.ToUpper(req.TransferScene))
 	req.FromAccountNo = strings.TrimSpace(req.FromAccountNo)
@@ -1214,6 +1240,10 @@ func (h *AdminHandler) handleAdminTransfer(c *gin.Context) {
 	}
 	if !isValidOutTradeNo(req.OutTradeNo) {
 		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid out_trade_no")
+		return
+	}
+	if !isValidTxnCopy(req.Title, maxTxnTitleLen) || !isValidTxnCopy(req.Remark, maxTxnRemarkLen) {
+		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid title or remark")
 		return
 	}
 	if _, ok := h.merchantService.GetMerchantConfigByNo(req.MerchantNo); !ok {
@@ -1287,6 +1317,8 @@ func (h *AdminHandler) handleAdminTransfer(c *gin.Context) {
 	txn, err := h.transfer.Submit(service.TransferRequest{
 		MerchantNo:       req.MerchantNo,
 		OutTradeNo:       req.OutTradeNo,
+		Title:            req.Title,
+		Remark:           req.Remark,
 		BizType:          service.BizTypeTransfer,
 		TransferScene:    service.SceneP2P,
 		DebitAccountNo:   resolved.DebitAccountNo,
@@ -1322,6 +1354,8 @@ func (h *AdminHandler) handleAdminRefund(c *gin.Context) {
 	}
 	req.MerchantNo = strings.TrimSpace(req.MerchantNo)
 	req.OutTradeNo = strings.TrimSpace(req.OutTradeNo)
+	req.Title = strings.TrimSpace(req.Title)
+	req.Remark = strings.TrimSpace(req.Remark)
 	req.BizType = strings.TrimSpace(strings.ToUpper(req.BizType))
 	req.RefundOfTxnNo = strings.TrimSpace(req.RefundOfTxnNo)
 	if req.MerchantNo == "" || req.OutTradeNo == "" || req.RefundOfTxnNo == "" || req.Amount <= 0 {
@@ -1330,6 +1364,10 @@ func (h *AdminHandler) handleAdminRefund(c *gin.Context) {
 	}
 	if !isValidOutTradeNo(req.OutTradeNo) {
 		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid out_trade_no")
+		return
+	}
+	if !isValidTxnCopy(req.Title, maxTxnTitleLen) || !isValidTxnCopy(req.Remark, maxTxnRemarkLen) {
+		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "invalid title or remark")
 		return
 	}
 	if !isValidUUID(req.RefundOfTxnNo) {
@@ -1348,6 +1386,8 @@ func (h *AdminHandler) handleAdminRefund(c *gin.Context) {
 	txn, err := h.transfer.Submit(service.TransferRequest{
 		MerchantNo:       req.MerchantNo,
 		OutTradeNo:       req.OutTradeNo,
+		Title:            req.Title,
+		Remark:           req.Remark,
 		BizType:          service.BizTypeRefund,
 		Amount:           req.Amount,
 		RefundOfTxnNo:    req.RefundOfTxnNo,
