@@ -52,6 +52,8 @@ type TxnQueryStore interface {
 	GetByOutTradeNo(merchantNo, outTradeNo string) (service.QueryTxn, bool)
 	List(filter service.QueryFilter) ([]service.QueryTxn, string)
 	ListAccountChangeLogs(filter service.AccountChangeLogListFilter) ([]service.AccountChangeLog, string)
+	ListActiveAccountBooks(accountNo string, now time.Time) ([]service.AccountBook, error)
+	ListBookCreditChangeLogs(bookNo string) ([]service.BookCreditChangeLog, error)
 }
 
 type WebhookConfigStore interface {
@@ -112,6 +114,8 @@ func (h *BusinessHandler) Register(v1 *gin.RouterGroup) {
 	v1.GET("/transactions", h.handleListTransactions)
 	v1.GET("/accounts/:account_no/change-logs", h.handleListAccountChangeLogs)
 	v1.GET("/customers/balance", h.handleGetCustomerBalance)
+	v1.GET("/customers/books", h.handleListCustomerBooks)
+	v1.GET("/customers/books/:book_no/change-logs", h.handleListBookCreditChangeLogs)
 	v1.GET("/webhooks/config", h.handleGetWebhookConfig)
 	v1.PUT("/webhooks/config", h.handlePutWebhookConfig)
 }
@@ -1036,6 +1040,82 @@ func (h *BusinessHandler) handleGetCustomerBalance(c *gin.Context) {
 		"balance":      account.Balance,
 		"book_enabled": account.BookEnabled,
 	})
+}
+
+func (h *BusinessHandler) handleListCustomerBooks(c *gin.Context) {
+	if h == nil || h.accountResolver == nil || h.query == nil {
+		writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "business handler not configured")
+		return
+	}
+	merchantNo, ok := MerchantNoFromContext(c)
+	if !ok {
+		writeError(c, http.StatusUnauthorized, "INVALID_SIGNATURE", "merchant context missing")
+		return
+	}
+
+	outUserID := strings.TrimSpace(c.Query("out_user_id"))
+	if outUserID == "" {
+		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "out_user_id is required")
+		return
+	}
+
+	accountNo, err := h.accountResolver.ResolveCustomerAccount(merchantNo, "", outUserID)
+	if err != nil {
+		writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "resolve customer account failed")
+		return
+	}
+	if accountNo == "" {
+		writeSuccess(c, gin.H{"books": []gin.H{}})
+		return
+	}
+
+	books, err := h.query.ListActiveAccountBooks(accountNo, h.nowFn())
+	if err != nil {
+		writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "list books failed")
+		return
+	}
+
+	items := make([]gin.H, 0, len(books))
+	for _, b := range books {
+		items = append(items, gin.H{
+			"book_no":    b.BookNo,
+			"account_no": b.AccountNo,
+			"expire_at":  b.ExpireAt.UTC().Format("2006-01-02"),
+			"balance":    b.Balance,
+		})
+	}
+	writeSuccess(c, gin.H{"books": items})
+}
+
+func (h *BusinessHandler) handleListBookCreditChangeLogs(c *gin.Context) {
+	if h == nil || h.query == nil {
+		writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "business handler not configured")
+		return
+	}
+
+	bookNo := strings.TrimSpace(c.Param("book_no"))
+	if bookNo == "" {
+		writeError(c, http.StatusBadRequest, "INVALID_PARAM", "book_no is required")
+		return
+	}
+
+	logs, err := h.query.ListBookCreditChangeLogs(bookNo)
+	if err != nil {
+		writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "list book change logs failed")
+		return
+	}
+
+	items := make([]gin.H, 0, len(logs))
+	for _, l := range logs {
+		items = append(items, gin.H{
+			"change_id":  l.ChangeID,
+			"txn_no":     l.TxnNo,
+			"delta":      l.Delta,
+			"title":      l.Title,
+			"created_at": l.CreatedAt.UTC().Format(time.RFC3339),
+		})
+	}
+	writeSuccess(c, gin.H{"items": items})
 }
 
 func toTxnResponse(item service.QueryTxn) gin.H {

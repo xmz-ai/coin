@@ -73,6 +73,21 @@ type BookPart struct {
 	Amount   int64
 }
 
+type AccountBook struct {
+	BookNo    string
+	AccountNo string
+	ExpireAt  time.Time
+	Balance   int64
+}
+
+type BookCreditChangeLog struct {
+	ChangeID  int64
+	TxnNo     string
+	Delta     int64
+	CreatedAt time.Time
+	Title     string
+}
+
 type OutboxEvent struct {
 	EventID    string
 	TxnNo      string

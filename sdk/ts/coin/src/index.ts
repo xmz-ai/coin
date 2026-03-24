@@ -17,5 +17,9 @@ export type {
   AccountChangeLog,
   ListAccountChangeLogsRequest,
   ListAccountChangeLogsResponse,
+  AccountBook,
+  ListBooksResponse,
+  BookCreditChangeLog,
+  ListBookCreditChangeLogsResponse,
   MerchantProfile,
 } from "./types.js";
