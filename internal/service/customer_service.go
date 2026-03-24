@@ -130,7 +130,7 @@ func (s *CustomerService) ensureDefaultCustomerAccount(merchantNo, customerNo st
 			AllowDebitOut:     true,
 			AllowCreditIn:     true,
 			AllowTransfer:     true,
-			BookEnabled:       false,
+			BookEnabled:       true,
 			Balance:           0,
 		})
 		if err == nil {
