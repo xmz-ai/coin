@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -58,6 +59,66 @@ func TestTC2002MerchantNoUniqueConstraint(t *testing.T) {
 	}
 	if _, err := svc.CreateMerchant(first.MerchantNo, "demo2"); !errors.Is(err, service.ErrMerchantNoExists) {
 		t.Fatalf("expected ErrMerchantNoExists, got %v", err)
+	}
+}
+
+func TestTC2002MerchantOnboardingRollsBackWhenSecondDefaultAccountCreateFails(t *testing.T) {
+	pool := setupPostgresPool(t)
+	repo := db.NewRepository(pool)
+	ids := idpkg.NewFixedUUIDProvider([]string{"01956f4e-7b3e-7a4d-9f6b-4d9de4f7c001"})
+	merchantNo, err := repo.NewMerchantNo()
+	if err != nil {
+		t.Fatalf("generate merchant_no failed: %v", err)
+	}
+	runtimeCodes := idpkg.NewRuntimeCodeProvider()
+	budgetAccountNo, err := runtimeCodes.NewAccountNo(merchantNo, service.AccountTypeBudget)
+	if err != nil {
+		t.Fatalf("generate budget account_no failed: %v", err)
+	}
+	receivableAccountNo, err := runtimeCodes.NewAccountNo(merchantNo, service.AccountTypeReceivable)
+	if err != nil {
+		t.Fatalf("generate receivable account_no failed: %v", err)
+	}
+	codes := idpkg.NewFixedCodeProvider(nil, nil, []string{
+		budgetAccountNo,
+		receivableAccountNo,
+	})
+	svc := service.NewMerchantService(repo, ids, codes)
+
+	if err := repo.CreateAccount(service.Account{
+		AccountNo:     receivableAccountNo,
+		MerchantNo:    "9999999999999999",
+		AccountType:   service.AccountTypeReceivable,
+		AllowDebitOut: true,
+		AllowCreditIn: true,
+		AllowTransfer: true,
+	}); err != nil {
+		t.Fatalf("seed conflicting account failed: %v", err)
+	}
+
+	_, err = svc.CreateMerchant(merchantNo, "demo")
+	if !errors.Is(err, service.ErrAccountNoExists) {
+		t.Fatalf("expected ErrAccountNoExists, got %v", err)
+	}
+	if _, ok := repo.GetMerchantByNo(merchantNo); ok {
+		t.Fatalf("expected merchant create to roll back")
+	}
+	if _, ok := repo.GetAccount(budgetAccountNo); ok {
+		t.Fatalf("expected first default account create to roll back")
+	}
+	if got := queryCountBySQL(t, pool, "SELECT COUNT(*) FROM merchant WHERE merchant_no = $1", merchantNo); got != 0 {
+		t.Fatalf("expected rolled back merchant count=0, got=%d", got)
+	}
+	if got := queryCountBySQL(t, pool, "SELECT COUNT(*) FROM account WHERE merchant_no = $1", merchantNo); got != 0 {
+		t.Fatalf("expected rolled back account count=0, got=%d", got)
+	}
+
+	var seededMerchantNo string
+	if err := pool.QueryRow(context.Background(), "SELECT merchant_no FROM account WHERE account_no = $1", receivableAccountNo).Scan(&seededMerchantNo); err != nil {
+		t.Fatalf("query seeded conflicting account failed: %v", err)
+	}
+	if seededMerchantNo != "9999999999999999" {
+		t.Fatalf("expected seeded conflicting account to remain, got merchant_no=%s", seededMerchantNo)
 	}
 }
 
