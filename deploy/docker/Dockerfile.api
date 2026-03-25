@@ -17,6 +17,6 @@ WORKDIR /app
 
 COPY --from=build /out/coin-server /app/coin-server
 
-EXPOSE 8080
+EXPOSE 8082
 USER app
 ENTRYPOINT ["/app/coin-server"]
