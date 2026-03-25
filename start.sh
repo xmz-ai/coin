@@ -11,8 +11,8 @@ API_DOCKERFILE="$SCRIPT_DIR/deploy/docker/Dockerfile.api"
 ADMIN_DOCKERFILE="$SCRIPT_DIR/deploy/docker/Dockerfile.admin"
 
 # Defaults (can be overridden in .env)
-: "${API_PORT:=8082}"
-: "${ADMIN_WEB_PORT:=3001}"
+: "${HTTP_ADDR:=:8082}"
+: "${FRONTEND_PORT:=3001}"
 : "${NEXT_PUBLIC_ADMIN_API_BASE:=/admin/api/v1}"
 
 cd "$SCRIPT_DIR"
@@ -31,9 +31,11 @@ check_env() {
     fi
     # Load env so variables are available for this script
     set -a; source "$ENV_FILE"; set +a
-    : "${API_PORT:=8082}"
-    : "${ADMIN_WEB_PORT:=3001}"
+    : "${HTTP_ADDR:=:8082}"
+    : "${FRONTEND_PORT:=3001}"
     : "${NEXT_PUBLIC_ADMIN_API_BASE:=/admin/api/v1}"
+    # Extract host port from HTTP_ADDR (e.g. "127.0.0.1:8082" or ":8082" -> "8082")
+    API_PORT="${HTTP_ADDR##*:}"
 }
 
 do_build() {
@@ -100,7 +102,7 @@ do_start() {
         --network coin-net \
         --env-file "$ENV_FILE" \
         --restart unless-stopped \
-        -p "${API_PORT}:8080"
+        -p "${API_PORT}:${API_PORT}"
 
     echo "Starting $ADMIN_CONTAINER..."
     start_container "$ADMIN_CONTAINER" "$ADMIN_IMAGE" \
@@ -109,7 +111,7 @@ do_start() {
         -e NODE_ENV=production \
         -e NEXT_PUBLIC_ADMIN_API_BASE="$NEXT_PUBLIC_ADMIN_API_BASE" \
         -e NEXT_ADMIN_PROXY_TARGET="http://${API_CONTAINER}:8080" \
-        -p "${ADMIN_WEB_PORT}:3000"
+        -p "${FRONTEND_PORT}:3000"
 }
 
 do_stop() {
