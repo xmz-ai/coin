@@ -92,26 +92,22 @@ do_start() {
         do_build
     fi
 
-    # Create shared network if not exists
-    docker network inspect coin-net &>/dev/null || docker network create coin-net >/dev/null
-
     mkdir -p logs
 
     echo "Starting $API_CONTAINER..."
     start_container "$API_CONTAINER" "$API_IMAGE" \
-        --network coin-net \
+        --network host \
         --env-file "$ENV_FILE" \
-        --restart unless-stopped \
-        -p "${API_PORT}:${API_PORT}"
+        --restart unless-stopped
 
     echo "Starting $ADMIN_CONTAINER..."
     start_container "$ADMIN_CONTAINER" "$ADMIN_IMAGE" \
-        --network coin-net \
+        --network host \
         --restart unless-stopped \
         -e NODE_ENV=production \
         -e NEXT_PUBLIC_ADMIN_API_BASE="$NEXT_PUBLIC_ADMIN_API_BASE" \
-        -e NEXT_ADMIN_PROXY_TARGET="http://${API_CONTAINER}:8080" \
-        -p "${FRONTEND_PORT}:3000"
+        -e NEXT_ADMIN_PROXY_TARGET="http://127.0.0.1:${API_PORT}" \
+        -e PORT="$FRONTEND_PORT"
 }
 
 do_stop() {
