@@ -105,7 +105,7 @@ VALUES
 	}
 
 	debit, _ := repo.GetAccount(debitAccountNo)
-	if debit.Balance != 150 {
+	if debit.Balance != 50 {
 		t.Fatalf("unexpected debit balance: %d", debit.Balance)
 	}
 
@@ -113,7 +113,7 @@ VALUES
 	if len(logs) != 1 {
 		t.Fatalf("expected 1 account change log, got %d", len(logs))
 	}
-	if logs[0].AccountNo != debitAccountNo || logs[0].Delta != -150 || logs[0].BalanceAfter != 150 {
+	if logs[0].AccountNo != debitAccountNo || logs[0].Delta != -150 || logs[0].BalanceAfter != 50 {
 		t.Fatalf("unexpected account change log: %+v", logs[0])
 	}
 
@@ -121,7 +121,7 @@ VALUES
 	if len(books) != 3 {
 		t.Fatalf("expected 3 account_book rows, got %d", len(books))
 	}
-	if books[0].Balance != 100 || books[1].Balance != 0 || books[2].Balance != 50 {
+	if books[0].Balance != 0 || books[1].Balance != 0 || books[2].Balance != 50 {
 		t.Fatalf("unexpected account_book balances: %+v", books)
 	}
 	if !books[0].ExpireAt.Equal(expiredAt) || !books[1].ExpireAt.Equal(expire1) || !books[2].ExpireAt.Equal(expire2) {

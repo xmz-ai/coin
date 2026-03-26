@@ -82,6 +82,7 @@ type Merchant struct {
 	UpdatedAt                         pgtype.Timestamptz
 	AutoCreateAccountOnCustomerCreate bool
 	AutoCreateCustomerOnCredit        bool
+	WriteoffAccountNo                 pgtype.Text
 }
 
 type MerchantApiCredential struct {

@@ -92,6 +92,7 @@ func (r *Repository) GetMerchantByNo(merchantNo string) (service.Merchant, bool)
 		Name:                row.Name,
 		BudgetAccountNo:     row.BudgetAccountNo,
 		ReceivableAccountNo: row.ReceivableAccountNo,
+		WriteoffAccountNo:   row.WriteoffAccountNo,
 	}, true
 }
 
@@ -164,6 +165,7 @@ func (r *Repository) createMerchant(ctx context.Context, q *dbsqlc.Queries, m se
 		Name:                m.Name,
 		BudgetAccountNo:     m.BudgetAccountNo,
 		ReceivableAccountNo: m.ReceivableAccountNo,
+		WriteoffAccountNo:   nullableText(strings.TrimSpace(m.WriteoffAccountNo)),
 	})
 	if isUniqueViolation(err) {
 		return service.ErrMerchantNoExists
@@ -274,6 +276,31 @@ func (r *Repository) GetAccount(accountNo string) (service.Account, bool) {
 		return service.Account{}, false
 	}
 	return accountFromGetAccountRow(row), true
+}
+
+func (r *Repository) GetAvailableBalance(accountNo string) (int64, bool, error) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	row, err := r.queries.GetAccountByNo(ctx, accountNo)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if !row.BookEnabled {
+		return row.Balance, true, nil
+	}
+	sum, err := r.queries.GetAvailableAccountBookBalanceSum(ctx, dbsqlc.GetAvailableAccountBookBalanceSumParams{
+		AccountNo:  row.AccountNo,
+		NowUtc:     toPGDate(time.Now().UTC()),
+		NoExpireAt: toPGDate(noExpireBookDate),
+	})
+	if err != nil {
+		return 0, false, err
+	}
+	return sum, true, nil
 }
 
 func (r *Repository) UpdateAccountCapabilities(accountNo string, allowDebitOut, allowCreditIn, allowTransfer bool) {
@@ -768,7 +795,7 @@ func (r *Repository) ApplyTxnStage(txnNo, expectedStatus string) (service.TxnSta
 			if result.DebitAccountNo == "" {
 				return result, service.ErrAccountResolveFailed
 			}
-			if err := applyAccountDebitTx(ctx, qtx, txnUUID, result.DebitAccountNo, stage.Amount); err != nil {
+			if err := applyAccountDebitTx(ctx, r, qtx, txnUUID, result.DebitAccountNo, stage.Amount); err != nil {
 				return result, err
 			}
 		case service.BizTypeRefund:
@@ -797,7 +824,7 @@ func (r *Repository) ApplyTxnStage(txnNo, expectedStatus string) (service.TxnSta
 			if refundDebit == "" || refundCredit == "" {
 				return result, service.ErrAccountResolveFailed
 			}
-			if err := applyAccountDebitTx(ctx, qtx, txnUUID, refundDebit, stage.Amount); err != nil {
+			if err := applyAccountDebitTx(ctx, r, qtx, txnUUID, refundDebit, stage.Amount); err != nil {
 				return result, err
 			}
 		default:
@@ -915,7 +942,7 @@ func (r *Repository) ApplyTransferDebitStage(txnNo, debitAccountNo string, amoun
 	if debitAccountNo != "" && stage.DebitAccountNo != "" && debitAccountNo != stage.DebitAccountNo {
 		return false, service.ErrAccountResolveFailed
 	}
-	if err := applyAccountDebitTx(ctx, qtx, txnUUID, stageDebitAccountNo, amount); err != nil {
+	if err := applyAccountDebitTx(ctx, r, qtx, txnUUID, stageDebitAccountNo, amount); err != nil {
 		return false, err
 	}
 	if err := qtx.UpdateTransferTxnStatus(ctx, dbsqlc.UpdateTransferTxnStatusParams{
@@ -1048,7 +1075,7 @@ func (r *Repository) ApplyRefundDebitStage(refundTxnNo string, amount int64) (bo
 	if refundDebit == "" || refundCredit == "" {
 		return false, service.ErrAccountResolveFailed
 	}
-	if err := applyAccountDebitTx(ctx, qtx, refundTxnUUID, refundDebit, amount); err != nil {
+	if err := applyAccountDebitTx(ctx, r, qtx, refundTxnUUID, refundDebit, amount); err != nil {
 		return false, err
 	}
 	if err := qtx.UpdateTransferTxnStatus(ctx, dbsqlc.UpdateTransferTxnStatusParams{
@@ -1608,7 +1635,7 @@ func validateDebitBalanceOnly(a service.Account, amount int64) error {
 	return nil
 }
 
-func applyAccountDebitTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype.UUID, debitAccountNo string, amount int64) error {
+func applyAccountDebitTx(ctx context.Context, repo *Repository, q *dbsqlc.Queries, txnUUID pgtype.UUID, debitAccountNo string, amount int64) error {
 	if debitAccountNo == "" || amount <= 0 {
 		return service.ErrAccountResolveFailed
 	}
@@ -1624,6 +1651,17 @@ func applyAccountDebitTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype.
 	debit := accountFromGetAccountForUpdateRow(debitRow)
 
 	if debit.BookEnabled {
+		if err := repo.sweepExpiredBooksTx(ctx, q, debit, time.Now().UTC()); err != nil {
+			return err
+		}
+		debitRow, err = q.GetAccountForUpdateByNo(ctx, debitAccountNo)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return service.ErrAccountResolveFailed
+		}
+		if err != nil {
+			return err
+		}
+		debit = accountFromGetAccountForUpdateRow(debitRow)
 		if err := validateDebitBalanceOnly(debit, amount); err != nil {
 			return err
 		}
@@ -1770,6 +1808,176 @@ func applyAccountDebitTx(ctx context.Context, q *dbsqlc.Queries, txnUUID pgtype.
 		return err
 	}
 	return nil
+}
+
+func (r *Repository) sweepExpiredBooksTx(ctx context.Context, q *dbsqlc.Queries, debit service.Account, now time.Time) error {
+	if r == nil || !debit.BookEnabled {
+		return nil
+	}
+
+	expiredBooks, err := q.ListExpiredPositiveAccountBooksForUpdate(ctx, dbsqlc.ListExpiredPositiveAccountBooksForUpdateParams{
+		AccountNo:  debit.AccountNo,
+		NowUtc:     toPGDate(now),
+		NoExpireAt: toPGDate(noExpireBookDate),
+	})
+	if err != nil {
+		return err
+	}
+	if len(expiredBooks) == 0 {
+		return nil
+	}
+
+	writeoffAccount, err := r.ensureMerchantWriteoffAccountTx(ctx, q, debit.MerchantNo)
+	if err != nil {
+		return err
+	}
+
+	writeoffTxnNo, err := idpkg.NewRuntimeUUIDProvider().NewUUIDv7()
+	if err != nil {
+		return err
+	}
+	writeoffTxnUUID, err := parseUUID(writeoffTxnNo)
+	if err != nil {
+		return err
+	}
+	writeoffOutTradeNo := buildExpireWriteoffOutTradeNo(debit.AccountNo, writeoffTxnNo)
+
+	totalWrittenOff := int64(0)
+	bookNos := make([]string, 0, len(expiredBooks))
+	deltas := make([]int64, 0, len(expiredBooks))
+	for _, book := range expiredBooks {
+		if book.Balance <= 0 {
+			continue
+		}
+		totalWrittenOff += book.Balance
+		if err := q.InsertAccountBookChange(ctx, dbsqlc.InsertAccountBookChangeParams{
+			TxnNo:         writeoffTxnUUID,
+			AccountNo:     debit.AccountNo,
+			BookNo:        book.BookNo,
+			Delta:         -book.Balance,
+			BalanceBefore: book.Balance,
+			BalanceAfter:  0,
+			ExpireAt:      book.ExpireAt,
+		}); err != nil {
+			return err
+		}
+		bookNos = append(bookNos, pgUUIDToString(book.BookNo))
+		deltas = append(deltas, -book.Balance)
+	}
+	if totalWrittenOff <= 0 {
+		return nil
+	}
+
+	if err := q.CreateTransferTxn(ctx, dbsqlc.CreateTransferTxnParams{
+		TxnNo:            writeoffTxnNo,
+		MerchantNo:       debit.MerchantNo,
+		OutTradeNo:       writeoffOutTradeNo,
+		BizType:          service.BizTypeTransfer,
+		TransferScene:    nullableText(service.SceneExpireWriteoff),
+		Title:            nullIfEmpty("expire writeoff"),
+		Remark:           nullIfEmpty("system expiry writeoff"),
+		DebitAccountNo:   nullIfEmpty(debit.AccountNo),
+		CreditAccountNo:  nullIfEmpty(writeoffAccount.AccountNo),
+		CreditExpireAt:   pgtype.Date{},
+		Amount:           totalWrittenOff,
+		Status:           service.TxnStatusRecvSuccess,
+		RefundOfTxnNo:    nullIfEmpty(""),
+		RefundableAmount: 0,
+		ErrorCode:        nullIfEmpty(""),
+		ErrorMsg:         nullIfEmpty(""),
+	}); err != nil {
+		return err
+	}
+
+	debitBefore := debit.Balance
+	debitAfter := debitBefore - totalWrittenOff
+	if err := q.InsertAccountChange(ctx, dbsqlc.InsertAccountChangeParams{
+		TxnNo:         writeoffTxnUUID,
+		AccountNo:     debit.AccountNo,
+		Delta:         -totalWrittenOff,
+		BalanceBefore: debitBefore,
+		BalanceAfter:  debitAfter,
+	}); err != nil {
+		return err
+	}
+
+	updatedBooks, err := q.BatchUpdateAccountBookBalances(ctx, dbsqlc.BatchUpdateAccountBookBalancesParams{
+		BookNos: bookNos,
+		Deltas:  deltas,
+	})
+	if err != nil {
+		return err
+	}
+	if len(updatedBooks) != len(bookNos) {
+		return service.ErrAccountResolveFailed
+	}
+	for _, row := range updatedBooks {
+		if row.Balance != 0 {
+			return service.ErrAccountResolveFailed
+		}
+	}
+	if err := q.UpdateAccountBalance(ctx, dbsqlc.UpdateAccountBalanceParams{
+		Balance:   debitAfter,
+		AccountNo: debit.AccountNo,
+	}); err != nil {
+		return err
+	}
+
+	return applyAccountCreditWithAccountTx(ctx, q, writeoffTxnUUID, writeoffAccount, totalWrittenOff, nil)
+}
+
+func (r *Repository) ensureMerchantWriteoffAccountTx(ctx context.Context, q *dbsqlc.Queries, merchantNo string) (service.Account, error) {
+	merchant, err := q.GetMerchantForUpdateByNo(ctx, merchantNo)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return service.Account{}, service.ErrInvalidMerchantNo
+	}
+	if err != nil {
+		return service.Account{}, err
+	}
+
+	writeoffAccountNo := strings.TrimSpace(merchant.WriteoffAccountNo)
+	if writeoffAccountNo == "" {
+		writeoffAccountNo, err = r.codeProvider.NewAccountNo(merchantNo, service.AccountTypeWriteoff)
+		if err != nil {
+			if errors.Is(err, idpkg.ErrCodeAllocatorUnavailable) {
+				return service.Account{}, service.ErrCodeAllocatorUnavailable
+			}
+			return service.Account{}, fmt.Errorf("new writeoff account no: %w", err)
+		}
+		if err := r.createAccount(ctx, q, service.Account{
+			AccountNo:     writeoffAccountNo,
+			MerchantNo:    merchantNo,
+			AccountType:   service.AccountTypeWriteoff,
+			AllowDebitOut: false,
+			AllowCreditIn: true,
+			AllowTransfer: false,
+		}); err != nil {
+			return service.Account{}, err
+		}
+		if err := q.UpdateMerchantWriteoffAccountNo(ctx, dbsqlc.UpdateMerchantWriteoffAccountNoParams{
+			MerchantNo:        merchantNo,
+			WriteoffAccountNo: nullableText(writeoffAccountNo),
+		}); err != nil {
+			return service.Account{}, err
+		}
+	}
+
+	accountRow, err := q.GetAccountForUpdateByNo(ctx, writeoffAccountNo)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return service.Account{}, service.ErrAccountResolveFailed
+	}
+	if err != nil {
+		return service.Account{}, err
+	}
+	return accountFromGetAccountForUpdateRow(accountRow), nil
+}
+
+func buildExpireWriteoffOutTradeNo(accountNo, txnNo string) string {
+	sanitizedTxnNo := strings.ReplaceAll(strings.TrimSpace(txnNo), "-", "")
+	if len(sanitizedTxnNo) > 8 {
+		sanitizedTxnNo = sanitizedTxnNo[:8]
+	}
+	return fmt.Sprintf("sys_expire_%s_%s", strings.TrimSpace(accountNo), sanitizedTxnNo)
 }
 
 func applyTransferCreditTx(

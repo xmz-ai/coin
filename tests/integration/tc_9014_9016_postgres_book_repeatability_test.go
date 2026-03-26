@@ -53,8 +53,8 @@ func TestTC9015PostgresSetupPoolResetsSchemaData(t *testing.T) {
 	if got := queryTableCount(t, poolA, "merchant"); got != 1 {
 		t.Fatalf("expected merchant count=1 before reset, got=%d", got)
 	}
-	if got := queryTableCount(t, poolA, "account"); got != 2 {
-		t.Fatalf("expected account count=2 before reset, got=%d", got)
+	if got := queryTableCount(t, poolA, "account"); got != 3 {
+		t.Fatalf("expected account count=3 before reset, got=%d", got)
 	}
 
 	poolB := setupPostgresPool(t)
