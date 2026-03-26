@@ -1,6 +1,6 @@
 {
   "name": "@xmz-ai/coin",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Coin merchant SDK for Node.js / TypeScript",
   "type": "module",
   "main": "dist/index.js",
