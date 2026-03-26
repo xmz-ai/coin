@@ -1450,6 +1450,9 @@ func TestTC1122APIMerchantMeReturnsConfigAndRequestID(t *testing.T) {
 	if data["receivable_account_no"] != merchant.ReceivableAccountNo {
 		t.Fatalf("unexpected receivable_account_no: %v", data["receivable_account_no"])
 	}
+	if data["writeoff_account_no"] != merchant.WriteoffAccountNo {
+		t.Fatalf("unexpected writeoff_account_no: %v", data["writeoff_account_no"])
+	}
 	if data["auto_create_account_on_customer_create"] != true {
 		t.Fatalf("expected auto_create_account_on_customer_create=true, got %v", data["auto_create_account_on_customer_create"])
 	}
@@ -1489,6 +1492,9 @@ func TestTC1131APICreateMerchantSupportsFeatureOptions(t *testing.T) {
 	if merchantNo == "" || merchantSecret == "" {
 		t.Fatalf("expected merchant_no and merchant_secret in response")
 	}
+	if data["writeoff_account_no"] == "" {
+		t.Fatalf("expected writeoff_account_no in response")
+	}
 	if data["auto_create_account_on_customer_create"] != false {
 		t.Fatalf("expected auto_create_account_on_customer_create=false, got %v", data["auto_create_account_on_customer_create"])
 	}
@@ -1520,6 +1526,45 @@ func TestTC1131APICreateMerchantSupportsFeatureOptions(t *testing.T) {
 	}
 	if meData["auto_create_customer_on_credit"] != false {
 		t.Fatalf("expected auto_create_customer_on_credit=false, got %v", meData["auto_create_customer_on_credit"])
+	}
+}
+
+func TestTC1135APICustomerBalanceReturnsAvailableBalance(t *testing.T) {
+	r, _, pool, merchantNo, secret := newTxnAPITestServer(t)
+	today := time.Now().UTC()
+	expiredAt := time.Date(today.Year(), today.Month(), today.Day()-1, 0, 0, 0, 0, time.UTC)
+	expireAt := time.Date(today.Year(), today.Month(), today.Day()+2, 0, 0, 0, 0, time.UTC)
+
+	if _, err := pool.Exec(context.Background(), `
+	UPDATE account
+	SET book_enabled = true, balance = 150
+	WHERE account_no = $1
+	`, testDebitAccountNo); err != nil {
+		t.Fatalf("enable debit account book ledger failed: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+	INSERT INTO account_book (book_no, account_no, expire_at, balance)
+	VALUES
+	  ('01956f4e-6666-7666-8666-666666666666'::uuid, $1, $2::date, 50),
+	  ('01956f4e-7777-7777-8777-777777777777'::uuid, $1, $3::date, 100)
+	`, testDebitAccountNo, expiredAt, expireAt); err != nil {
+		t.Fatalf("insert account books failed: %v", err)
+	}
+
+	req := signedAPIRequest(t, http.MethodGet, "/api/v1/customers/balance?out_user_id=u_1100", merchantNo, secret, "nonce-1135", nil)
+	resp := httptest.NewRecorder()
+	r.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+
+	body := decodeJSONMap(t, resp.Body.Bytes())
+	data := body["data"].(map[string]any)
+	if data["balance"] != float64(150) {
+		t.Fatalf("unexpected balance: %v", data["balance"])
+	}
+	if data["available_balance"] != float64(100) {
+		t.Fatalf("unexpected available_balance: %v", data["available_balance"])
 	}
 }
 

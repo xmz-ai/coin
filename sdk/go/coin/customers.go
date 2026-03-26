@@ -14,10 +14,11 @@ type CustomersAPI struct {
 
 // CustomerBalance represents the balance response for a customer.
 type CustomerBalance struct {
-	OutUserID   string `json:"out_user_id"`
-	AccountNo   string `json:"account_no"`
-	Balance     int64  `json:"balance"`
-	BookEnabled bool   `json:"book_enabled"`
+	OutUserID         string `json:"out_user_id"`
+	AccountNo         string `json:"account_no"`
+	Balance           int64  `json:"balance"`
+	AvailableBalance  int64  `json:"available_balance"`
+	BookEnabled       bool   `json:"book_enabled"`
 }
 
 // GetBalance retrieves the balance for a customer identified by out_user_id.

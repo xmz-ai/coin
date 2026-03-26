@@ -1,19 +1,45 @@
 -- name: CreateMerchant :exec
 INSERT INTO merchant (
-  merchant_id, merchant_no, name, budget_account_no, receivable_account_no
+  merchant_id, merchant_no, name, budget_account_no, receivable_account_no, writeoff_account_no
 ) VALUES (
   sqlc.arg(merchant_id)::uuid,
   sqlc.arg(merchant_no),
   sqlc.arg(name),
   sqlc.arg(budget_account_no),
-  sqlc.arg(receivable_account_no)
+  sqlc.arg(receivable_account_no),
+  sqlc.narg(writeoff_account_no)
 );
 
 -- name: GetMerchantByNo :one
-SELECT merchant_id::text, merchant_no, name, budget_account_no, receivable_account_no
+SELECT
+  merchant_id::text,
+  merchant_no,
+  name,
+  budget_account_no,
+  receivable_account_no,
+  COALESCE(writeoff_account_no, '') AS writeoff_account_no
 FROM merchant
 WHERE merchant_no = sqlc.arg(merchant_no)
 LIMIT 1;
+
+-- name: GetMerchantForUpdateByNo :one
+SELECT
+  merchant_id::text,
+  merchant_no,
+  name,
+  budget_account_no,
+  receivable_account_no,
+  COALESCE(writeoff_account_no, '') AS writeoff_account_no
+FROM merchant
+WHERE merchant_no = sqlc.arg(merchant_no)
+FOR UPDATE
+LIMIT 1;
+
+-- name: UpdateMerchantWriteoffAccountNo :exec
+UPDATE merchant
+SET writeoff_account_no = sqlc.arg(writeoff_account_no),
+    updated_at = NOW()
+WHERE merchant_no = sqlc.arg(merchant_no);
 
 -- name: CreateAccount :exec
 INSERT INTO account (
@@ -431,6 +457,31 @@ ORDER BY
   b.expire_at ASC,
   b.book_no ASC
 FOR UPDATE OF b;
+
+-- name: ListExpiredPositiveAccountBooksForUpdate :many
+SELECT
+  b.book_no,
+  b.account_no,
+  b.expire_at,
+  b.balance
+FROM account_book b
+WHERE b.account_no = sqlc.arg(account_no)
+  AND b.expire_at <= sqlc.arg(now_utc)::date
+  AND b.expire_at <> sqlc.arg(no_expire_at)::date
+  AND b.balance > 0
+ORDER BY
+  b.expire_at ASC,
+  b.book_no ASC
+FOR UPDATE OF b;
+
+-- name: GetAvailableAccountBookBalanceSum :one
+SELECT COALESCE(SUM(b.balance), 0)::bigint AS balance
+FROM account_book b
+WHERE b.account_no = sqlc.arg(account_no)
+  AND (
+    b.expire_at > sqlc.arg(now_utc)::date
+    OR b.expire_at = sqlc.arg(no_expire_at)::date
+  );
 
 -- name: GetAccountBookForUpdateByAccountExpire :one
 SELECT

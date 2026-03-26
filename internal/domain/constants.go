@@ -3,6 +3,7 @@ package domain
 const (
 	AccountTypeBudget     = "BUDGET"
 	AccountTypeReceivable = "RECEIVABLE"
+	AccountTypeWriteoff   = "WRITEOFF"
 )
 
 const (
@@ -15,6 +16,7 @@ const (
 	SceneConsume = "CONSUME"
 	SceneP2P     = "P2P"
 	SceneAdjust  = "ADJUST"
+	SceneExpireWriteoff = "EXPIRE_WRITEOFF"
 )
 
 const (

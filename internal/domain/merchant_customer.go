@@ -6,6 +6,7 @@ type Merchant struct {
 	Name                string
 	BudgetAccountNo     string
 	ReceivableAccountNo string
+	WriteoffAccountNo   string
 }
 
 type Customer struct {
