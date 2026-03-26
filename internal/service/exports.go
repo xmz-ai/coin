@@ -5,6 +5,7 @@ import "github.com/xmz-ai/coin/internal/domain"
 const (
 	AccountTypeBudget     = domain.AccountTypeBudget
 	AccountTypeReceivable = domain.AccountTypeReceivable
+	AccountTypeWriteoff   = domain.AccountTypeWriteoff
 
 	BizTypeTransfer = domain.BizTypeTransfer
 	BizTypeRefund   = domain.BizTypeRefund
@@ -13,6 +14,7 @@ const (
 	SceneConsume = domain.SceneConsume
 	SceneP2P     = domain.SceneP2P
 	SceneAdjust  = domain.SceneAdjust
+	SceneExpireWriteoff = domain.SceneExpireWriteoff
 
 	TxnStatusInit        = domain.TxnStatusInit
 	TxnStatusPaySuccess  = domain.TxnStatusPaySuccess

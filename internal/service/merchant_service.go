@@ -48,10 +48,14 @@ func (s *MerchantService) CreateMerchant(merchantNo, name string) (Merchant, err
 	if err != nil {
 		return Merchant{}, mapCodeError("new receivable account no", err)
 	}
-	if budget == recv {
+	writeoff, err := s.codes.NewAccountNo(resolvedMerchantNo, AccountTypeWriteoff)
+	if err != nil {
+		return Merchant{}, mapCodeError("new writeoff account no", err)
+	}
+	if budget == recv || budget == writeoff || recv == writeoff {
 		return Merchant{}, ErrInvalidAccountNo
 	}
-	if !idpkg.IsValidAccountNo(budget) || !idpkg.IsValidAccountNo(recv) {
+	if !idpkg.IsValidAccountNo(budget) || !idpkg.IsValidAccountNo(recv) || !idpkg.IsValidAccountNo(writeoff) {
 		return Merchant{}, ErrInvalidAccountNo
 	}
 
@@ -61,6 +65,7 @@ func (s *MerchantService) CreateMerchant(merchantNo, name string) (Merchant, err
 		Name:                name,
 		BudgetAccountNo:     budget,
 		ReceivableAccountNo: recv,
+		WriteoffAccountNo:   writeoff,
 	}
 	if err := s.repo.CreateMerchantWithAccounts(m,
 		Account{
@@ -81,6 +86,14 @@ func (s *MerchantService) CreateMerchant(merchantNo, name string) (Merchant, err
 			AllowDebitOut: true,
 			AllowCreditIn: true,
 			AllowTransfer: true,
+		},
+		Account{
+			AccountNo:     writeoff,
+			MerchantNo:    resolvedMerchantNo,
+			AccountType:   AccountTypeWriteoff,
+			AllowDebitOut: false,
+			AllowCreditIn: true,
+			AllowTransfer: false,
 		},
 	); err != nil {
 		return Merchant{}, err

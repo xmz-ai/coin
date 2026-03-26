@@ -326,4 +326,79 @@ describe("CoinClient", () => {
       server.close();
     }
   });
+
+  it("parses writeoff_account_no from merchant profile", async () => {
+    const server = await startServer(async (_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        code: "SUCCESS",
+        message: "ok",
+        request_id: "req_merchant",
+        data: {
+          merchant_no: merchantNo,
+          name: "demo",
+          status: "ACTIVE",
+          budget_account_no: "6217701000000000001",
+          receivable_account_no: "6217701000000000002",
+          writeoff_account_no: "6217701000000000003",
+          secret_version: 1,
+          auto_create_account_on_customer_create: true,
+          auto_create_customer_on_credit: true,
+        },
+      }));
+    });
+
+    try {
+      const client = new CoinClient({
+        baseURL: server.url,
+        merchantNo,
+        merchantSecret: secret,
+        now: () => fixedNow,
+        nonceGenerator: () => nonce,
+      });
+
+      const resp = await client.merchant.me();
+      expect(resp.writeoff_account_no).toBe("6217701000000000003");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("parses available_balance from customer balance", async () => {
+    const server = await startServer(async (req, res) => {
+      const url = new URL(req.url!, `http://${req.headers.host}`);
+      expect(url.pathname).toBe("/api/v1/customers/balance");
+      expect(url.searchParams.get("out_user_id")).toBe("u_1");
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        code: "SUCCESS",
+        message: "ok",
+        request_id: "req_balance",
+        data: {
+          out_user_id: "u_1",
+          account_no: "6217701000000000010",
+          balance: 150,
+          available_balance: 100,
+          book_enabled: true,
+        },
+      }));
+    });
+
+    try {
+      const client = new CoinClient({
+        baseURL: server.url,
+        merchantNo,
+        merchantSecret: secret,
+        now: () => fixedNow,
+        nonceGenerator: () => nonce,
+      });
+
+      const resp = await client.customers.getBalance("u_1");
+      expect(resp.balance).toBe(150);
+      expect(resp.available_balance).toBe(100);
+    } finally {
+      server.close();
+    }
+  });
 });

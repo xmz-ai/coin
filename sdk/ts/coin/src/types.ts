@@ -120,6 +120,7 @@ export interface CustomerBalance {
   out_user_id: string;
   account_no: string;
   balance: number;
+  available_balance: number;
   book_enabled: boolean;
 }
 
@@ -152,6 +153,7 @@ export interface MerchantProfile {
   status: string;
   budget_account_no: string;
   receivable_account_no: string;
+  writeoff_account_no: string;
   secret_version: number;
   auto_create_account_on_customer_create: boolean;
   auto_create_customer_on_credit: boolean;
