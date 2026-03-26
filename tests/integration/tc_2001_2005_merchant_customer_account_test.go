@@ -21,16 +21,19 @@ func TestTC2001MerchantOnboardingCreatesBudgetAndReceivableAccounts(t *testing.T
 		t.Fatalf("create merchant failed: %v", err)
 	}
 	if m.BudgetAccountNo == "" || m.ReceivableAccountNo == "" {
-		t.Fatalf("expected budget and receivable account numbers to be generated")
+		t.Fatalf("expected system account numbers to be generated")
+	}
+	if m.WriteoffAccountNo == "" {
+		t.Fatalf("expected writeoff account number to be generated")
 	}
 	if !idpkg.IsValidMerchantNo(m.MerchantNo) {
 		t.Fatalf("generated merchant_no invalid: %s", m.MerchantNo)
 	}
-	if !idpkg.IsValidAccountNo(m.BudgetAccountNo) || !idpkg.IsValidAccountNo(m.ReceivableAccountNo) {
-		t.Fatalf("generated account_no invalid: budget=%s receivable=%s", m.BudgetAccountNo, m.ReceivableAccountNo)
+	if !idpkg.IsValidAccountNo(m.BudgetAccountNo) || !idpkg.IsValidAccountNo(m.ReceivableAccountNo) || !idpkg.IsValidAccountNo(m.WriteoffAccountNo) {
+		t.Fatalf("generated account_no invalid: budget=%s receivable=%s writeoff=%s", m.BudgetAccountNo, m.ReceivableAccountNo, m.WriteoffAccountNo)
 	}
-	if m.BudgetAccountNo == m.ReceivableAccountNo {
-		t.Fatalf("expected budget and receivable account numbers to be different")
+	if m.BudgetAccountNo == m.ReceivableAccountNo || m.BudgetAccountNo == m.WriteoffAccountNo || m.ReceivableAccountNo == m.WriteoffAccountNo {
+		t.Fatalf("expected system account numbers to be different")
 	}
 
 	budget, ok := repo.GetAccount(m.BudgetAccountNo)
@@ -50,11 +53,24 @@ func TestTC2001MerchantOnboardingCreatesBudgetAndReceivableAccounts(t *testing.T
 	if recv.BookEnabled {
 		t.Fatalf("merchant receivable account should not enable book ledger by default")
 	}
+	writeoff, ok := repo.GetAccount(m.WriteoffAccountNo)
+	if !ok || writeoff.MerchantNo != m.MerchantNo || writeoff.AccountType != service.AccountTypeWriteoff {
+		t.Fatalf("writeoff account binding mismatch")
+	}
+	if writeoff.AllowDebitOut || !writeoff.AllowCreditIn || writeoff.AllowTransfer {
+		t.Fatalf("writeoff account capability mismatch: %+v", writeoff)
+	}
+	if writeoff.BookEnabled {
+		t.Fatalf("merchant writeoff account should not enable book ledger by default")
+	}
 	if books := queryAccountBooksByAccount(t, pool, m.BudgetAccountNo); len(books) != 0 {
 		t.Fatalf("merchant budget account should not create account_book rows, got %+v", books)
 	}
 	if books := queryAccountBooksByAccount(t, pool, m.ReceivableAccountNo); len(books) != 0 {
 		t.Fatalf("merchant receivable account should not create account_book rows, got %+v", books)
+	}
+	if books := queryAccountBooksByAccount(t, pool, m.WriteoffAccountNo); len(books) != 0 {
+		t.Fatalf("merchant writeoff account should not create account_book rows, got %+v", books)
 	}
 }
 
@@ -92,9 +108,14 @@ func TestTC2002MerchantOnboardingRollsBackWhenSecondDefaultAccountCreateFails(t 
 	if err != nil {
 		t.Fatalf("generate receivable account_no failed: %v", err)
 	}
+	writeoffAccountNo, err := runtimeCodes.NewAccountNo(merchantNo, service.AccountTypeWriteoff)
+	if err != nil {
+		t.Fatalf("generate writeoff account_no failed: %v", err)
+	}
 	codes := idpkg.NewFixedCodeProvider(nil, nil, []string{
 		budgetAccountNo,
 		receivableAccountNo,
+		writeoffAccountNo,
 	})
 	svc := service.NewMerchantService(repo, ids, codes)
 
