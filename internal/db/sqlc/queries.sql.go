@@ -331,13 +331,14 @@ func (q *Queries) CreateCustomer(ctx context.Context, arg CreateCustomerParams) 
 
 const createMerchant = `-- name: CreateMerchant :exec
 INSERT INTO merchant (
-  merchant_id, merchant_no, name, budget_account_no, receivable_account_no
+  merchant_id, merchant_no, name, budget_account_no, receivable_account_no, writeoff_account_no
 ) VALUES (
   $1::uuid,
   $2,
   $3,
   $4,
-  $5
+  $5,
+  $6
 )
 `
 
@@ -347,6 +348,7 @@ type CreateMerchantParams struct {
 	Name                string
 	BudgetAccountNo     string
 	ReceivableAccountNo string
+	WriteoffAccountNo   pgtype.Text
 }
 
 func (q *Queries) CreateMerchant(ctx context.Context, arg CreateMerchantParams) error {
@@ -356,6 +358,7 @@ func (q *Queries) CreateMerchant(ctx context.Context, arg CreateMerchantParams) 
 		arg.Name,
 		arg.BudgetAccountNo,
 		arg.ReceivableAccountNo,
+		arg.WriteoffAccountNo,
 	)
 	return err
 }
@@ -711,6 +714,29 @@ func (q *Queries) GetActiveSecretCiphertext(ctx context.Context, merchantNo stri
 	return secret_ciphertext, err
 }
 
+const getAvailableAccountBookBalanceSum = `-- name: GetAvailableAccountBookBalanceSum :one
+SELECT COALESCE(SUM(b.balance), 0)::bigint AS balance
+FROM account_book b
+WHERE b.account_no = $1
+  AND (
+    b.expire_at > $2::date
+    OR b.expire_at = $3::date
+  )
+`
+
+type GetAvailableAccountBookBalanceSumParams struct {
+	AccountNo  string
+	NowUtc     pgtype.Date
+	NoExpireAt pgtype.Date
+}
+
+func (q *Queries) GetAvailableAccountBookBalanceSum(ctx context.Context, arg GetAvailableAccountBookBalanceSumParams) (int64, error) {
+	row := q.db.QueryRow(ctx, getAvailableAccountBookBalanceSum, arg.AccountNo, arg.NowUtc, arg.NoExpireAt)
+	var balance int64
+	err := row.Scan(&balance)
+	return balance, err
+}
+
 const getCustomerByOutUserID = `-- name: GetCustomerByOutUserID :one
 SELECT
   c.customer_id::text AS customer_id,
@@ -764,7 +790,13 @@ func (q *Queries) GetMaxSecretVersion(ctx context.Context, merchantNo string) (i
 }
 
 const getMerchantByNo = `-- name: GetMerchantByNo :one
-SELECT merchant_id::text, merchant_no, name, budget_account_no, receivable_account_no
+SELECT
+  merchant_id::text,
+  merchant_no,
+  name,
+  budget_account_no,
+  receivable_account_no,
+  COALESCE(writeoff_account_no, '') AS writeoff_account_no
 FROM merchant
 WHERE merchant_no = $1
 LIMIT 1
@@ -776,6 +808,7 @@ type GetMerchantByNoRow struct {
 	Name                string
 	BudgetAccountNo     string
 	ReceivableAccountNo string
+	WriteoffAccountNo   string
 }
 
 func (q *Queries) GetMerchantByNo(ctx context.Context, merchantNo string) (GetMerchantByNoRow, error) {
@@ -787,6 +820,44 @@ func (q *Queries) GetMerchantByNo(ctx context.Context, merchantNo string) (GetMe
 		&i.Name,
 		&i.BudgetAccountNo,
 		&i.ReceivableAccountNo,
+		&i.WriteoffAccountNo,
+	)
+	return i, err
+}
+
+const getMerchantForUpdateByNo = `-- name: GetMerchantForUpdateByNo :one
+SELECT
+  merchant_id::text,
+  merchant_no,
+  name,
+  budget_account_no,
+  receivable_account_no,
+  COALESCE(writeoff_account_no, '') AS writeoff_account_no
+FROM merchant
+WHERE merchant_no = $1
+FOR UPDATE
+LIMIT 1
+`
+
+type GetMerchantForUpdateByNoRow struct {
+	MerchantID          string
+	MerchantNo          string
+	Name                string
+	BudgetAccountNo     string
+	ReceivableAccountNo string
+	WriteoffAccountNo   string
+}
+
+func (q *Queries) GetMerchantForUpdateByNo(ctx context.Context, merchantNo string) (GetMerchantForUpdateByNoRow, error) {
+	row := q.db.QueryRow(ctx, getMerchantForUpdateByNo, merchantNo)
+	var i GetMerchantForUpdateByNoRow
+	err := row.Scan(
+		&i.MerchantID,
+		&i.MerchantNo,
+		&i.Name,
+		&i.BudgetAccountNo,
+		&i.ReceivableAccountNo,
+		&i.WriteoffAccountNo,
 	)
 	return i, err
 }
@@ -1373,6 +1444,61 @@ func (q *Queries) ListAvailableAccountBooksForUpdate(ctx context.Context, arg Li
 	return items, nil
 }
 
+const listExpiredPositiveAccountBooksForUpdate = `-- name: ListExpiredPositiveAccountBooksForUpdate :many
+SELECT
+  b.book_no,
+  b.account_no,
+  b.expire_at,
+  b.balance
+FROM account_book b
+WHERE b.account_no = $1
+  AND b.expire_at <= $2::date
+  AND b.expire_at <> $3::date
+  AND b.balance > 0
+ORDER BY
+  b.expire_at ASC,
+  b.book_no ASC
+FOR UPDATE OF b
+`
+
+type ListExpiredPositiveAccountBooksForUpdateParams struct {
+	AccountNo  string
+	NowUtc     pgtype.Date
+	NoExpireAt pgtype.Date
+}
+
+type ListExpiredPositiveAccountBooksForUpdateRow struct {
+	BookNo    pgtype.UUID
+	AccountNo string
+	ExpireAt  pgtype.Date
+	Balance   int64
+}
+
+func (q *Queries) ListExpiredPositiveAccountBooksForUpdate(ctx context.Context, arg ListExpiredPositiveAccountBooksForUpdateParams) ([]ListExpiredPositiveAccountBooksForUpdateRow, error) {
+	rows, err := q.db.Query(ctx, listExpiredPositiveAccountBooksForUpdate, arg.AccountNo, arg.NowUtc, arg.NoExpireAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListExpiredPositiveAccountBooksForUpdateRow
+	for rows.Next() {
+		var i ListExpiredPositiveAccountBooksForUpdateRow
+		if err := rows.Scan(
+			&i.BookNo,
+			&i.AccountNo,
+			&i.ExpireAt,
+			&i.Balance,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listOriginDebitBookChanges = `-- name: ListOriginDebitBookChanges :many
 SELECT
   delta,
@@ -1831,6 +1957,23 @@ func (q *Queries) UpdateAccountCapabilities(ctx context.Context, arg UpdateAccou
 		arg.AllowTransfer,
 		arg.AccountNo,
 	)
+	return err
+}
+
+const updateMerchantWriteoffAccountNo = `-- name: UpdateMerchantWriteoffAccountNo :exec
+UPDATE merchant
+SET writeoff_account_no = $1,
+    updated_at = NOW()
+WHERE merchant_no = $2
+`
+
+type UpdateMerchantWriteoffAccountNoParams struct {
+	WriteoffAccountNo pgtype.Text
+	MerchantNo        string
+}
+
+func (q *Queries) UpdateMerchantWriteoffAccountNo(ctx context.Context, arg UpdateMerchantWriteoffAccountNoParams) error {
+	_, err := q.db.Exec(ctx, updateMerchantWriteoffAccountNo, arg.WriteoffAccountNo, arg.MerchantNo)
 	return err
 }
 

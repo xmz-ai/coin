@@ -8,6 +8,7 @@ type MerchantProfile struct {
 	Status                            string `json:"status"`
 	BudgetAccountNo                   string `json:"budget_account_no"`
 	ReceivableAccountNo               string `json:"receivable_account_no"`
+	WriteoffAccountNo                 string `json:"writeoff_account_no"`
 	SecretVersion                     int    `json:"secret_version"`
 	AutoCreateAccountOnCustomerCreate bool   `json:"auto_create_account_on_customer_create"`
 	AutoCreateCustomerOnCredit        bool   `json:"auto_create_customer_on_credit"`
