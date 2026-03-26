@@ -286,3 +286,68 @@ func TestResponseBodyTooLarge(t *testing.T) {
 		t.Fatalf("unexpected code: %s", apiErr.Code)
 	}
 }
+
+func TestMerchantMeParsesWriteoffAccountNo(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/merchants/me" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"code":"SUCCESS","message":"ok","request_id":"req_merchant","data":{"merchant_no":"1000123456789012","name":"demo","status":"ACTIVE","budget_account_no":"6217701000000000001","receivable_account_no":"6217701000000000002","writeoff_account_no":"6217701000000000003","secret_version":1,"auto_create_account_on_customer_create":true,"auto_create_customer_on_credit":true}}`))
+	}))
+	defer ts.Close()
+
+	client, err := NewClient(ClientOptions{
+		BaseURL:        ts.URL,
+		MerchantNo:     "1000123456789012",
+		MerchantSecret: "s",
+		NonceGenerator: func() string { return "n" },
+		Now:            func() time.Time { return time.UnixMilli(0).UTC() },
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	resp, err := client.Merchant.Me(context.Background())
+	if err != nil {
+		t.Fatalf("merchant me: %v", err)
+	}
+	if resp.WriteoffAccountNo != "6217701000000000003" {
+		t.Fatalf("unexpected writeoff_account_no: %s", resp.WriteoffAccountNo)
+	}
+}
+
+func TestCustomerBalanceParsesAvailableBalance(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/customers/balance" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("out_user_id"); got != "u_1" {
+			t.Fatalf("out_user_id=%s", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"code":"SUCCESS","message":"ok","request_id":"req_balance","data":{"out_user_id":"u_1","account_no":"6217701000000000010","balance":150,"available_balance":100,"book_enabled":true}}`))
+	}))
+	defer ts.Close()
+
+	client, err := NewClient(ClientOptions{
+		BaseURL:        ts.URL,
+		MerchantNo:     "1000123456789012",
+		MerchantSecret: "s",
+		NonceGenerator: func() string { return "n" },
+		Now:            func() time.Time { return time.UnixMilli(0).UTC() },
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	resp, err := client.Customers.GetBalance(context.Background(), "u_1")
+	if err != nil {
+		t.Fatalf("customer balance: %v", err)
+	}
+	if resp.Balance != 150 || resp.AvailableBalance != 100 {
+		t.Fatalf("unexpected balances: %+v", resp)
+	}
+}

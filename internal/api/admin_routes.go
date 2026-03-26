@@ -322,6 +322,7 @@ func (h *AdminHandler) handleAdminCreateMerchant(c *gin.Context) {
 		"merchant_secret":                        secret,
 		"budget_account_no":                      merchant.BudgetAccountNo,
 		"receivable_account_no":                  merchant.ReceivableAccountNo,
+		"writeoff_account_no":                    merchant.WriteoffAccountNo,
 		"secret_version":                         version,
 		"auto_create_account_on_customer_create": autoCreateAccountOnCustomerCreate,
 		"auto_create_customer_on_credit":         autoCreateCustomerOnCredit,
@@ -352,6 +353,7 @@ func (h *AdminHandler) handleAdminListMerchants(c *gin.Context) {
 			"name":                  item.Name,
 			"budget_account_no":     item.BudgetAccountNo,
 			"receivable_account_no": item.ReceivableAccountNo,
+			"writeoff_account_no":   item.WriteoffAccountNo,
 		})
 	}
 	writeSuccess(c, gin.H{
@@ -409,6 +411,7 @@ func (h *AdminHandler) handleAdminGetMerchant(c *gin.Context) {
 		"status":                                 "ACTIVE",
 		"budget_account_no":                      m.BudgetAccountNo,
 		"receivable_account_no":                  m.ReceivableAccountNo,
+		"writeoff_account_no":                    m.WriteoffAccountNo,
 		"secret_version":                         secretVersion,
 		"auto_create_account_on_customer_create": featureCfg.AutoCreateAccountOnCustomerCreate,
 		"auto_create_customer_on_credit":         featureCfg.AutoCreateCustomerOnCredit,
@@ -954,6 +957,7 @@ func (h *AdminHandler) handleAdminGetAccountBalance(c *gin.Context) {
 		return
 	}
 	bookSum := int64(0)
+	availableBalance := account.Balance
 	if account.BookEnabled {
 		sum, err := h.repo.GetAccountBookBalanceSum(accountNo)
 		if err != nil {
@@ -961,13 +965,19 @@ func (h *AdminHandler) handleAdminGetAccountBalance(c *gin.Context) {
 			return
 		}
 		bookSum = sum
+		availableBalance, err = h.repo.GetAvailableAccountBookBalanceSum(accountNo)
+		if err != nil {
+			writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "load available balance failed")
+			return
+		}
 	}
 	writeSuccess(c, gin.H{
-		"account_no":       account.AccountNo,
-		"merchant_no":      account.MerchantNo,
-		"balance":          account.Balance,
-		"book_enabled":     account.BookEnabled,
-		"book_balance_sum": bookSum,
+		"account_no":         account.AccountNo,
+		"merchant_no":        account.MerchantNo,
+		"balance":            account.Balance,
+		"available_balance":  availableBalance,
+		"book_enabled":       account.BookEnabled,
+		"book_balance_sum":   bookSum,
 	})
 }
 

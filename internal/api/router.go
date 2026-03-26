@@ -129,6 +129,7 @@ func RegisterProtectedRoutes(r *gin.Engine, opts ProtectedRoutesOptions) {
 				"merchant_secret":                        secret,
 				"budget_account_no":                      merchant.BudgetAccountNo,
 				"receivable_account_no":                  merchant.ReceivableAccountNo,
+				"writeoff_account_no":                    merchant.WriteoffAccountNo,
 				"secret_version":                         version,
 				"auto_create_account_on_customer_create": autoCreateAccountOnCustomerCreate,
 				"auto_create_customer_on_credit":         autoCreateCustomerOnCredit,
@@ -172,6 +173,7 @@ func RegisterProtectedRoutes(r *gin.Engine, opts ProtectedRoutesOptions) {
 			data["name"] = merchant.Name
 			data["budget_account_no"] = merchant.BudgetAccountNo
 			data["receivable_account_no"] = merchant.ReceivableAccountNo
+			data["writeoff_account_no"] = merchant.WriteoffAccountNo
 		}
 		if opts.MerchantCreator != nil {
 			featureCfg, found, err := opts.MerchantCreator.GetMerchantFeatureConfig(merchantNo)
