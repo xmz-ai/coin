@@ -87,6 +87,9 @@ func (s *TransferService) Submit(req TransferRequest) (TransferTxn, error) {
 		if strings.TrimSpace(origin.BizType) != BizTypeTransfer || strings.TrimSpace(origin.Status) != TxnStatusRecvSuccess {
 			return TransferTxn{}, ErrTxnStatusInvalid
 		}
+		if strings.TrimSpace(origin.TransferScene) == SceneExpireWriteoff {
+			return TransferTxn{}, ErrTxnStatusInvalid
+		}
 		if origin.RefundableAmount < req.Amount {
 			return TransferTxn{}, ErrRefundAmountExceeded
 		}
