@@ -44,6 +44,7 @@ type AccountBalance = {
   account_no: string;
   merchant_no: string;
   balance: number;
+  available_balance: number;
   book_enabled: boolean;
   book_balance_sum: number;
 };
@@ -73,7 +74,7 @@ export default function AccountsPage(): JSX.Element {
   const [capOpen, setCapOpen] = useState(false);
   const [capForm] = Form.useForm();
   const [activeAccount, setActiveAccount] = useState<AccountItem | null>(null);
-  const [balanceView, setBalanceView] = useState("");
+  const [balanceView, setBalanceView] = useState<AccountBalance | null>(null);
 
   const pageSize = useMemo(() => {
     const v = Number(pageSizeInput);
@@ -153,7 +154,7 @@ export default function AccountsPage(): JSX.Element {
             onClick={async () => {
               try {
                 const data = await apiRequest<AccountBalance>(`/accounts/${encodeURIComponent(row.account_no)}/balance`);
-                setBalanceView(JSON.stringify(data, null, 2));
+                setBalanceView(data);
               } catch (err) {
                 message.error(formatAPIError(err));
               }
@@ -229,7 +230,17 @@ export default function AccountsPage(): JSX.Element {
           pagination={false}
           scroll={{ x: 1200 }}
         />
-        {balanceView ? <pre className="result-box">{balanceView}</pre> : null}
+        {balanceView ? (
+          <Card size="small" title={`余额详情 ${balanceView.account_no}`} style={{ marginTop: 16 }}>
+            <Space wrap size={[24, 12]}>
+              <Typography.Text>账面余额: {balanceView.balance}</Typography.Text>
+              <Typography.Text>可用余额: {balanceView.available_balance}</Typography.Text>
+              <Typography.Text>账本汇总: {balanceView.book_balance_sum}</Typography.Text>
+              <Typography.Text>账本模式: {balanceView.book_enabled ? "ON" : "OFF"}</Typography.Text>
+            </Space>
+            <pre className="result-box">{JSON.stringify(balanceView, null, 2)}</pre>
+          </Card>
+        ) : null}
       </Card>
 
       <Modal title="新建账户" open={createOpen} onCancel={() => setCreateOpen(false)} footer={null} destroyOnClose width={760}>

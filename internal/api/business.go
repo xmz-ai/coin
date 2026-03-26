@@ -44,6 +44,7 @@ type CustomerAccountResolver interface {
 
 type AccountFinder interface {
 	GetAccount(accountNo string) (service.Account, bool)
+	GetAvailableBalance(accountNo string) (int64, bool, error)
 }
 
 type TxnQueryStore interface {
@@ -1033,12 +1034,22 @@ func (h *BusinessHandler) handleGetCustomerBalance(c *gin.Context) {
 		writeError(c, http.StatusNotFound, "ACCOUNT_NOT_FOUND", "account not found")
 		return
 	}
+	availableBalance, found, err := h.accounts.GetAvailableBalance(accountNo)
+	if err != nil {
+		writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "load available balance failed")
+		return
+	}
+	if !found {
+		writeError(c, http.StatusNotFound, "ACCOUNT_NOT_FOUND", "account not found")
+		return
+	}
 
 	writeSuccess(c, gin.H{
-		"out_user_id":  outUserID,
-		"account_no":   account.AccountNo,
-		"balance":      account.Balance,
-		"book_enabled": account.BookEnabled,
+		"out_user_id":         outUserID,
+		"account_no":          account.AccountNo,
+		"balance":             account.Balance,
+		"available_balance":   availableBalance,
+		"book_enabled":        account.BookEnabled,
 	})
 }
 

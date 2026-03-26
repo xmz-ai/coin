@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	dbsqlc "github.com/xmz-ai/coin/internal/db/sqlc"
 	"github.com/xmz-ai/coin/internal/service"
 )
 
@@ -558,6 +559,17 @@ func (r *Repository) GetAccountBookBalanceSum(accountNo string) (int64, error) {
 	return sum, nil
 }
 
+func (r *Repository) GetAvailableAccountBookBalanceSum(accountNo string) (int64, error) {
+	ctx, cancel := r.withTimeout()
+	defer cancel()
+
+	return r.queries.GetAvailableAccountBookBalanceSum(ctx, dbsqlc.GetAvailableAccountBookBalanceSumParams{
+		AccountNo:  accountNo,
+		NowUtc:     toPGDate(time.Now().UTC()),
+		NoExpireAt: toPGDate(noExpireBookDate),
+	})
+}
+
 func (r *Repository) GetCustomerByNo(merchantNo, customerNo string) (service.Customer, bool, error) {
 	if r == nil {
 		return service.Customer{}, false, errors.New("repository is nil")
@@ -766,7 +778,8 @@ func (r *Repository) ListMerchantsForAdmin(cursorMerchantNo string, pageSize int
 			merchant_no,
 			name,
 			budget_account_no,
-			receivable_account_no
+			receivable_account_no,
+			COALESCE(writeoff_account_no, '') AS writeoff_account_no
 		FROM merchant
 		WHERE ($1 = '' OR merchant_no > $1)
 		ORDER BY merchant_no ASC
@@ -786,6 +799,7 @@ func (r *Repository) ListMerchantsForAdmin(cursorMerchantNo string, pageSize int
 			&item.Name,
 			&item.BudgetAccountNo,
 			&item.ReceivableAccountNo,
+			&item.WriteoffAccountNo,
 		); err != nil {
 			return nil, "", err
 		}

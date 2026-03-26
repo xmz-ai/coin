@@ -24,6 +24,7 @@ type MerchantListItem = {
   name: string;
   budget_account_no: string;
   receivable_account_no: string;
+  writeoff_account_no: string;
 };
 
 type MerchantListResponse = {
@@ -37,6 +38,7 @@ type MerchantDetail = {
   status: string;
   budget_account_no: string;
   receivable_account_no: string;
+  writeoff_account_no: string;
   secret_version: number;
   auto_create_account_on_customer_create: boolean;
   auto_create_customer_on_credit: boolean;
@@ -130,6 +132,7 @@ export default function MerchantsPage(): JSX.Element {
     { title: "Name", dataIndex: "name", key: "name", width: 220 },
     { title: "Budget Account", dataIndex: "budget_account_no", key: "budget_account_no", width: 220, render: (v) => <Typography.Text code>{v}</Typography.Text> },
     { title: "Receivable Account", dataIndex: "receivable_account_no", key: "receivable_account_no", width: 220, render: (v) => <Typography.Text code>{v}</Typography.Text> },
+    { title: "Writeoff Account", dataIndex: "writeoff_account_no", key: "writeoff_account_no", width: 220, render: (v) => <Typography.Text code>{v}</Typography.Text> },
     {
       title: "Action",
       key: "action",
@@ -203,7 +206,7 @@ export default function MerchantsPage(): JSX.Element {
           dataSource={rows}
           loading={loading}
           pagination={false}
-          scroll={{ x: 980 }}
+          scroll={{ x: 1220 }}
         />
       </Card>
 
@@ -265,6 +268,11 @@ export default function MerchantsPage(): JSX.Element {
         {detail ? (
           <Space direction="vertical" style={{ width: "100%" }} size={16}>
             <Card size="small" title="概览">
+              <Space direction="vertical" style={{ width: "100%", marginBottom: 12 }} size={4}>
+                <Typography.Text>Budget: <Typography.Text code>{detail.budget_account_no}</Typography.Text></Typography.Text>
+                <Typography.Text>Receivable: <Typography.Text code>{detail.receivable_account_no}</Typography.Text></Typography.Text>
+                <Typography.Text>Writeoff: <Typography.Text code>{detail.writeoff_account_no}</Typography.Text></Typography.Text>
+              </Space>
               <pre className="result-box">{JSON.stringify(detail, null, 2)}</pre>
             </Card>
 
