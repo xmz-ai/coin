@@ -39,11 +39,6 @@ type AdminDashboardStats struct {
 	MerchantCount         int64
 	CustomerCount         int64
 	AccountCount          int64
-	TxnCount              int64
-	TxnInitCount          int64
-	TxnPayCount           int64
-	TxnRecvCount          int64
-	TxnFailedCount        int64
 	OutboxPendingCount    int64
 	OutboxProcessingCount int64
 	OutboxDeadCount       int64
@@ -508,11 +503,6 @@ func (r *Repository) GetAdminDashboardStats(merchantNo string) (AdminDashboardSt
 			(SELECT COUNT(*)::bigint FROM merchant m WHERE ($1 = '' OR m.merchant_no = $1)) AS merchant_count,
 			(SELECT COUNT(*)::bigint FROM customer c WHERE ($1 = '' OR c.merchant_no = $1)) AS customer_count,
 			(SELECT COUNT(*)::bigint FROM account a WHERE ($1 = '' OR a.merchant_no = $1)) AS account_count,
-			(SELECT COUNT(*)::bigint FROM txn t WHERE ($1 = '' OR t.merchant_no = $1)) AS txn_count,
-			(SELECT COUNT(*)::bigint FROM txn t WHERE ($1 = '' OR t.merchant_no = $1) AND t.status = 'INIT') AS txn_init_count,
-			(SELECT COUNT(*)::bigint FROM txn t WHERE ($1 = '' OR t.merchant_no = $1) AND t.status = 'PAY_SUCCESS') AS txn_pay_count,
-			(SELECT COUNT(*)::bigint FROM txn t WHERE ($1 = '' OR t.merchant_no = $1) AND t.status = 'RECV_SUCCESS') AS txn_recv_count,
-			(SELECT COUNT(*)::bigint FROM txn t WHERE ($1 = '' OR t.merchant_no = $1) AND t.status = 'FAILED') AS txn_failed_count,
 			(SELECT COUNT(*)::bigint FROM outbox_event e WHERE ($1 = '' OR e.merchant_no = $1) AND e.status = 'PENDING') AS outbox_pending_count,
 			(SELECT COUNT(*)::bigint FROM outbox_event e WHERE ($1 = '' OR e.merchant_no = $1) AND e.status = 'PROCESSING') AS outbox_processing_count,
 			(SELECT COUNT(*)::bigint FROM outbox_event e WHERE ($1 = '' OR e.merchant_no = $1) AND e.status = 'DEAD') AS outbox_dead_count
@@ -520,11 +510,6 @@ func (r *Repository) GetAdminDashboardStats(merchantNo string) (AdminDashboardSt
 		&out.MerchantCount,
 		&out.CustomerCount,
 		&out.AccountCount,
-		&out.TxnCount,
-		&out.TxnInitCount,
-		&out.TxnPayCount,
-		&out.TxnRecvCount,
-		&out.TxnFailedCount,
 		&out.OutboxPendingCount,
 		&out.OutboxProcessingCount,
 		&out.OutboxDeadCount,
