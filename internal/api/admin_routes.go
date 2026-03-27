@@ -252,13 +252,6 @@ func (h *AdminHandler) handleDashboardOverview(c *gin.Context) {
 		"merchant_count": stats.MerchantCount,
 		"customer_count": stats.CustomerCount,
 		"account_count":  stats.AccountCount,
-		"txn_count":      stats.TxnCount,
-		"txn_status": gin.H{
-			"INIT":         stats.TxnInitCount,
-			"PAY_SUCCESS":  stats.TxnPayCount,
-			"RECV_SUCCESS": stats.TxnRecvCount,
-			"FAILED":       stats.TxnFailedCount,
-		},
 		"outbox": gin.H{
 			"PENDING":    stats.OutboxPendingCount,
 			"PROCESSING": stats.OutboxProcessingCount,

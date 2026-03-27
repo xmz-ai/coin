@@ -166,7 +166,7 @@ CREATE TABLE IF NOT EXISTS account_change_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_account_change_log_txn_no ON account_change_log(txn_no);
-CREATE INDEX IF NOT EXISTS idx_account_change_log_account_created ON account_change_log(account_no, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_account_change_log_account_created_change ON account_change_log(account_no, created_at DESC, change_id DESC);
 ```
 
 ## 2.7 account_book
